@@ -17,7 +17,9 @@
 pub mod arrange;
 pub mod bar;
 pub mod card;
+pub mod drag;
 pub mod facts;
+pub mod fold;
 pub mod list;
 pub mod menus;
 
@@ -35,6 +37,8 @@ use library_core::sort::SortKey;
 use library_core::view::LibraryView;
 
 use crate::app::{ContextTarget, MenuKind, Message};
+use crate::library::drag::{DragPayload, DropEffect};
+
 use crate::chrome::icons::{icon, IconName};
 use crate::chrome::platform;
 use crate::theme::{mix, Tokens};
@@ -48,6 +52,57 @@ use crate::theme::{mix, Tokens};
 pub struct SelectionFacts<'a> {
     pub selecting: bool,
     pub selected: &'a HashSet<String>,
+}
+
+/// What the level's cells read about a drag in flight: the payload, so
+/// every held cell can fade, and the effect a release would commit right
+/// now, so the seam, the ring and the tint land on exactly the cells the
+/// commit would write. Recomputed per frame by the app from one table —
+/// the cells ask questions, they never answer them. Borrowed like the
+/// selection's set: both outlive every frame that paints them.
+#[derive(Clone, Copy)]
+pub struct DragFacts<'a> {
+    pub payload: Option<&'a DragPayload>,
+    pub effect: Option<&'a DropEffect>,
+}
+
+impl DragFacts<'_> {
+    /// A drag is in flight: the list's band sensors wear themselves, and
+    /// the floor stops taking presses.
+    pub fn live(&self) -> bool {
+        self.payload.is_some()
+    }
+
+    pub fn holds(&self, id: &str) -> bool {
+        self.payload.is_some_and(|held| held.contains(id))
+    }
+
+    pub fn inserts_before(&self, id: &str) -> bool {
+        self.effect.and_then(DropEffect::insert_at) == Some((id, false))
+    }
+
+    pub fn inserts_after(&self, id: &str) -> bool {
+        self.effect.and_then(DropEffect::insert_at) == Some((id, true))
+    }
+
+    pub fn sibling_before(&self, id: &str) -> bool {
+        self.effect.and_then(DropEffect::sibling_at) == Some((id, false))
+    }
+
+    pub fn sibling_after(&self, id: &str) -> bool {
+        self.effect.and_then(DropEffect::sibling_at) == Some((id, true))
+    }
+
+    pub fn nests_into(&self, id: &str) -> bool {
+        self.effect.and_then(DropEffect::nest_into) == Some(id)
+    }
+
+    pub fn folds_with(&self, id: &str) -> bool {
+        self.effect.is_some_and(|effect| match effect {
+            DropEffect::CreateFolder { with_book_id } => with_book_id.as_str() == id,
+            _ => false,
+        })
+    }
 }
 
 /// The grid's geometry, straight off grid.css: 152px tracks with a 24px
@@ -116,6 +171,7 @@ pub fn auto_columns(width: f32) -> usize {
 /// paint them. `width` is the window's live width — the grid counts its
 /// tracks against it the same way the web grid's auto-fit counted against
 /// its measured box.
+#[allow(clippy::too_many_arguments)]
 pub fn view(
     tokens: Tokens,
     library: &LibraryBlob,
@@ -124,6 +180,7 @@ pub fn view(
     hovered: Option<&str>,
     width: f32,
     selection: SelectionFacts<'_>,
+    drag: DragFacts<'_>,
 ) -> Element<'static, Message> {
     let rows = level_rows(library, shelf, terms);
     let folders = level_folders(library, shelf, terms);
@@ -147,7 +204,7 @@ pub fn view(
 
         let inner_width = (width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN);
         let layout: Element<'static, Message> = if library.view.is_list() {
-            list::view(tokens, library, rows, folders, hovered, selection)
+            list::view(tokens, library, rows, folders, hovered, selection, drag)
         } else {
             grid(
                 tokens,
@@ -158,6 +215,7 @@ pub fn view(
                 hovered,
                 inner_width,
                 selection,
+                drag,
             )
         };
 
@@ -230,6 +288,7 @@ fn grid(
     hovered: Option<&str>,
     width: f32,
     selection: SelectionFacts<'_>,
+    drag: DragFacts<'_>,
 ) -> Element<'static, Message> {
     let tracks = match pinned {
         Some(count) => usize::from(count).max(1),
@@ -241,17 +300,21 @@ fn grid(
     for shelf in folders {
         let facts = facts::folder_facts(library, &shelf.id);
         let hot = hovered.is_some_and(|id| id == shelf.id.as_str());
-        cells.push(card::folder_card(tokens, library, shelf, facts, cell, hot, selection));
+        cells.push(card::folder_card(
+            tokens, library, shelf, facts, cell, hot, selection, drag,
+        ));
     }
     for entry in rows {
         match entry {
             Row::Book(book) => {
                 let hot = hovered.is_some_and(|id| id == book.id.as_str());
-                cells.push(card::book_card(tokens, book, cell, hot, selection));
+                cells.push(card::book_card(tokens, book, cell, hot, selection, drag));
             }
             Row::Link { id, name, target, .. } => {
                 let hot = hovered.is_some_and(|hovered| hovered == id.as_str());
-                cells.push(card::link_card(tokens, id, name, target, cell, hot, selection));
+                cells.push(card::link_card(
+                    tokens, id, name, target, cell, hot, selection, drag,
+                ));
             }
         }
     }

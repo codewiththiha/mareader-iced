@@ -10,7 +10,7 @@
 //! do natively, so the shadow carries the lift alone.
 
 use iced::gradient::Linear;
-use iced::widget::{button, column, container, mouse_area, stack, text, Column, Row, Space, Stack};
+use iced::widget::{button, column, container, mouse_area, text, Column, Row, Space, Stack};
 use iced::{
     Alignment, Background, Border, Color, Element, Gradient, Length, Padding, Radians, Shadow,
     Vector,
@@ -25,13 +25,16 @@ use reader_core::format::Format;
 use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::facts::{self, Badge, FolderFacts};
-use crate::library::SelectionFacts;
+use crate::library::drag::Band;
+use crate::library::{DragFacts, SelectionFacts};
 use crate::theme::{mix, wash, Tokens};
 
 /// The cover's aspect, A4 portrait: height = width × 297/210.
 pub const COVER_RATIO: f32 = 297.0 / 210.0;
-/// The most member covers a folder plate shows, in its 2×2 window.
-const THUMB_CAP: usize = 4;
+/// The most member covers a folder plate shows, in its 2×2 window. The
+/// drag's fold preview borrows the same cap: a preview of more cells would
+/// promise a plate the library does not draw.
+pub(crate) const THUMB_CAP: usize = 4;
 /// Past this depth a folder cell draws as a glyph: a few pixels of a
 /// nested plate is a smear, not a preview.
 const PLATE_DEPTH: usize = 2;
@@ -173,6 +176,118 @@ pub fn dim_layer(tokens: Tokens, hovered: bool) -> Element<'static, Message> {
         .into()
 }
 
+/// The band readers a drag wears on a cell: proportional zones reporting
+/// which part of it the pointer is on — halves for a book, whose bottom
+/// half is the after its top is not, and quarters-and-a-half for a folder,
+/// whose middle band is the nest its edges are not. Enter-only on purpose:
+/// a sensor that captured a press would steal the release the drop is
+/// answered by. The list rows and the grid cards wear the same zones, so
+/// one gesture reads the same in both layouts.
+pub fn sensors(id: &str, folder: bool) -> Element<'static, Message> {
+    let zones: [(Band, u16); 3] = if folder {
+        [(Band::Top, 1), (Band::Middle, 2), (Band::Bottom, 1)]
+    } else {
+        [(Band::Top, 1), (Band::Bottom, 1), (Band::Bottom, 0)]
+    };
+    let mut column = Column::new().width(Length::Fill).height(Length::Fill);
+    for (band, portion) in zones {
+        if portion == 0 {
+            continue;
+        }
+        column = column.push(
+            mouse_area(
+                Space::new().width(Length::Fill).height(Length::FillPortion(portion)),
+            )
+            .on_enter(Message::DragBand(id.to_string(), band)),
+        );
+    }
+    column.into()
+}
+
+/// What a drag is holding: every cell in the payload fades — not only the
+/// one the press began on — because the set the reader picked up has to
+/// stay readable as a set. The web cells drop to 0.45 opacity; a layout
+/// cell cannot fade its own ink, so the wash carries it, the same answer
+/// the choosing step-back wears.
+pub fn held_layer(tokens: Tokens) -> Element<'static, Message> {
+    container(Space::new().width(Length::Fill).height(Length::Fill))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(wash(tokens.paper, 0.55))),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The seam a drop would write: two pixels of the accent, the cover's
+/// height, round-ended. The web seam stands in the gutter to the card's
+/// left; a layout cell cannot draw outside itself, so the line hugs the
+/// card's own edge — the same accent, one gutter over.
+fn seam_line(tokens: Tokens, height: f32) -> Element<'static, Message> {
+    container(Space::new().width(2.0).height(height))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(tokens.accent)),
+            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The seam parked at the card's left edge, over the cover's height.
+fn seam_corner(tokens: Tokens, height: f32) -> Element<'static, Message> {
+    container(seam_line(tokens, height))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start)
+        .align_y(Alignment::Start)
+        .into()
+}
+
+/// The fold's ring on a card: the accent around the cover the drop would
+/// replace with a shelf, and the halo that says the ring is an offer, not
+/// a position — a line at the card's edge would promise a seam the drop no
+/// longer honours. The web halo is a hard 6px spread; an iced shadow has
+/// no spread, so the glow carries the same accent at the same reach.
+fn fold_ring(tokens: Tokens, height: f32) -> Element<'static, Message> {
+    container(
+        container(Space::new().width(Length::Fill).height(height)).style(move |_| {
+            container::Style {
+                background: None,
+                border: Border { color: tokens.accent, width: 2.0, radius: 6.0.into() },
+                shadow: Shadow {
+                    color: wash(tokens.accent, 0.20),
+                    offset: Vector::new(0.0, 0.0),
+                    blur_radius: 10.0,
+                },
+                ..container::Style::default()
+            }
+        }),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Alignment::Start)
+    .align_y(Alignment::Start)
+    .into()
+}
+
+/// A folder cell about to take the hold INSIDE itself: the accent's tint,
+/// ring and halo over the whole cell (folder.css `.folder-drag-over`) —
+/// the loudest thing a card wears, because it is the one answer the reader
+/// is waiting for.
+fn nest_ring(tokens: Tokens) -> Element<'static, Message> {
+    container(Space::new().width(Length::Fill).height(Length::Fill))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(wash(tokens.accent, 0.12))),
+            border: Border { color: tokens.accent, width: 2.0, radius: 10.0.into() },
+            shadow: Shadow {
+                color: wash(tokens.accent, 0.20),
+                offset: Vector::new(0.0, 0.0),
+                blur_radius: 10.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// One book's card in the grid: cover, info, and the progress hairline.
 /// The card OWNS its book — the level's rows are computed fresh on every
 /// view, and an element may not borrow a vec that dies with the function
@@ -183,6 +298,7 @@ pub fn book_card(
     width: f32,
     hovered: bool,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     let cover_h = width * COVER_RATIO;
     let title = book.title();
@@ -192,6 +308,12 @@ pub fn book_card(
     let progress = book.progress();
     let missing = book.missing;
     let selected = selection.selected.contains(book.id.as_str());
+    // The drag's three facts about this card, read before the id moves
+    // into the right-click's answer.
+    let held = drag.holds(book.id.as_str());
+    let seam = drag.inserts_before(book.id.as_str());
+    let fold = drag.folds_with(book.id.as_str());
+    let sensor_id = book.id.clone();
 
     // The cover face: the title centred on the gradient, and — for a book
     // the library has lost sight of — the wash and the badge that say so.
@@ -284,10 +406,28 @@ pub fn book_card(
         .on_exit(Message::CardHover(None))
         .on_right_press(Message::ContextMenu(right))
         .into();
-    if selection.selecting && !selected {
-        stack![cell, dim_layer(tokens, hovered)].into()
+    // The cell's overlays by depth: the step back or the hold's fade, then
+    // the seam, then the fold's ring — each a non-interactive wash, so the
+    // button underneath still owns every press.
+    let mut dressed: Vec<Element<'static, Message>> = vec![cell];
+    if held {
+        dressed.push(held_layer(tokens));
+    } else if selection.selecting && !selected {
+        dressed.push(dim_layer(tokens, hovered));
+    }
+    if seam {
+        dressed.push(seam_corner(tokens, cover_h));
+    }
+    if fold {
+        dressed.push(fold_ring(tokens, cover_h));
+    }
+    if drag.live() {
+        dressed.push(sensors(&sensor_id, false));
+    }
+    if dressed.len() == 1 {
+        dressed.pop().unwrap_or_else(|| Space::new().into())
     } else {
-        cell
+        Stack::with_children(dressed).into()
     }
 }
 
@@ -317,6 +457,7 @@ fn progress_bar(tokens: Tokens, width: f32, fraction: f64) -> Element<'static, M
 /// summary beneath, and the badges over the plate's corner. Like the book's
 /// card, the plate owns its shelf; the preview and the facts are read fresh
 /// from the library on the frame they are asked for.
+#[allow(clippy::too_many_arguments)]
 pub fn folder_card(
     tokens: Tokens,
     library: &LibraryBlob,
@@ -325,12 +466,16 @@ pub fn folder_card(
     width: f32,
     hovered: bool,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     // The card's own 8px of air: the plate sits inside it, and the badges
     // sit 6px inside the plate's corner.
     let plate_w = width - 16.0;
     let plate_h = plate_w * 4.0 / 3.0;
     let selected = selection.selected.contains(shelf.id.as_str());
+    let held = drag.holds(shelf.id.as_str());
+    let nest = drag.nests_into(shelf.id.as_str());
+    let sensor_id = shelf.id.clone();
 
     let plate_view = plate(tokens, library, &shelf.id, 0, plate_w, plate_h);
     let mut layers: Vec<Element<'static, Message>> = vec![plate_view];
@@ -387,10 +532,22 @@ pub fn folder_card(
     } else {
         cell
     };
-    if selection.selecting && !selected {
-        stack![cell, dim_layer(tokens, hovered)].into()
+    let mut dressed: Vec<Element<'static, Message>> = vec![cell];
+    if held {
+        dressed.push(held_layer(tokens));
+    } else if selection.selecting && !selected {
+        dressed.push(dim_layer(tokens, hovered));
+    }
+    if nest {
+        dressed.push(nest_ring(tokens));
+    }
+    if drag.live() {
+        dressed.push(sensors(&sensor_id, true));
+    }
+    if dressed.len() == 1 {
+        dressed.pop().unwrap_or_else(|| Space::new().into())
     } else {
-        cell
+        Stack::with_children(dressed).into()
     }
 }
 
@@ -427,7 +584,7 @@ fn plate_items(library: &LibraryBlob, shelf_id: &str) -> Vec<PlateItem> {
 /// The joinery the cells float on: the theme's line nudged a fifth of the
 /// way toward the muted ink — a seam at the ink's weight is a stroke, and a
 /// plate drawn in strokes is a table.
-fn plate_seam(tokens: Tokens) -> Color {
+pub(crate) fn plate_seam(tokens: Tokens) -> Color {
     mix(tokens.line, tokens.muted, 0.20)
 }
 
@@ -598,6 +755,7 @@ fn watch_dot(tokens: Tokens) -> Element<'static, Message> {
 /// A row that points at a shelf rather than being a book: the link glyph on
 /// the cover's tile. A link whose target is not a shelf is listed but
 /// quiet — nothing to open until the shelves it may name exist.
+#[allow(clippy::too_many_arguments)]
 pub fn link_card(
     tokens: Tokens,
     id: String,
@@ -606,9 +764,14 @@ pub fn link_card(
     width: f32,
     hovered: bool,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     let cover_h = width * COVER_RATIO;
     let selected = selection.selected.contains(id.as_str());
+    let held = drag.holds(id.as_str());
+    let seam = drag.inserts_before(id.as_str());
+    let fold = drag.folds_with(id.as_str());
+    let sensor_id = id.clone();
     let mut layers: Vec<Element<'static, Message>> = vec![
         container(icon(IconName::Link, 28, wash(tokens.muted, 0.90)))
             .width(Length::Fill)
@@ -659,10 +822,25 @@ pub fn link_card(
         .on_exit(Message::CardHover(None))
         .on_right_press(Message::ContextMenu(right))
         .into();
-    if selection.selecting && !selected {
-        stack![cell, dim_layer(tokens, hovered)].into()
+    let mut dressed: Vec<Element<'static, Message>> = vec![cell];
+    if held {
+        dressed.push(held_layer(tokens));
+    } else if selection.selecting && !selected {
+        dressed.push(dim_layer(tokens, hovered));
+    }
+    if seam {
+        dressed.push(seam_corner(tokens, cover_h));
+    }
+    if fold {
+        dressed.push(fold_ring(tokens, cover_h));
+    }
+    if drag.live() {
+        dressed.push(sensors(&sensor_id, false));
+    }
+    if dressed.len() == 1 {
+        dressed.pop().unwrap_or_else(|| Space::new().into())
     } else {
-        cell
+        Stack::with_children(dressed).into()
     }
 }
 

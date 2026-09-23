@@ -50,6 +50,11 @@ rfd = "0.17.2"
 # trait objects are the same types.
 iced_futures = "0.14.0"
 
+[dev-dependencies]
+# The arrange and drag tests build their rows on the crate's own fixtures;
+# the feature compiles them into the test build of the bin alone.
+library-core = { path = "crates/library-core", features = ["test-util"] }
+
 [workspace]
 members = [
   "crates/ai-core",

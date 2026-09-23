@@ -7,7 +7,7 @@
 //! shape — the 41.6px cover thumbnail, the title and its second line, the
 //! format chip that only the non-PDF formats wear.
 
-use iced::widget::{button, column, container, mouse_area, row, stack, text, Column, Space};
+use iced::widget::{button, column, container, mouse_area, row, text, Column, Space, Stack};
 use iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use library_core::blob::LibraryBlob;
@@ -18,7 +18,7 @@ use library_core::text as lib_text;
 use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::card::{self, elide_line};
-use crate::library::SelectionFacts;
+use crate::library::{DragFacts, SelectionFacts};
 use crate::library::facts::{self, FolderFacts};
 use crate::theme::{wash, Tokens};
 
@@ -33,6 +33,7 @@ pub fn view(
     folders: Vec<Shelf>,
     hovered: Option<&str>,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     let mut items: Vec<Element<'static, Message>> = Vec::new();
     let divided = |items: &mut Vec<Element<'static, Message>>, element: Element<'static, Message>| {
@@ -45,17 +46,17 @@ pub fn view(
     for shelf in folders {
         let facts = facts::folder_facts(library, &shelf.id);
         let hot = hovered.is_some_and(|id| id == shelf.id.as_str());
-        divided(&mut items, shelf_row(tokens, shelf, facts, hot, selection));
+        divided(&mut items, shelf_row(tokens, shelf, facts, hot, selection, drag));
     }
     for entry in rows {
         match entry {
             Row::Book(book) => {
                 let hot = hovered.is_some_and(|id| id == book.id.as_str());
-                divided(&mut items, book_row(tokens, book, hot, selection));
+                divided(&mut items, book_row(tokens, book, hot, selection, drag));
             }
             Row::Link { id, name, target, .. } => {
                 let hot = hovered.is_some_and(|hovered| hovered == id.as_str());
-                divided(&mut items, link_row(tokens, id, name, target, hot, selection));
+                divided(&mut items, link_row(tokens, id, name, target, hot, selection, drag));
             }
         }
     }
@@ -83,23 +84,92 @@ fn rule_layer(tokens: Tokens) -> Element<'static, Message> {
         .into()
 }
 
-/// What every row wears while choosing: the rule when it is in the set,
-/// the step back when it is not.
-fn chosen(
+/// What every row wears while choosing or dragging: the rule when it is
+/// in the set, the step back when it is not, the hold's fade when the drag
+/// carries it, the seam or ring the drop would write, and — while a drag
+/// is live — the band sensors that read which part of the row the pointer
+/// is on. All overlays are non-interactive washes except the sensors, so
+/// the row's button still owns every press.
+#[allow(clippy::too_many_arguments)]
+fn dressed(
     tokens: Tokens,
     cell: Element<'static, Message>,
     hovered: bool,
-    selecting: bool,
+    selection: SelectionFacts,
     selected: bool,
+    drag: DragFacts,
+    id: &str,
+    folder: bool,
 ) -> Element<'static, Message> {
-    if !selecting {
-        return cell;
+    let mut layers: Vec<Element<'static, Message>> = vec![cell];
+    if selection.selecting && selected {
+        layers.push(rule_layer(tokens));
     }
-    if selected {
-        stack![cell, rule_layer(tokens)].into()
+    if drag.holds(id) {
+        layers.push(card::held_layer(tokens));
+    } else if selection.selecting && !selected {
+        layers.push(card::dim_layer(tokens, hovered));
+    }
+    if folder {
+        if drag.nests_into(id) {
+            layers.push(inset_ring(tokens, true));
+        }
+        if drag.sibling_before(id) {
+            layers.push(edge_rule(tokens, true));
+        }
+        if drag.sibling_after(id) {
+            layers.push(edge_rule(tokens, false));
+        }
     } else {
-        stack![cell, card::dim_layer(tokens, hovered)].into()
+        if drag.inserts_before(id) {
+            layers.push(edge_rule(tokens, true));
+        }
+        if drag.inserts_after(id) {
+            layers.push(edge_rule(tokens, false));
+        }
+        if drag.folds_with(id) {
+            layers.push(inset_ring(tokens, false));
+        }
     }
+    if drag.live() {
+        layers.push(card::sensors(id, folder));
+    }
+    if layers.len() == 1 {
+        layers.pop().unwrap_or_else(|| Space::new().into())
+    } else {
+        Stack::with_children(layers).into()
+    }
+}
+
+/// The row's seam of a coming drop: two pixels of the accent along the top
+/// (a before) or the bottom (an after) edge — the two halves of one row,
+/// never both lit, because the band that paints them is the band the
+/// commit resolves its index from.
+fn edge_rule(tokens: Tokens, top: bool) -> Element<'static, Message> {
+    container(
+        container(Space::new().width(Length::Fill).height(2.0)).style(move |_| container::Style {
+            background: Some(Background::Color(tokens.accent)),
+            ..container::Style::default()
+        }),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_y(if top { Alignment::Start } else { Alignment::End })
+    .into()
+}
+
+/// The row's inset ring: the fold's promise around the whole row, and —
+/// tinted — the shelf row about to take the hold inside itself. An inset
+/// rather than an outer ring, because an outer one would shove its
+/// neighbours in a divided list.
+fn inset_ring(tokens: Tokens, tint: bool) -> Element<'static, Message> {
+    container(Space::new().width(Length::Fill).height(Length::Fill))
+        .style(move |_| container::Style {
+            background: tint.then_some(Background::Color(wash(tokens.accent, 0.10))),
+            border: Border { color: tokens.accent, width: 2.0, radius: 0.0.into() },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// The hairline the rows are divided by.
@@ -121,11 +191,13 @@ fn shelf_row(
     facts: FolderFacts,
     hovered: bool,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     let summary = facts::summary(facts.books, facts.inside);
     let name = elide_line(&shelf.name);
     let selected = selection.selected.contains(shelf.id.as_str());
     let tap_id = shelf.id.clone();
+    let dressed_id = shelf.id.clone();
     let hover_id = shelf.id.clone();
     let right = if selection.selecting && selected {
         ContextTarget::Selection
@@ -152,7 +224,7 @@ fn shelf_row(
         .on_exit(Message::CardHover(None))
         .on_right_press(Message::ContextMenu(right))
         .into();
-    chosen(tokens, cell, hovered, selection.selecting, selected)
+    dressed(tokens, cell, hovered, selection, selected, drag, &dressed_id, true)
 }
 
 /// A book's row: the thumbnail, the title and its second line, the chip.
@@ -161,6 +233,7 @@ fn book_row(
     book: Book,
     hovered: bool,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     let title = elide_line(&book.title());
     let sub = elide_line(
@@ -184,6 +257,7 @@ fn book_row(
         line = line.push(chip);
     }
     let tap_id = book.id.clone();
+    let dressed_id = book.id.clone();
     let hover_id = book.id.clone();
     let right = if selection.selecting && selected {
         ContextTarget::Selection
@@ -200,10 +274,11 @@ fn book_row(
         .on_exit(Message::CardHover(None))
         .on_right_press(Message::ContextMenu(right))
         .into();
-    chosen(tokens, cell, hovered, selection.selecting, selected)
+    dressed(tokens, cell, hovered, selection, selected, drag, &dressed_id, false)
 }
 
 /// A link's row: the glyph stands where the cover sits.
+#[allow(clippy::too_many_arguments)]
 fn link_row(
     tokens: Tokens,
     id: String,
@@ -211,6 +286,7 @@ fn link_row(
     target: String,
     hovered: bool,
     selection: SelectionFacts,
+    drag: DragFacts,
 ) -> Element<'static, Message> {
     let label = elide_line(&name);
     let selected = selection.selected.contains(id.as_str());
@@ -230,6 +306,7 @@ fn link_row(
     .align_y(Alignment::Center);
 
     let hover_id = id.clone();
+    let tap_id = id.clone();
     let right = if selection.selecting && selected {
         ContextTarget::Selection
     } else {
@@ -249,7 +326,7 @@ fn link_row(
         .on_exit(Message::CardHover(None))
         .on_right_press(Message::ContextMenu(right))
         .into();
-    chosen(tokens, cell, hovered, selection.selecting, selected)
+    dressed(tokens, cell, hovered, selection, selected, drag, &tap_id, false)
 }
 
 /// The list's last row: the add door, wearing the row's own shape.

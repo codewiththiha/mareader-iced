@@ -13,11 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::time::Instant;
+use iced::time::{Duration, Instant};
 use iced::widget::{
     button, column, container, mouse_area, operation, row, stack, text, text_input, Column, Id,
-    Row, Space,
+    Row, Space, Stack,
 };
+use iced::border::Radius;
 use iced::{
     event, keyboard, mouse, window, Alignment, Background, Border, Color, Element, Length,
     Padding, Point, Shadow, Size, Subscription, Task, Theme, Vector,
@@ -33,7 +34,7 @@ use library_core::governance::Governance;
 use library_core::ledger::{self, Recovered, ScanAction};
 use library_core::paths;
 use library_core::scan::{selectable_formats, FoundFile};
-use library_core::shelf::{self, ALL_SHELF};
+use library_core::shelf::{self, Shelf, ALL_SHELF};
 use library_core::sort::SortKey;
 use library_core::text as lib_text;
 use library_core::view::{CoverFit, LibraryLayout};
@@ -45,11 +46,17 @@ use reader_core::settings::Settings;
 use crate::chrome::icons::{icon, IconName};
 use crate::chrome::platform::{self, Os};
 use crate::chrome::titlebar::{self, Titlebar};
+use crate::library::card::{plate_seam, THUMB_CAP};
+use crate::library::fold::{self, FoldPlan};
+use crate::library::drag::{
+    drop_effect, fold_items, fold_preview, Band, DragPayload, DropEffect, DropQuery,
+    DropTargetKind, FoldPreview,
+};
 use crate::library::{self, bar, menus};
 use crate::platform::{dialogs, fs, progress, store};
 use crate::route::Route;
 use crate::storage;
-use crate::theme::{self, fade, wash, Tokens};
+use crate::theme::{self, fade, mix, wash, Tokens};
 use crate::ui::menu as popover;
 use crate::ui::sheet;
 use crate::ui::toast::{ToastHost, Tone};
@@ -112,6 +119,61 @@ struct Press {
     started: Instant,
 }
 
+/// The session's hot target's identity: which cell or crumb the pointer
+/// is on, in the family it arrived from. An exit only clears a hot of its
+/// own family — the bar rides above the level in the tree, so a move from
+/// a crumb onto a card queues the card's enter BEFORE the crumb's exit,
+/// and an unguarded exit would wipe the hot that just arrived.
+#[derive(Clone, PartialEq)]
+enum Hot {
+    Card(String),
+    Crumb(String),
+    /// The fold's ellipsis: a hover target, never a drop — it stands for
+    /// several levels and cannot say which one the hold would choose.
+    Ellipsis,
+}
+
+/// Which family of hover an exit arrived from: an exit only clears a hot
+/// of its own family, the same rule [`Hot`] exists for.
+#[derive(Clone, Copy, PartialEq)]
+enum Family {
+    Card,
+    Crumb,
+    Ellipsis,
+}
+
+impl Hot {
+    fn family(&self) -> Family {
+        match self {
+            Hot::Card(_) => Family::Card,
+            Hot::Crumb(_) => Family::Crumb,
+            Hot::Ellipsis => Family::Ellipsis,
+        }
+    }
+}
+
+/// A drag in flight: what it holds, the band the sensors last reported,
+/// the fold dwell's clock and the crumb sink's spot. The hot target is the
+/// shelf's hover truth — the same fact the press machine reads — so the
+/// grid needs no sensor of its own, and a release over nothing is the
+/// level's answer.
+struct Drag {
+    payload: DragPayload,
+    /// The band the hot cell's sensor zones last reported; the middle
+    /// until one does.
+    band: Band,
+    /// Whether the rest over the hot target has passed the fold's dwell.
+    dwell_armed: bool,
+    /// Where the ghost parked when the rest over a crumb passed the sink's
+    /// dwell: from here the ghost reads the target rather than the hand,
+    /// until the hot changes and it grows back.
+    sunk: Option<Point>,
+    /// When the hot target became hot — both dwells' clock.
+    hot_started: Instant,
+    /// The hot target the clocks are counting for.
+    last_hot: Option<Hot>,
+}
+
 /// The web gesture's tuning, carried over whole (long_press.rs): the hold
 /// decides at 450ms, a press that travelled more than 8px is no hold, and
 /// a press that travelled more than 6px is a drag — the drag's threshold
@@ -121,6 +183,35 @@ const SELECT_PRESS_MS: u128 = 450;
 const SELECT_SLOP_PX: f32 = 8.0;
 const DRAG_THRESHOLD_PX: f32 = 6.0;
 const _: () = assert!(DRAG_THRESHOLD_PX < SELECT_SLOP_PX);
+
+/// How long a rest over a book must last before the fold is offered: long
+/// enough that a reorder crossing the card never brews a shelf, short
+/// enough that the reader is not left waiting on the answer (the web
+/// session's own 650ms). The crumb sink's 420ms rides with the crumb
+/// targets, which arrive with the bar's drag geometry.
+const FOLD_DWELL_MS: u128 = 650;
+
+/// Shorter than the fold's dwell, and for one reason only: the crumb is
+/// the one target smaller than the ghost hovering it, and a full-size
+/// ghost hides the very name being aimed at — so a rest this long parks
+/// the ghost on the crumb, shrunk (the web session's own 420ms).
+const SINK_DWELL_MS: u128 = 420;
+
+/// The fold panel's close waits this long behind the pointer's leave — the
+/// web intent's own grace, so a diagonal crossing of the panel's corner
+/// does not blink it shut.
+const ELLIPSIS_GRACE_MS: u64 = 220;
+
+/// The centre pill's usable floor: what the fold reserves for the search
+/// before it starts hiding levels, so a crammed bar never squeezes the
+/// search box past use.
+const CENTER_FLOOR: f32 = 400.0;
+
+/// The sunk ghost's scale, straight off drag.css: a third of its size is
+/// what keeps the crumb readable, because the chrome's lane sits below the
+/// drag layer and no z-step can put the ghost behind a crumb without
+/// putting it behind everything.
+const SUNK_SCALE: f32 = 0.38;
 
 /// What the two sheets rename, so one sheet shape serves both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +420,17 @@ pub struct Mareader {
     selected: HashSet<String>,
     /// The hold in flight, if the press landed on a cell.
     press: Option<Press>,
+    /// The drag in flight, if the press became one.
+    drag: Option<Drag>,
+    /// The crumb the pointer is over: the bar's hover truth.
+    hovered_crumb: Option<String>,
+    /// Whether the fold's panel is showing.
+    ellipsis_open: bool,
+    /// When the panel closes if the pointer stays away: the leave's grace.
+    /// A leave that lands inside the panel's own box arms nothing — the
+    /// bar's layers queue the panel's enter BEFORE the ellipsis's exit, so
+    /// the geometry, not the message order, decides who is right.
+    ellipsis_close_at: Option<Instant>,
     /// The tap a hold swallowed: the release after a hold still belongs to
     /// the cell's button, and this flag tells that one tap to stay quiet.
     /// Cleared at the START of the next press rather than at the release,
@@ -458,6 +560,21 @@ pub enum Message {
     OpenBook(String),
     /// The card the pointer entered or left.
     CardHover(Option<String>),
+    /// Which part of a cell the pointer is on, while a drag is live: the
+    /// band its sensor zones read — halves for a book, and a folder's
+    /// middle band is the nest its edges are not.
+    DragBand(String, Band),
+    /// The crumb the pointer entered or left — `Some("")` for Home, the
+    /// library's spelling of "no shelf". While a drag is live the crumbs
+    /// are the bar's hot truth: Shelf targets, and the sink's subject.
+    CrumbHover(Option<String>),
+    /// The pointer entered or left the ellipsis — or the panel hanging off
+    /// it, whose hover keeps it open the same way.
+    EllipsisHover(bool),
+    /// The ellipsis was pressed: the panel opens outright.
+    EllipsisPressed,
+    /// A crumb inside the fold's panel was pressed: the way back.
+    PanelCrumb(String),
     /// A cell was tapped. One message for every cell: the app decides what
     /// a tap means — a membership while choosing, an open otherwise.
     CardTap(String),
@@ -564,6 +681,10 @@ impl Mareader {
             selecting: false,
             selected: HashSet::new(),
             press: None,
+            drag: None,
+            hovered_crumb: None,
+            ellipsis_open: false,
+            ellipsis_close_at: None,
             tap_swallow: None,
             select_pop: false,
             renaming: false,
@@ -624,6 +745,15 @@ impl Mareader {
                 self.titlebar.on_tick(self.route, at);
                 self.toasts.on_tick(at);
                 self.on_hold_tick(at);
+                self.on_drag_tick(at);
+                // The fold panel's close waits out its grace; a pointer
+                // that came back cancelled it by clearing the deadline.
+                if let Some(due) = self.ellipsis_close_at
+                    && at >= due
+                {
+                    self.ellipsis_close_at = None;
+                    self.ellipsis_open = false;
+                }
                 Task::none()
             }
             Message::Chrome(titlebar::Message::TogglePin) => {
@@ -672,14 +802,26 @@ impl Mareader {
                 Task::none()
             }
             Message::EscapePressed => {
-                // Escape closes the topmost thing: a sheet, then a
-                // right-click menu, then a bar panel, then a rename.
+                // Escape closes the topmost thing: a drag, then a sheet,
+                // then a right-click menu, then a bar panel, then a
+                // rename. Cancelling a drag is the web cancel: the payload
+                // lands nowhere and the choice that lifted it stays
+                // exactly as it was.
+                if self.drag.is_some() {
+                    self.drag = None;
+                    self.close_ellipsis();
+                    return Task::none();
+                }
                 if self.sheet.is_some() {
                     self.sheet = None;
                     return Task::none();
                 }
                 if self.context.is_some() {
                     self.context = None;
+                    return Task::none();
+                }
+                if self.ellipsis_open {
+                    self.close_ellipsis();
                     return Task::none();
                 }
                 if self.renaming {
@@ -723,6 +865,11 @@ impl Mareader {
                 self.remove_shelf_with(&id)
             }
             Message::ContextMenu(target) => {
+                // A drag in flight owns the pointer; a right-click during
+                // it is the cancel's business, not a menu's.
+                if self.drag.is_some() {
+                    return Task::none();
+                }
                 self.menu = None;
                 self.menu_confirm = None;
                 self.context = Some(ContextRequest { target, at: self.cursor });
@@ -873,7 +1020,68 @@ impl Mareader {
                 self.open_document_path(path)
             }
             Message::CardHover(hovered) => {
+                if let Some(id) = &hovered {
+                    self.on_hot_change(Some(Hot::Card(id.clone())), now);
+                    self.hovered_crumb = None;
+                } else {
+                    self.on_hot_exit(Family::Card, now);
+                }
                 self.hovered_card = hovered;
+                Task::none()
+            }
+            Message::DragBand(id, band) => {
+                // The cell's sensor read a finer truth than its hover: the
+                // same target, but the band the commit resolves its index
+                // from. It arrives after the cell's own CardHover in the
+                // same event, so the band it names is the band that stays.
+                self.on_hot_change(Some(Hot::Card(id.clone())), now);
+                self.hovered_crumb = None;
+                self.hovered_card = Some(id);
+                if let Some(drag) = &mut self.drag {
+                    drag.band = band;
+                }
+                Task::none()
+            }
+            Message::CrumbHover(hovered) => {
+                if let Some(id) = &hovered {
+                    self.on_hot_change(Some(Hot::Crumb(id.clone())), now);
+                    self.hovered_card = None;
+                } else {
+                    self.on_hot_exit(Family::Crumb, now);
+                }
+                self.hovered_crumb = hovered;
+                Task::none()
+            }
+            Message::EllipsisHover(over) => {
+                // The panel opens one beat behind the pointer: the enter
+                // opens it, the leave arms the grace, and a return inside
+                // the grace cancels the close by clearing the deadline.
+                if over {
+                    self.ellipsis_open = true;
+                    self.ellipsis_close_at = None;
+                    self.hovered_crumb = None;
+                    self.hovered_card = None;
+                    self.on_hot_change(Some(Hot::Ellipsis), now);
+                } else {
+                    // A leave that lands inside the panel's box is the
+                    // ellipsis's exit crossing the panel's enter in the
+                    // queue: the pointer never left the intent, so no
+                    // close is armed.
+                    if !self.pointer_in_panel() {
+                        self.ellipsis_close_at =
+                            Some(now + Duration::from_millis(ELLIPSIS_GRACE_MS));
+                    }
+                    self.on_hot_exit(Family::Ellipsis, now);
+                }
+                Task::none()
+            }
+            Message::EllipsisPressed => {
+                self.ellipsis_open = true;
+                self.ellipsis_close_at = None;
+                Task::none()
+            }
+            Message::PanelCrumb(id) => {
+                self.navigate_to(id);
                 Task::none()
             }
             Message::CardTap(id) => self.card_tap(&id),
@@ -897,9 +1105,17 @@ impl Mareader {
             }
             Message::PressEnded => {
                 self.press = None;
+                if self.drag.is_some() {
+                    return self.release_drag();
+                }
                 Task::none()
             }
             Message::FloorPressed => {
+                // A drag owns this release: the floor must not read the
+                // drop's landing as a press on empty ground.
+                if self.drag.is_some() {
+                    return Task::none();
+                }
                 self.exit_selection();
                 self.context = None;
                 Task::none()
@@ -1111,6 +1327,8 @@ impl Mareader {
         // stepping away abandons it rather than carrying the draft.
         self.renaming = false;
         self.hovered_card = None;
+        self.hovered_crumb = None;
+        self.close_ellipsis();
         self.exit_selection();
         self.shelf = shelf;
     }
@@ -1239,7 +1457,12 @@ impl Mareader {
         let Some(press) = &self.press else { return };
         let moved = (self.cursor.x - press.at.x).hypot(self.cursor.y - press.at.y);
         if moved > DRAG_THRESHOLD_PX {
+            // The press became a drag: the hold machine hands the cell over
+            // and stops counting — the drag's own clock, the dwell, starts
+            // when its hot target does.
+            let id = press.id.clone();
             self.press = None;
+            self.begin_drag(&id, at);
             return;
         }
         if at.duration_since(press.started).as_millis() >= SELECT_PRESS_MS && moved <= SELECT_SLOP_PX
@@ -1256,6 +1479,403 @@ impl Mareader {
     fn enter_selection(&mut self, id: &str) {
         self.selecting = true;
         self.selected.insert(id.to_string());
+    }
+
+    /// The movement's answer: the press becomes a drag. The payload is the
+    /// whole set when the pressed cell is in it — in the page's own order,
+    /// the same payload the bar's filings carry — else the one cell. The
+    /// source is the shelf that rendered it: a drag lifted inside a shelf
+    /// is a move out of that shelf, and reading the open level instead
+    /// would unfile a book from the shelf it was showing in. The swallow
+    /// flag is set the way the hold sets it — the release still belongs to
+    /// the cell's button and must not open what was just picked up.
+    fn begin_drag(&mut self, id: &str, at: Instant) {
+        let source = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+        let payload = if self.selecting && self.selected.contains(id) {
+            let (books, folders) = self.split_selection();
+            DragPayload { books, folders, source }
+        } else if self.library.shelves.iter().any(|shelf| shelf.id == id) {
+            DragPayload { books: Vec::new(), folders: vec![id.to_string()], source }
+        } else {
+            DragPayload { books: vec![id.to_string()], folders: Vec::new(), source }
+        };
+        if payload.is_empty() {
+            return;
+        }
+        self.tap_swallow = Some(id.to_string());
+        self.select_pop = false;
+        self.drag = Some(Drag {
+            payload,
+            band: Band::Middle,
+            dwell_armed: false,
+            sunk: None,
+            hot_started: at,
+            last_hot: self.hovered_card.clone().map(Hot::Card),
+        });
+    }
+
+    /// A drag's hot target changed: the band falls back to the middle,
+    /// both dwells' clock restarts, a rest that was counting is forgotten
+    /// and a ghost that was parked grows back. The same fact the cells
+    /// dress by — the hover truth — decides when the clocks restart, so a
+    /// pointer that circles inside one card keeps its rest and a pointer
+    /// that crosses a seam does not.
+    fn on_hot_change(&mut self, next: Option<Hot>, at: Instant) {
+        let Some(drag) = &mut self.drag else { return };
+        if drag.last_hot == next {
+            return;
+        }
+        drag.last_hot = next;
+        drag.band = Band::Middle;
+        drag.dwell_armed = false;
+        drag.sunk = None;
+        drag.hot_started = at;
+    }
+
+    /// An exit's clear, guarded: it lands only when the session's hot
+    /// still belongs to the exiting family, because the bar's messages
+    /// queue after the level's and the enter of the new hot arrives
+    /// before the exit of the old one.
+    fn on_hot_exit(&mut self, family: Family, at: Instant) {
+        let owns = self
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.last_hot.as_ref())
+            .is_some_and(|hot| hot.family() == family);
+        if owns {
+            self.on_hot_change(None, at);
+        }
+    }
+
+    /// The panel shut, wholesale: a chain that changed (the fold is an
+    /// answer about levels that no longer show) or a drag that ended (the
+    /// web intent closes with the session) both land here.
+    fn close_ellipsis(&mut self) {
+        self.ellipsis_open = false;
+        self.ellipsis_close_at = None;
+    }
+
+    /// The dwells' beat: a rest over a crumb parks the ghost there (the
+    /// sink), and a rest over a book the table reads as a landing — the
+    /// answer, not only the kind — arms the fold, so from the next tick
+    /// the same rest answers the shelf the drop will make.
+    fn on_drag_tick(&mut self, at: Instant) {
+        let Some(drag) = self.drag.as_ref() else { return };
+        let rested = at.duration_since(drag.hot_started).as_millis();
+        if self.hovered_crumb.is_some() {
+            // A crumb's answer is a filing and never a refusal, so the web
+            // session's sinkable check — a Shelf target the table does not
+            // refuse — is the hover alone.
+            if drag.sunk.is_none()
+                && rested >= SINK_DWELL_MS
+                && let Some(drag) = &mut self.drag
+            {
+                drag.sunk = Some(self.cursor);
+            }
+            return;
+        }
+        if drag.dwell_armed || rested < FOLD_DWELL_MS {
+            return;
+        }
+        // An InsertBefore is the table's own proof the hot target is an
+        // unheld book: no other target kind answers with one.
+        let Some((effect, _)) = self.drag_answer() else { return };
+        if !matches!(effect, DropEffect::InsertBefore { .. }) {
+            return;
+        }
+        if let Some(drag) = &mut self.drag {
+            drag.dwell_armed = true;
+        }
+    }
+
+    /// The table's answer for the drag as it stands: the effect a release
+    /// right now would commit, and the fold preview the ghost would wear.
+    /// Pure — recomputed per tick, per release and per frame rather than
+    /// cached, because every input is already in hand.
+    fn drag_answer(&self) -> Option<(DropEffect, Option<FoldPreview>)> {
+        let drag = self.drag.as_ref()?;
+        // The ellipsis is a hover target and never a drop: it stands for
+        // several levels, and the table's refusal keeps the ghost honest
+        // while the panel opens under the rest.
+        if self.cursor.y < platform::TITLE_BAR_H
+            && drag.last_hot.as_ref() == Some(&Hot::Ellipsis)
+        {
+            let query = DropQuery {
+                held_books: drag.payload.books.len(),
+                held_folders: drag.payload.folders.len(),
+                target_kind: DropTargetKind::Ellipsis,
+                target_id: "",
+                target_is_held: false,
+                can_nest: false,
+                can_sibling: false,
+                band: Band::Middle,
+                target_shelf: None,
+                dwell_armed: drag.dwell_armed,
+            };
+            return Some((drop_effect(query), None));
+        }
+        // The crumbs go first: they live in the titlebar, and the bar's
+        // refusal below is about the rest of the chrome. Every crumb is a
+        // Shelf target — the way back to a level is also the way to file
+        // onto it from anywhere in the library — and Home's empty id is
+        // the library's own floor, whose answer takes the hold off the
+        // shelf it was dragged out of.
+        // The bar can leave the tree without an exit (a reveal that faded
+        // with the pointer already gone), so the crumb answer carries the
+        // crumb's own geometry check: a crumb lives in the titlebar — the
+        // fold panel's crumbs, still Shelf targets, being the one hanging
+        // exception, below the bar while the panel is open.
+        if (self.cursor.y < platform::TITLE_BAR_H || self.ellipsis_open)
+            && let Some(id) = &self.hovered_crumb
+        {
+            let query = DropQuery {
+                held_books: drag.payload.books.len(),
+                held_folders: drag.payload.folders.len(),
+                target_kind: DropTargetKind::Shelf,
+                target_id: id,
+                target_is_held: drag.payload.contains(id),
+                can_nest: false,
+                can_sibling: false,
+                band: Band::Middle,
+                target_shelf: None,
+                dwell_armed: drag.dwell_armed,
+            };
+            return Some((drop_effect(query), None));
+        }
+        // The rest of the bar is not a target: the web registry never held
+        // it, and a release over the chrome must not file the hold onto
+        // the level.
+        if self.cursor.y < platform::TITLE_BAR_H {
+            return None;
+        }
+        let folders = library::level_folders(&self.library, &self.shelf, &self.query);
+        let rows = library::level_rows(&self.library, &self.shelf, &self.query);
+        let (kind, target_id) = match &self.hovered_card {
+            Some(id) if folders.iter().any(|folder| folder.id == *id) => {
+                (DropTargetKind::Folder, id.clone())
+            }
+            Some(id) if rows.iter().any(|row| row.id() == id.as_str()) => {
+                (DropTargetKind::Book, id.clone())
+            }
+            // A hover the level no longer renders — a scan landed, a query
+            // narrowed — is no target at all rather than the level's.
+            Some(_) => return None,
+            None => (
+                DropTargetKind::Level,
+                if self.shelf == ALL_SHELF { String::new() } else { self.shelf.clone() },
+            ),
+        };
+        let row_shelf = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+        let query = DropQuery {
+            held_books: drag.payload.books.len(),
+            held_folders: drag.payload.folders.len(),
+            target_kind: kind,
+            target_id: &target_id,
+            target_is_held: drag.payload.contains(&target_id),
+            can_nest: kind == DropTargetKind::Folder
+                && drag
+                    .payload
+                    .folders
+                    .iter()
+                    .all(|held| shelf::can_nest(&self.library.shelves, held, &target_id)),
+            can_sibling: kind == DropTargetKind::Folder
+                && self.can_sibling_held(&drag.payload, &target_id),
+            band: drag.band,
+            target_shelf: row_shelf.as_deref(),
+            dwell_armed: drag.dwell_armed,
+        };
+        let effect = drop_effect(query);
+        let fold = match &effect {
+            DropEffect::CreateFolder { with_book_id } => {
+                fold_preview(fold_items(&query), with_book_id)
+            }
+            _ => None,
+        };
+        Some((effect, fold))
+    }
+
+    /// A root-level seam has no parent to close a loop through, so an
+    /// anchor at the top only refuses a shelf asked to sibling itself or
+    /// one whose filing the graph would refuse.
+    fn can_sibling_held(&self, held: &DragPayload, anchor: &str) -> bool {
+        let Some(target) = shelf::find(&self.library.shelves, anchor) else {
+            return false;
+        };
+        held.folders.iter().all(|each| {
+            each != anchor
+                && target.parent.as_deref().is_none_or(|parent| {
+                    shelf::can_nest(&self.library.shelves, each, parent)
+                })
+        })
+    }
+
+    /// The release: one last answer from the table, and — unless it refused
+    /// — the commit. A drop that wrote exits the choice the way every act
+    /// that consumes the set does; a refusal leaves everything exactly as
+    /// it was, which is the cancel the gesture owes a reader who let go
+    /// over nothing.
+    fn release_drag(&mut self) -> Task<Message> {
+        let answer = self.drag_answer();
+        let Some(drag) = self.drag.take() else { return Task::none() };
+        // The session's end is the intent's end: the web panel closes with
+        // the drag whether the pointer moved off it or not.
+        self.close_ellipsis();
+        let wrote = answer.as_ref().is_some_and(|(effect, _)| *effect != DropEffect::Refused);
+        let mut moved = false;
+        if let Some((effect, _)) = answer {
+            moved = self.apply_drop(effect, drag.payload);
+        }
+        if wrote && self.selecting {
+            self.exit_selection();
+        }
+        if moved {
+            return self.persist_library();
+        }
+        Task::none()
+    }
+
+    /// The only place a drop touches library state — the web commit carried
+    /// over whole: every move rides the arrange primitives the shelf's
+    /// menus already ride, so a dragged book persists exactly as a filed
+    /// one. True when anything moved; the caller persists on the answer.
+    fn apply_drop(&mut self, effect: DropEffect, payload: DragPayload) -> bool {
+        if payload.is_empty() {
+            return false;
+        }
+        // A drag inside a shelf is that shelf's: reading the page's level
+        // instead would unfile a book that sits on both, for a reorder
+        // that never left the shelf.
+        let from = payload.source.clone().filter(|named| named.as_str() != ALL_SHELF);
+        let mut moved = false;
+        match effect {
+            DropEffect::Refused => {}
+            DropEffect::InsertBefore { book_id, shelf, after } => {
+                // The effect carries the landing facts — container and
+                // seam side — rather than this step re-deriving them. Held
+                // folders get no position: a level renders its folders
+                // before its books.
+                let (to, index) = self.insert_anchor(&book_id, shelf.as_deref(), after);
+                moved |= library::arrange::move_many_to_shelf(
+                    &mut self.library.shelves,
+                    &mut self.library.books,
+                    &payload.books,
+                    from.as_deref(),
+                    &to,
+                    index,
+                );
+                moved |= land_folders(&mut self.library.shelves, &payload.folders, &to);
+            }
+            DropEffect::ShelfSibling { anchor_id, after } => {
+                moved |= library::arrange::reorder_shelves_to_anchor(
+                    &mut self.library.shelves,
+                    &payload.folders,
+                    &anchor_id,
+                    after,
+                );
+            }
+            DropEffect::FileToShelf { shelf_id } if shelf_id.is_empty() => {
+                match from.as_deref() {
+                    Some(shelf) => {
+                        moved |= library::arrange::unfile_books(
+                            &mut self.library.shelves,
+                            &payload.books,
+                            shelf,
+                        );
+                    }
+                    None => {
+                        moved |= library::arrange::move_many_to_shelf(
+                            &mut self.library.shelves,
+                            &mut self.library.books,
+                            &payload.books,
+                            None,
+                            ALL_SHELF,
+                            None,
+                        );
+                    }
+                }
+                moved |= land_folders(&mut self.library.shelves, &payload.folders, ALL_SHELF);
+            }
+            DropEffect::FileToShelf { shelf_id } => {
+                moved |= library::arrange::move_many_to_shelf(
+                    &mut self.library.shelves,
+                    &mut self.library.books,
+                    &payload.books,
+                    from.as_deref(),
+                    &shelf_id,
+                    None,
+                );
+                moved |= land_folders(&mut self.library.shelves, &payload.folders, &shelf_id);
+            }
+            DropEffect::NestInto { folder_id } => {
+                moved |= library::arrange::move_many_to_shelf(
+                    &mut self.library.shelves,
+                    &mut self.library.books,
+                    &payload.books,
+                    from.as_deref(),
+                    &folder_id,
+                    None,
+                );
+                moved |= land_folders(&mut self.library.shelves, &payload.folders, &folder_id);
+            }
+            DropEffect::CreateFolder { with_book_id } => {
+                // The fold lands on the level the drag was standing on —
+                // the same shelf the web's create-here mints under — and
+                // the row it brewed around joins the payload's books.
+                let parent = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+                let shelf_id = self.mint_shelf(parent);
+                let mut books = payload.books;
+                if !books.contains(&with_book_id) {
+                    books.push(with_book_id);
+                }
+                moved |= library::arrange::move_many_to_shelf(
+                    &mut self.library.shelves,
+                    &mut self.library.books,
+                    &books,
+                    from.as_deref(),
+                    &shelf_id,
+                    None,
+                );
+                moved |= land_folders(&mut self.library.shelves, &payload.folders, &shelf_id);
+            }
+        }
+        moved
+    }
+
+    /// The index is the anchor's position in its container, not a count of
+    /// what is on screen — and only a view that reorders by drag asks for
+    /// one at all (the web commit's `insert_anchor`).
+    fn insert_anchor(
+        &self,
+        book_id: &str,
+        shelf: Option<&str>,
+        after: bool,
+    ) -> (String, Option<usize>) {
+        let reorder = self.library.view.drag_reorders();
+        let container: Option<String> = match shelf {
+            Some(named) => (named != ALL_SHELF).then(|| named.to_string()),
+            None => (self.shelf != ALL_SHELF).then(|| self.shelf.clone()),
+        };
+        let step = usize::from(after && reorder);
+        match container {
+            Some(id) => {
+                let index = reorder.then(|| {
+                    shelf::find(&self.library.shelves, &id)
+                        .and_then(|each| each.books.iter().position(|member| member == book_id))
+                        .map_or(0, |at| at + step)
+                });
+                (id, index)
+            }
+            None => {
+                let index = reorder.then(|| {
+                    self.library
+                        .books
+                        .iter()
+                        .position(|row| row.id() == book_id)
+                        .map_or(0, |at| at + step)
+                });
+                (ALL_SHELF.to_string(), index)
+            }
+        }
     }
 
     /// A tap while choosing: in out, out in. An empty set keeps the mode —
@@ -2755,6 +3375,15 @@ impl Mareader {
     fn view(&self) -> Element<'_, Message> {
         let now = Instant::now();
         let factor = self.titlebar.factor(now);
+        // The drag's standing answer, recomputed per frame: the effect the
+        // cells dress for and the fold preview the ghost would wear. The
+        // table itself answers None when no drag is in flight.
+        let answer = self.drag_answer();
+        // The breadcrumb's fold, decided against the bar's estimated
+        // budget: the same arithmetic the web bar ran against its
+        // measured one.
+        let plan = (self.route == Route::Library)
+            .then(|| fold::plan(&self.library, &self.shelf, self.crumb_avail()));
 
         let content: Element<'_, Message> = match self.route {
             Route::Library => library::view(
@@ -2765,6 +3394,10 @@ impl Mareader {
                 self.hovered_card.as_deref(),
                 self.viewport.width,
                 library::SelectionFacts { selecting: self.selecting, selected: &self.selected },
+                library::DragFacts {
+                    payload: self.drag.as_ref().map(|drag| &drag.payload),
+                    effect: answer.as_ref().map(|(effect, _)| effect),
+                },
             ),
             Route::Reader => reader_surface(self.tokens, self.open_document.as_deref()),
         };
@@ -2791,16 +3424,37 @@ impl Mareader {
         if self.route == Route::Library && !self.runs.is_empty() {
             layers.push(runs_dock(self.tokens, &self.runs));
         }
+        // The fold's panel, while open: the elided chain packed into rows,
+        // hanging under the ellipsis. The ghost rides above it — the web's
+        // own lane order puts both fold lanes below the drag overlay.
+        if self.ellipsis_open
+            && let Some(plan) = plan.as_ref().filter(|plan| plan.split > 0)
+            && let Some(panel) = self.ellipsis_layer(plan)
+        {
+            layers.push(panel);
+        }
         // The selection's bar, while the mode is on. Bottom-right, where
         // the web ActionBar stood; the runs' dock holds the centre, so the
         // two never argue over one corner.
         if self.route == Route::Library && self.selecting {
             layers.push(self.select_bar());
         }
+        // The drag's ghost rides above the level and its bars — what the
+        // pointer carries, drawn at the pointer, until the release answers.
+        // The titlebar stays above it: chrome is chrome, even mid-drag.
+        if let Some(drag) = &self.drag {
+            layers.push(ghost_layer(
+                self.tokens,
+                drag,
+                &self.library,
+                answer.as_ref().and_then(|(_, fold)| fold.as_ref()),
+                self.cursor,
+            ));
+        }
         // A hidden bar is not in the tree at all: nothing to hit, nothing
         // to hover — the reveal band lives in the cursor subscription.
         if factor > 0.0 {
-            layers.push(self.bar(factor));
+            layers.push(self.bar(factor, plan.as_ref()));
         }
         // A sheet covers the whole window, bar included: the shelf waits on
         // its answer.
@@ -2817,10 +3471,14 @@ impl Mareader {
     }
 
     /// The titlebar with the route's slots hung on it.
-    fn bar(&self, factor: f32) -> Element<'_, Message> {
+    fn bar(&self, factor: f32, plan: Option<&FoldPlan>) -> Element<'_, Message> {
         let (left, center, right) = match self.route {
             Route::Library => {
                 let book_count = book::book_rows(&self.library.books).count();
+                // The crumb under the drag, and only while one is live:
+                // the hot fact the bar dresses and the sink counts.
+                let hot_crumb =
+                    if self.drag.is_some() { self.hovered_crumb.as_deref() } else { None };
                 let view_trigger = button(icon(IconName::More, 15, fade(self.tokens.ink, factor)))
                     .padding(7.0)
                     .style(move |_, status| titlebar::ghost_button_style(self.tokens, factor, status))
@@ -2833,14 +3491,19 @@ impl Mareader {
                         })
                         .on_press(Message::CycleAppearance);
                 (
-                    Some(bar::breadcrumb(
-                        self.tokens,
-                        &self.library,
-                        &self.shelf,
-                        factor,
-                        self.renaming,
-                        &self.rename_draft,
-                    )),
+                    plan.map(|plan| {
+                        bar::breadcrumb(
+                            self.tokens,
+                            plan,
+                            factor,
+                            self.renaming,
+                            &self.rename_draft,
+                            bar::CrumbFacts {
+                                hot: hot_crumb,
+                                ellipsis_open: self.ellipsis_open,
+                            },
+                        )
+                    }),
                     Some(bar::search(self.tokens, book_count, &self.query, factor)),
                     vec![view_trigger.into(), appearance.into()],
                 )
@@ -2861,6 +3524,73 @@ impl Mareader {
                 right,
                 chrome: Message::Chrome,
             },
+        )
+    }
+
+    /// The inset the cluster starts at: AppKit paints the traffic lights
+    /// over the content on macOS, and the bar keeps clear of them.
+    fn bar_left_inset(&self) -> f32 {
+        match platform::os() {
+            Os::Mac => platform::MACOS_LIGHTS_INSET + 8.0,
+            _ => 8.0,
+        }
+    }
+
+    /// The fold's budget: what the row leaves the left cluster once the
+    /// right cluster's chrome and the centre pill's usable floor are
+    /// reserved. The web bar measured this box live; the native bar
+    /// estimates it — two route triggers and the pin, the OS's own
+    /// captions, and the pill's floor — and the fold's arithmetic is the
+    /// same.
+    fn crumb_avail(&self) -> f32 {
+        let right = match platform::os() {
+            Os::Mac => 114.0,
+            Os::Windows => 236.0,
+            Os::Linux => 248.0,
+        };
+        (self.viewport.width - self.bar_left_inset() - right - CENTER_FLOOR).max(160.0)
+    }
+
+    /// Whether the pointer is inside the fold panel's box: the same
+    /// estimate the placement rides — the packed size anchored under the
+    /// ellipsis, clamped into the viewport.
+    fn pointer_in_panel(&self) -> bool {
+        let plan = fold::plan(&self.library, &self.shelf, self.crumb_avail());
+        if plan.split == 0 {
+            return false;
+        }
+        let budget = (self.viewport.width - 24.0).max(160.0);
+        let size = bar::panel_size(&plan, budget);
+        let at = popover::place(bar::ellipsis_anchor(self.bar_left_inset()), size, self.viewport);
+        self.cursor.x >= at.x
+            && self.cursor.x <= at.x + size.width
+            && self.cursor.y >= at.y
+            && self.cursor.y <= at.y + size.height
+    }
+
+    /// The fold's panel, placed: the popover's own clamp-and-place answer,
+    /// anchored under the ellipsis.
+    fn ellipsis_layer(&self, plan: &FoldPlan) -> Option<Element<'_, Message>> {
+        // The panel's packing budget, straight off the web: the window's
+        // width less its own air, floored so a sliver of a window still
+        // gives every crumb a row.
+        let budget = (self.viewport.width - 24.0).max(160.0);
+        let hot = if self.drag.is_some() { self.hovered_crumb.as_deref() } else { None };
+        let (panel, size) = bar::ellipsis_panel(self.tokens, plan, hot, budget);
+        let at = popover::place(bar::ellipsis_anchor(self.bar_left_inset()), size, self.viewport);
+        Some(
+            container(panel)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: at.y.max(0.0),
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: at.x.max(0.0),
+                })
+                .align_x(Alignment::Start)
+                .align_y(Alignment::Start)
+                .into(),
         )
     }
 
@@ -3107,7 +3837,12 @@ impl Mareader {
         // animating, a hide waiting out its grace, or a toast waiting out
         // its stamp. An idle window subscribes to nothing and costs no
         // redraws.
-        if self.titlebar.needs_tick(now) || self.toasts.needs_tick(now) || self.press.is_some() {
+        if self.titlebar.needs_tick(now)
+            || self.toasts.needs_tick(now)
+            || self.press.is_some()
+            || self.drag.is_some()
+            || self.ellipsis_close_at.is_some()
+        {
             subscriptions.push(window::frames().map(Message::Tick));
         }
         // A run's beats flow while the run lives: same id, same
@@ -3725,5 +4460,314 @@ fn reader_surface(tokens: Tokens, document: Option<&Path>) -> Element<'static, M
         bottom: 0.0,
         left: 0.0,
     })
+    .into()
+}
+
+/// Where held folders land after a drop: onto the root they re-hang with
+/// no parent, one reparent each because the root has no member list to
+/// batch into; onto a shelf they nest as a batch (the web commit's own
+/// `land_folders`).
+fn land_folders(shelves: &mut [Shelf], folders: &[String], to: &str) -> bool {
+    if folders.is_empty() {
+        return false;
+    }
+    if to == ALL_SHELF {
+        let mut moved = false;
+        for folder in folders {
+            moved |= library::arrange::nest_shelf(shelves, folder, None);
+        }
+        moved
+    } else {
+        library::arrange::nest_many(shelves, folders, to)
+    }
+}
+
+/// The ghost's box: the web layer's own 9rem cover at A4 proportion
+/// (drag.css's 144×204), plus the fan's headroom — the reference shifts
+/// each tile out of the stack by (7n, −6n) pixels, so the stack needs
+/// 21px of right and 18px of top before its first tile.
+const GHOST_W: f32 = 144.0;
+const GHOST_H: f32 = 203.7;
+const FAN_RISE: f32 = 18.0;
+const FAN_SHIFT: f32 = 21.0;
+
+/// The drag layer: the payload drawn at the pointer — the fan of cover
+/// tiles a drag lifts, or, once the fold is brewing, the plate of the
+/// shelf the drop will make. Non-interactive by construction: a wash of
+/// containers the pointer never meets, so every press underneath keeps
+/// working while the ghost rides above them.
+fn ghost_layer(
+    tokens: Tokens,
+    drag: &Drag,
+    library: &LibraryBlob,
+    fold: Option<&FoldPreview>,
+    at: Point,
+) -> Element<'static, Message> {
+    // Sunk, which happens on one kind of target only: a titlebar crumb.
+    // At full size the ghost covers the name of the very level the reader
+    // is aiming at, so the anchor moves to the parked spot's centre, the
+    // ghost shrinks to a third and the crumb stays readable — the web
+    // layer's own translate(-50%,-50%) and scale(0.38). Its 0.85 opacity
+    // rides the same shrink; an iced container carries no opacity, and
+    // the third-size ghost uncovers the crumb whatever its alpha.
+    let scale = if drag.sunk.is_some() { SUNK_SCALE } else { 1.0 };
+    let ghost: Element<'static, Message> = match fold {
+        Some(preview) => fold_plate(tokens, preview.filled),
+        None => ghost_fan(tokens, &ghost_tiles(library, &drag.payload), drag.payload.len(), scale),
+    };
+    let (left, top) = match drag.sunk {
+        Some(spot) => (
+            (spot.x - 0.5 * GHOST_W * scale).max(0.0),
+            (spot.y - 0.5 * GHOST_H * scale).max(0.0),
+        ),
+        // The web layer anchors the ghost so the pointer sits at 38% of
+        // the cover's width and 32% of its height; the headroom offsets
+        // the box by the fan's own rise on top of that.
+        None => ((at.x - 0.38 * GHOST_W).max(0.0), (at.y - 0.32 * GHOST_H - FAN_RISE).max(0.0)),
+    };
+    container(ghost)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding { top, right: 0.0, bottom: 0.0, left })
+        .align_x(Alignment::Start)
+        .align_y(Alignment::Start)
+        .into()
+}
+
+/// The fan's tiles: the payload's own labels, books first — the order the
+/// web ghost stacks them in. A book a scan just took off the shelf draws
+/// no tile rather than an empty one.
+fn ghost_tiles(library: &LibraryBlob, payload: &DragPayload) -> Vec<(String, bool)> {
+    let mut tiles: Vec<(String, bool)> = Vec::new();
+    for id in &payload.books {
+        let Some(row) = book::find_row(&library.books, id) else { continue };
+        let label = match row {
+            book::Row::Book(book) => book.title(),
+            book::Row::Link { name, .. } => name.clone(),
+        };
+        tiles.push((label, false));
+    }
+    for id in &payload.folders {
+        let name = shelf::find(&library.shelves, id)
+            .map(|each| each.name.clone())
+            .unwrap_or_default();
+        tiles.push((name, true));
+    }
+    tiles
+}
+
+/// The first letter, uppercased — the ghost tile's stand-in cover, the
+/// same initial the web ghost letters a tile with.
+fn initial(label: &str) -> String {
+    label.chars().next().map(|letter| letter.to_uppercase().collect()).unwrap_or_default()
+}
+
+/// The fan itself: at most `THUMB_CAP` tiles, each shifted up-and-right
+/// out of the stack (drag.css's `translate(7n, -6n)`), with the payload's
+/// count on the corner when it is more than one. The web fan's per-tile
+/// rotation is the one thing left out: a 0.14 container carries no
+/// rotation, and the stepped stack reads the same without it.
+fn ghost_fan(
+    tokens: Tokens,
+    tiles: &[(String, bool)],
+    total: usize,
+    scale: f32,
+) -> Element<'static, Message> {
+    let (w, h) = (GHOST_W * scale, GHOST_H * scale);
+    let (rise, shift) = (FAN_RISE * scale, FAN_SHIFT * scale);
+    let mut layers: Vec<Element<'static, Message>> = Vec::new();
+    for (fan, (label, folder)) in tiles.iter().take(THUMB_CAP).enumerate() {
+        let face: Element<'static, Message> = if *folder {
+            container(icon(IconName::Open, (16.0 * scale) as u16, tokens.muted))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        } else {
+            container(text(initial(label)).size(36.0 * scale).color(tokens.muted))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        };
+        let tile = container(face)
+            .width(w)
+            .height(h)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(tokens.surface)),
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    // The web tile's own book-spine corners: 3px on the
+                    // spine side, 6px on the fore-edge.
+                    radius: Radius {
+                        top_left: 3.0,
+                        top_right: 6.0,
+                        bottom_right: 6.0,
+                        bottom_left: 3.0,
+                    },
+                },
+                shadow: Shadow {
+                    color: wash(Color::BLACK, 0.35),
+                    offset: Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..container::Style::default()
+            });
+        layers.push(
+            container(tile)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: rise - 6.0 * scale * fan as f32,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 7.0 * scale * fan as f32,
+                })
+                .align_x(Alignment::Start)
+                .align_y(Alignment::Start)
+                .into(),
+        );
+    }
+    if total > 1 {
+        layers.push(
+            container(count_badge(tokens, total, scale))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: rise - 8.0 * scale,
+                    right: shift - 8.0 * scale,
+                    bottom: 0.0,
+                    left: 0.0,
+                })
+                .align_x(Alignment::End)
+                .align_y(Alignment::Start)
+                .into(),
+        );
+    }
+    container(Stack::with_children(layers)).width(w + shift).height(h + rise).into()
+}
+
+/// The payload's count, on the fan's top corner: the accent's pill the web
+/// ghost wears when the drag is carrying more than one.
+fn count_badge(tokens: Tokens, total: usize, scale: f32) -> Element<'static, Message> {
+    container(text(total.to_string()).size(11.0 * scale).color(tokens.paper))
+        .padding(Padding {
+            top: 3.0 * scale,
+            right: 7.0 * scale,
+            bottom: 3.0 * scale,
+            left: 7.0 * scale,
+        })
+        .style(move |_| container::Style {
+            background: Some(Background::Color(tokens.accent)),
+            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
+            shadow: Shadow {
+                color: wash(Color::BLACK, 0.35),
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: 6.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The fold's promise, in the ghost's own hands: the folder card's plate
+/// drawn the way the drop would leave it — `filled` cells wearing the
+/// accent's tint because the shelf does not exist yet, the next cell
+/// holding the plus that says the plate is still taking items, and the
+/// label naming what the drop will do.
+fn fold_plate(tokens: Tokens, filled: usize) -> Element<'static, Message> {
+    const W: f32 = 136.0;
+    let plate_h = W * 3.0 / 4.0;
+    let gap = 3.0;
+    let cell_w = (W - gap) / 2.0;
+    let cell_h = (plate_h - gap) / 2.0;
+    let mut lines: Vec<Element<'static, Message>> = Vec::with_capacity(2);
+    for line_ix in 0..2usize {
+        let mut line: Row<'static, Message> = Row::new().spacing(gap);
+        for slot_ix in 0..2usize {
+            let at = line_ix * 2 + slot_ix;
+            let cell: Element<'static, Message> = if at < filled {
+                container(Space::new().width(cell_w).height(cell_h))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(mix(
+                            tokens.surface,
+                            tokens.accent,
+                            0.34,
+                        ))),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: 3.0.into(),
+                        },
+                        ..container::Style::default()
+                    })
+                    .into()
+            } else if at == filled {
+                container(icon(IconName::Plus, 14, tokens.accent))
+                    .width(cell_w)
+                    .height(cell_h)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(mix(
+                            tokens.surface,
+                            tokens.accent,
+                            0.10,
+                        ))),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: 3.0.into(),
+                        },
+                        ..container::Style::default()
+                    })
+                    .into()
+            } else {
+                container(Space::new().width(cell_w).height(cell_h))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(mix(
+                            tokens.paper,
+                            tokens.surface,
+                            0.72,
+                        ))),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: 3.0.into(),
+                        },
+                        ..container::Style::default()
+                    })
+                    .into()
+            };
+            line = line.push(cell);
+        }
+        lines.push(line.into());
+    }
+    let plate = container(Column::with_children(lines).spacing(gap))
+        .width(W)
+        .height(plate_h)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(plate_seam(tokens))),
+            border: Border { color: plate_seam(tokens), width: 1.0, radius: 8.0.into() },
+            shadow: Shadow {
+                color: wash(Color::BLACK, 0.35),
+                offset: Vector::new(0.0, 8.0),
+                blur_radius: 24.0,
+            },
+            ..container::Style::default()
+        });
+    container(
+        column![
+            plate,
+            container(text("New shelf").size(11).color(tokens.accent))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        ]
+        .spacing(5)
+        .width(W),
+    )
     .into()
 }

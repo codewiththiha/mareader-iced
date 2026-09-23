@@ -375,6 +375,25 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   menu, the level's own floor asks for a shelf or the select-all door. The membership edits
   live in library/arrange.rs — filings, unfilings, bulk moves, nestings and sibling
   reorders on the id lists alone, with the web app's own lift-and-reinsert arithmetic and
-  its tests; a move never touches a file the reader owns. Next: the drag session (ghost,
-  seams, dwell targets, commits into arrange), duplicates, the departure and conflict
-  gates around the moves.
+  its tests; a move never touches a file the reader owns. The drag session rides those
+  same facts: a press that travels 6px lifts its cell — or the whole set when the cell
+  is in the selection — and a ghost follows the pointer, a fan of cover tiles carrying
+  the count on its corner, swapping to the plate of the shelf a brewing fold will make.
+  One pure table (library/drag.rs, with the web effect table's own tests) answers the
+  gesture: a book cell offers the seam it would write — the bottom half lands after,
+  the top before — and a 650ms rest over an unheld book brews the fold; a folder cell
+  takes the hold inside on its middle band and reorders siblings on its edges, only
+  where the shelf graph does not refuse; the empty level files what is held onto
+  itself. Held cells fade, the target wears the seam, the ring or the tint, and list
+  rows and grid cards alike report their bands through sensor zones. The release
+  commits through arrange's own primitives — the insert index resolved against the
+  anchor's container, and only while the view reorders by drag — and one persist covers
+  the drop; Escape or a release over a refusal cancels and leaves the selection exactly
+  as it was. The bar's crumbs are armed for the drag: every crumb — Home, with the
+  library's own spelling of "no shelf", included — is a filing target from anywhere in
+  the library, the crumb under the hold wears the accent under it rather than around
+  it, and a 420ms rest sinks the ghost to a third of its size on the crumb, because
+  the crumb is the one target smaller than the ghost and the shrink is what keeps the
+  name being aimed at readable. Next: the breadcrumb's fold (the ellipsis and its
+  panel, which a drag opens by hover), duplicates, the departure and conflict gates
+  around the moves.
