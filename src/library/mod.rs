@@ -214,8 +214,8 @@ fn grid(
                 let hot = hovered.is_some_and(|id| id == book.id.as_str());
                 cells.push(card::book_card(tokens, book, cell, hot));
             }
-            Row::Link { name, target, .. } => {
-                cells.push(card::link_card(tokens, name, target, cell));
+            Row::Link { id, name, target, .. } => {
+                cells.push(card::link_card(tokens, id, name, target, cell));
             }
         }
     }

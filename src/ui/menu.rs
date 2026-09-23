@@ -145,6 +145,41 @@ fn item_style(tokens: Tokens, status: button::Status) -> button::Style {
     }
 }
 
+/// The row that takes something away: the item's shape, the palette's
+/// danger red, and no icon — the colour carries the warning.
+pub fn danger_item<M: Clone + 'static>(
+    tokens: Tokens,
+    label: &'static str,
+    message: M,
+) -> Element<'static, M> {
+    let face = container(text(label).size(13).color(crate::theme::DANGER))
+        .width(Length::Fill)
+        .padding(Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 24.0 });
+    let _ = tokens;
+    button(face)
+        .width(Length::Fill)
+        .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 })
+        .style(move |_, status| danger_style(status))
+        .on_press(message)
+        .into()
+}
+
+/// The danger row's chrome: the item's wash, red ink throughout.
+fn danger_style(status: button::Status) -> button::Style {
+    let wash_color = match status {
+        button::Status::Hovered => Some(wash(crate::theme::DANGER, 0.10)),
+        button::Status::Pressed => Some(wash(crate::theme::DANGER, 0.18)),
+        _ => None,
+    };
+    button::Style {
+        background: wash_color.map(Background::Color),
+        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 8.0.into() },
+        text_color: crate::theme::DANGER,
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
 /// A section caption: the small muted label the menu's groups open with.
 pub fn section<'a, M: Clone + 'a>(tokens: Tokens, label: &'a str) -> Element<'a, M> {
     container(text(label).size(11).color(tokens.muted))

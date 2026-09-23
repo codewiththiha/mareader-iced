@@ -12,20 +12,24 @@
 //! the library's count, each keystroke filters the level, and a filled pill
 //! wears its own clear button.
 
-use iced::widget::{button, container, row, text, text_input, Row};
+use iced::widget::{button, container, row, text, text_input, Id, Row};
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding};
 
 use library_core::blob::LibraryBlob;
 use library_core::shelf::{find, ancestors, ALL_SHELF};
 use library_core::text as lib_text;
 
-use crate::app::Message;
+use crate::app::{MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::chrome::titlebar::ghost_button_style;
 use crate::theme::{fade, wash, Tokens};
 
 /// The crumb's ink at rest, weighted for the level it names.
 const MEDIUM: Font = Font { weight: iced::font::Weight::Medium, ..Font::DEFAULT };
+
+/// The rename field's identity, so the app can hand it focus the moment it
+/// appears.
+pub const RENAME_INPUT: Id = Id::new("shelf-rename");
 
 /// One crumb's character budget — long shelf names cut here rather than
 /// pushing the clusters apart.
@@ -57,12 +61,16 @@ fn crumb_button<'a>(
         .into()
 }
 
-/// The breadcrumb chain for the level the shelf is standing on.
+/// The breadcrumb chain for the level the shelf is standing on. The last
+/// crumb is a button for a second reason: it hangs the shelf's own menu —
+/// or, mid-rename, it becomes the field the new name is typed into.
 pub fn breadcrumb<'a>(
     tokens: Tokens,
     library: &'a LibraryBlob,
     shelf: &str,
     factor: f32,
+    renaming: bool,
+    draft: &'a str,
 ) -> Element<'a, Message> {
     // A fresh element per gap: `Element` is not `Clone`, and a closure is
     // the honest spelling of "the same separator, again".
@@ -93,23 +101,52 @@ pub fn breadcrumb<'a>(
         }
         if let Some(current) = find(&library.shelves, shelf) {
             items.push(separator(tokens, factor));
-            // The last crumb is the shelf the reader stands on; its menu —
-            // rename, duplicate, take apart — lands with governance.
-            items.push(
-                container(
-                    text(crumb_label(&current.name))
-                        .size(13)
-                        .font(MEDIUM)
-                        .color(fade(tokens.ink, factor)),
-                )
-                .max_width(160.0)
-                .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
-                .into(),
-            );
+            if renaming {
+                items.push(rename_field(tokens, draft, factor));
+            } else {
+                items.push(
+                    button(
+                        row![
+                            text(crumb_label(&current.name))
+                                .size(13)
+                                .font(MEDIUM)
+                                .color(fade(tokens.ink, factor)),
+                            icon(IconName::ChevronDown, 11, fade(tokens.muted, factor)),
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
+                    .style(move |_, status| ghost_button_style(tokens, factor, status))
+                    .on_press(Message::ToggleMenu(MenuKind::Shelf))
+                    .into(),
+                );
+            }
         }
     }
 
     Row::with_children(items).spacing(2).align_y(Alignment::Center).into()
+}
+
+/// The crumb, mid-rename: the field the new name is typed into. Enter
+/// commits; Escape backs out.
+fn rename_field(tokens: Tokens, draft: &str, factor: f32) -> Element<'static, Message> {
+    let input = text_input("Shelf name", draft)
+        .id(RENAME_INPUT)
+        .on_input(Message::RenameDraft)
+        .on_submit(Message::CommitRename)
+        .size(13)
+        .width(176.0)
+        .padding(Padding { top: 3.0, right: 8.0, bottom: 3.0, left: 8.0 })
+        .style(move |_theme, _status| text_input::Style {
+            background: Background::Color(fade(wash(tokens.paper, 0.9), factor)),
+            border: Border { color: fade(tokens.accent, factor), width: 1.0, radius: 6.0.into() },
+            icon: tokens.muted,
+            placeholder: fade(tokens.muted, factor),
+            value: fade(tokens.ink, factor),
+            selection: tokens.accent_soft,
+        });
+    input.into()
 }
 
 /// The search pill: an always-present filter over the shelf.

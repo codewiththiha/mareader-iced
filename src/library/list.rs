@@ -7,14 +7,14 @@
 //! shape — the 41.6px cover thumbnail, the title and its second line, the
 //! format chip that only the non-PDF formats wear.
 
-use iced::widget::{button, column, container, row, text, Column, Space};
+use iced::widget::{button, column, container, mouse_area, row, text, Column, Space};
 use iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use library_core::book::{Book, Row};
 use library_core::shelf::Shelf;
 use library_core::text::{self as lib_text, plural};
 
-use crate::app::{MenuKind, Message};
+use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::card::{self, elide_line};
 use crate::theme::{wash, Tokens};
@@ -42,7 +42,9 @@ pub fn view(
     for entry in rows {
         match entry {
             Row::Book(book) => divided(&mut items, book_row(tokens, book)),
-            Row::Link { name, target, .. } => divided(&mut items, link_row(tokens, name, target)),
+            Row::Link { id, name, target, .. } => {
+                divided(&mut items, link_row(tokens, id, name, target));
+            }
         }
     }
     divided(&mut items, add_row(tokens));
@@ -72,7 +74,8 @@ fn hairline(tokens: Tokens) -> Element<'static, Message> {
 fn shelf_row(tokens: Tokens, shelf: Shelf) -> Element<'static, Message> {
     let count = plural(shelf.books.len(), "book", "books");
     let name = elide_line(&shelf.name);
-    button(
+    let right_id = shelf.id.clone();
+    let line = button(
         row![
             icon(IconName::Next, 12, tokens.muted),
             icon(IconName::Folder, 15, tokens.muted),
@@ -85,8 +88,10 @@ fn shelf_row(tokens: Tokens, shelf: Shelf) -> Element<'static, Message> {
     .width(Length::Fill)
     .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
     .style(move |_, status| card::row_button_style(tokens, status))
-    .on_press(Message::Navigate(shelf.id))
-    .into()
+    .on_press(Message::Navigate(shelf.id));
+    mouse_area(line)
+        .on_right_press(Message::ContextMenu(ContextTarget::Folder(right_id)))
+        .into()
 }
 
 /// A book's row: the thumbnail, the title and its second line, the chip.
@@ -111,16 +116,19 @@ fn book_row(tokens: Tokens, book: Book) -> Element<'static, Message> {
     if let Some(chip) = card::format_chip(tokens, book.format) {
         line = line.push(chip);
     }
-    button(line)
+    let right_id = book.id.clone();
+    let row = button(line)
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
         .style(move |_, status| card::row_button_style(tokens, status))
-        .on_press(Message::OpenBook(book.id.clone()))
+        .on_press(Message::OpenBook(book.id.clone()));
+    mouse_area(row)
+        .on_right_press(Message::ContextMenu(ContextTarget::Row(right_id)))
         .into()
 }
 
 /// A link's row: the glyph stands where the cover sits.
-fn link_row(tokens: Tokens, name: String, target: String) -> Element<'static, Message> {
+fn link_row(tokens: Tokens, id: String, name: String, target: String) -> Element<'static, Message> {
     let label = elide_line(&name);
     let face = row![
         container(icon(IconName::Link, 14, tokens.muted))
@@ -141,11 +149,14 @@ fn link_row(tokens: Tokens, name: String, target: String) -> Element<'static, Me
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
         .style(move |_, status| card::row_button_style(tokens, status));
-    if library_core::id::is_shelf(&target) {
-        action.on_press(Message::Navigate(target)).into()
+    let action = if library_core::id::is_shelf(&target) {
+        action.on_press(Message::Navigate(target))
     } else {
-        action.into()
-    }
+        action
+    };
+    mouse_area(action)
+        .on_right_press(Message::ContextMenu(ContextTarget::Row(id)))
+        .into()
 }
 
 /// The list's last row: the add door, wearing the row's own shape.

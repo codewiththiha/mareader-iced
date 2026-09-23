@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::time::Instant;
-use iced::widget::{button, column, container, mouse_area, stack, text, Space};
+use iced::widget::{button, column, container, mouse_area, operation, stack, text, text_input, Id, Space};
 use iced::{
     event, keyboard, mouse, window, Alignment, Background, Border, Color, Element, Length,
     Padding, Point, Shadow, Size, Subscription, Task, Theme, Vector,
@@ -43,7 +43,12 @@ use crate::route::Route;
 use crate::storage;
 use crate::theme::{self, fade, wash, Tokens};
 use crate::ui::menu as popover;
+use crate::ui::sheet;
 use crate::ui::toast::{ToastHost, Tone};
+
+/// The sheet's rename field's identity — focus lands on it the moment the
+/// sheet appears.
+const SHEET_INPUT: Id = Id::new("sheet-input");
 
 /// Runs the reader.
 pub fn run() -> iced::Result {
@@ -63,6 +68,42 @@ pub enum MenuKind {
     Add,
     /// The shelf view menu: layouts, columns, covers, sorting.
     View,
+    /// The shelf's own menu, hung off the last crumb: rename, remove.
+    Shelf,
+}
+
+/// The thing a right-click asked about: one of the level's rows, or one of
+/// its folder shelves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextTarget {
+    /// A book or a link.
+    Row(String),
+    /// A folder shelf.
+    Folder(String),
+}
+
+/// One right-click, answered: what was asked about, and where the pointer
+/// stood when it asked.
+#[derive(Debug, Clone)]
+struct ContextRequest {
+    target: ContextTarget,
+    at: Point,
+}
+
+/// What the two sheets rename, so one sheet shape serves both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenameKind {
+    Row,
+    Shelf,
+}
+
+/// The question on screen, if one: a modal the shelf waits on.
+#[derive(Debug, Clone)]
+enum Sheet {
+    /// A name being written: rename a row or a shelf.
+    Rename { kind: RenameKind, id: String, draft: String },
+    /// A row about to leave the library.
+    Remove { id: String, name: String },
 }
 
 /// The whole application state.
@@ -101,6 +142,14 @@ pub struct Mareader {
     viewport: Size,
     /// The card the pointer is over: the grid's hover truth.
     hovered_card: Option<String>,
+    /// Whether the last crumb is a rename field right now.
+    renaming: bool,
+    /// What the rename field holds, mid-typing.
+    rename_draft: String,
+    /// The right-click menu in flight, if any.
+    context: Option<ContextRequest>,
+    /// The modal question in flight, if any.
+    sheet: Option<Sheet>,
     /// The app-global toast slot.
     toasts: ToastHost,
     /// The document the reader route is showing for — remembered in the
@@ -152,6 +201,34 @@ pub enum Message {
     CloseMenu,
     /// The Escape key, when nothing else owns it.
     EscapePressed,
+    /// Turn the last crumb into a rename field for the shelf it names.
+    StartRename,
+    /// The rename field's text changed.
+    RenameDraft(String),
+    /// Commit the rename field's text as the shelf's name.
+    CommitRename,
+    /// Take the shelf the reader stands on apart.
+    RemoveShelf,
+    /// A right-click asked about a row or a folder shelf.
+    ContextMenu(ContextTarget),
+    /// Show a row's place on disk in the OS file manager.
+    RevealRow(String),
+    /// Ask the rename sheet for a row's new name.
+    AskRenameRow(String),
+    /// Ask the rename sheet for a shelf's new name.
+    AskRenameShelf(String),
+    /// Ask the remove sheet before a row leaves the library.
+    AskRemoveRow(String),
+    /// Mint a shelf inside another shelf and step into it.
+    NewShelfInside(String),
+    /// Take any shelf apart — the folder card's door to it.
+    TakeApart(String),
+    /// The rename sheet's field changed.
+    SheetDraft(String),
+    /// The sheet's affirmative button.
+    SheetSave,
+    /// The sheet's scrim, its Cancel button, or Escape.
+    SheetCancel,
     /// The view's layout: grid or list.
     SetLayout(LibraryLayout),
     /// The covers' fit.
@@ -209,6 +286,10 @@ impl Mareader {
             cursor: Point::new(600.0, 400.0),
             viewport: Size::new(1200.0, 800.0),
             hovered_card: None,
+            renaming: false,
+            rename_draft: String::new(),
+            context: None,
+            sheet: None,
             settings,
             toasts: ToastHost::default(),
             open_document: None,
@@ -277,6 +358,10 @@ impl Mareader {
             }
             Message::Navigate(shelf) => {
                 self.menu = None;
+                self.context = None;
+                // A rename in flight belongs to the shelf it started on;
+                // stepping away abandons it rather than carrying the draft.
+                self.renaming = false;
                 self.hovered_card = None;
                 self.shelf = shelf;
                 Task::none()
@@ -288,16 +373,115 @@ impl Mareader {
             }
             Message::ToggleMenu(kind) => {
                 self.menu = if self.menu == Some(kind) { None } else { Some(kind) };
+                self.renaming = false;
                 Task::none()
             }
             Message::CloseMenu => {
                 self.menu = None;
+                self.renaming = false;
                 Task::none()
             }
             Message::EscapePressed => {
+                // Escape closes the topmost thing: a sheet, then a
+                // right-click menu, then a bar panel, then a rename.
+                if self.sheet.is_some() {
+                    self.sheet = None;
+                    return Task::none();
+                }
+                if self.context.is_some() {
+                    self.context = None;
+                    return Task::none();
+                }
+                if self.renaming {
+                    self.renaming = false;
+                    return Task::none();
+                }
                 self.menu = None;
                 Task::none()
             }
+            Message::StartRename => {
+                self.menu = None;
+                self.rename_draft = shelf::find(&self.library.shelves, &self.shelf)
+                    .map(|shelf| shelf.name.clone())
+                    .unwrap_or_default();
+                self.renaming = true;
+                // The field appears in the next view; focus lands with it.
+                operation::focus(bar::RENAME_INPUT)
+            }
+            Message::RenameDraft(text) => {
+                self.rename_draft = text;
+                Task::none()
+            }
+            Message::CommitRename => {
+                self.renaming = false;
+                let name = self.rename_draft.trim().to_string();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                if let Some(shelf) = shelf::find_mut(&mut self.library.shelves, &self.shelf) {
+                    shelf.name = name;
+                }
+                self.persist_library()
+            }
+            Message::RemoveShelf => {
+                let id = self.shelf.clone();
+                self.remove_shelf_with(&id)
+            }
+            Message::ContextMenu(target) => {
+                self.menu = None;
+                self.context = Some(ContextRequest { target, at: self.cursor });
+                Task::none()
+            }
+            Message::RevealRow(id) => {
+                self.context = None;
+                let path = book::find_row(&self.library.books, &id)
+                    .and_then(|row| match row {
+                        book::Row::Book(book) => Some(book.path().to_string()),
+                        book::Row::Link { .. } => None,
+                    });
+                match path {
+                    Some(address) => {
+                        if let Err(error) = fs::reveal(&address) {
+                            self.toasts.show(Tone::Error, error, Instant::now());
+                        }
+                    }
+                    None => self.toasts.show(
+                        Tone::Info,
+                        "A link has no place on disk to show",
+                        Instant::now(),
+                    ),
+                }
+                Task::none()
+            }
+            Message::AskRenameRow(id) => self.ask_rename(RenameKind::Row, id),
+            Message::AskRenameShelf(id) => self.ask_rename(RenameKind::Shelf, id),
+            Message::AskRemoveRow(id) => {
+                self.context = None;
+                let name = book::find_row(&self.library.books, &id)
+                    .map(|row| match row {
+                        book::Row::Book(book) => book.title(),
+                        book::Row::Link { name, .. } => name.clone(),
+                    })
+                    .unwrap_or_default();
+                self.sheet = Some(Sheet::Remove { id, name });
+                Task::none()
+            }
+            Message::NewShelfInside(parent_id) => self.create_shelf_in(Some(parent_id)),
+            Message::TakeApart(id) => {
+                self.context = None;
+                self.remove_shelf_with(&id)
+            }
+            Message::SheetDraft(text) => {
+                if let Some(Sheet::Rename { draft, .. }) = &mut self.sheet {
+                    *draft = text;
+                }
+                Task::none()
+            }
+            Message::SheetCancel => {
+                self.sheet = None;
+                Task::none()
+            }
+            Message::SheetSave => self.save_sheet(),
             Message::SetLayout(layout) => {
                 if self.library.view.layout == layout {
                     self.menu = None;
@@ -356,6 +540,7 @@ impl Mareader {
             }
             Message::OpenBook(id) => {
                 self.menu = None;
+                self.context = None;
                 let Some(path) = book::find_by_id(&self.library.books, &id)
                     .map(|book| PathBuf::from(book.path()))
                 else {
@@ -468,18 +653,125 @@ impl Mareader {
     /// Mint a shelf at the level on screen and step into it — the web app's
     /// create-and-enter, one message.
     fn create_shelf(&mut self) -> Task<Message> {
+        let parent = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+        self.create_shelf_in(parent)
+    }
+
+    /// Mint a shelf under an explicit parent — `None` hangs it at the top
+    /// level — and step into it.
+    fn create_shelf_in(&mut self, parent: Option<String>) -> Task<Message> {
         let now = now_ms();
         let id = library_core::id::next_shelf_id(now);
         let in_use: HashSet<String> =
             self.library.shelves.iter().map(|shelf| shelf.name.clone()).collect();
-        let name = book::duplicate_title("New shelf", &in_use);
-        let parent = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+        // The first one is simply "New shelf"; the counter starts only once
+        // that name is taken.
+        let name = if in_use.contains("New shelf") {
+            book::duplicate_title("New shelf", &in_use)
+        } else {
+            "New shelf".to_string()
+        };
         self.library
             .shelves
             .push(shelf::Shelf::virtual_shelf(id.clone(), name, parent));
         self.menu = None;
+        self.context = None;
         self.shelf = id;
         self.persist_library()
+    }
+
+    /// Take a shelf apart the way the web app takes a reader-made shelf
+    /// apart, without asking: it holds no copies, so nothing is at risk —
+    /// its books come up a level (unfiled, or still on the shelves that
+    /// also name them), its children re-hang on its parent, and it goes.
+    fn remove_shelf_with(&mut self, id: &str) -> Task<Message> {
+        self.menu = None;
+        self.context = None;
+        let Some(gone) = shelf::find(&self.library.shelves, id) else {
+            return Task::none();
+        };
+        let step_out = gone.parent.clone().unwrap_or_else(|| ALL_SHELF.to_string());
+        let gone_id = gone.id.clone();
+        // Standing on the shelf that goes — or somewhere inside it — means
+        // stepping out to the level it hung from.
+        let standing_within =
+            shelf::subtree_ids(&self.library.shelves, std::slice::from_ref(&gone_id))
+                .contains(&self.shelf);
+        shelf::lift_children(&mut self.library.shelves, &gone_id);
+        self.library.shelves.retain(|shelf| shelf.id != gone_id);
+        if standing_within {
+            self.shelf = step_out;
+        }
+        self.persist_library()
+    }
+
+    /// Ask the rename sheet for a name, prefilled with the one on show.
+    fn ask_rename(&mut self, kind: RenameKind, id: String) -> Task<Message> {
+        self.context = None;
+        let draft = match kind {
+            RenameKind::Row => book::find_row(&self.library.books, &id)
+                .map(|row| match row {
+                    book::Row::Book(book) => book.title(),
+                    book::Row::Link { name, .. } => name.clone(),
+                })
+                .unwrap_or_default(),
+            RenameKind::Shelf => shelf::find(&self.library.shelves, &id)
+                .map(|shelf| shelf.name.clone())
+                .unwrap_or_default(),
+        };
+        self.sheet = Some(Sheet::Rename { kind, id, draft });
+        // The field appears in the next view; focus lands with it.
+        operation::focus(SHEET_INPUT)
+    }
+
+    /// The sheet's affirmative answer, carried out.
+    fn save_sheet(&mut self) -> Task<Message> {
+        let Some(sheet) = self.sheet.take() else {
+            return Task::none();
+        };
+        match sheet {
+            Sheet::Rename { kind, id, draft } => {
+                let name = draft.trim().to_string();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                match kind {
+                    RenameKind::Row => {
+                        if let Some(row) = book::find_row_mut(&mut self.library.books, &id) {
+                            match row {
+                                book::Row::Book(book) => {
+                                    book.title = Some(name);
+                                    book.title_locked = true;
+                                }
+                                book::Row::Link { name: own, .. } => *own = name,
+                            }
+                        }
+                    }
+                    RenameKind::Shelf => {
+                        if let Some(shelf) = shelf::find_mut(&mut self.library.shelves, &id) {
+                            shelf.name = name;
+                        }
+                    }
+                }
+                self.persist_library()
+            }
+            Sheet::Remove { id, name } => {
+                let before = self.library.books.len();
+                self.library.books.retain(|row| match row {
+                    book::Row::Book(book) => book.id != id,
+                    book::Row::Link { id: link_id, .. } => link_id != &id,
+                });
+                if self.library.books.len() != before {
+                    shelf::forget_everywhere(&mut self.library.shelves, &id);
+                    self.toasts.show(
+                        Tone::Info,
+                        format!("Removed “{name}” from the library"),
+                        Instant::now(),
+                    );
+                }
+                self.persist_library()
+            }
+        }
     }
 
     /// The pickers' answer: measure each file, mint its row, and — when the
@@ -764,6 +1056,14 @@ impl Mareader {
                 layers.push(panel);
             }
         }
+        // A right-click menu: the same scrim-and-panel answer, placed where
+        // the pointer asked.
+        if self.context.is_some() {
+            layers.push(scrim());
+            if let Some(panel) = self.context_layer() {
+                layers.push(panel);
+            }
+        }
         // The walk's live line, while one is in flight.
         if self.route == Route::Library
             && let Some(run) = &self.scan
@@ -774,6 +1074,13 @@ impl Mareader {
         // to hover — the reveal band lives in the cursor subscription.
         if factor > 0.0 {
             layers.push(self.bar(factor));
+        }
+        // A sheet covers the whole window, bar included: the shelf waits on
+        // its answer.
+        if self.sheet.is_some()
+            && let Some(panel) = self.sheet_layer()
+        {
+            layers.push(panel);
         }
         if let Some(toast) = self.toasts.view(self.tokens) {
             layers.push(toast);
@@ -799,7 +1106,14 @@ impl Mareader {
                         })
                         .on_press(Message::CycleAppearance);
                 (
-                    Some(bar::breadcrumb(self.tokens, &self.library, &self.shelf, factor)),
+                    Some(bar::breadcrumb(
+                        self.tokens,
+                        &self.library,
+                        &self.shelf,
+                        factor,
+                        self.renaming,
+                        &self.rename_draft,
+                    )),
                     Some(bar::search(self.tokens, book_count, &self.query, factor)),
                     vec![view_trigger.into(), appearance.into()],
                 )
@@ -830,6 +1144,7 @@ impl Mareader {
         let (panel, size) = match kind {
             MenuKind::Add => menus::add_menu(self.tokens),
             MenuKind::View => menus::view_menu(self.tokens, &self.library.view),
+            MenuKind::Shelf => menus::shelf_menu(self.tokens),
         };
         let anchor = Point::new(self.cursor.x, platform::TITLE_BAR_H + 2.0);
         let at = popover::place(anchor, size, self.viewport);
@@ -847,6 +1162,91 @@ impl Mareader {
                 .align_y(Alignment::Start)
                 .into(),
         )
+    }
+
+    /// The right-click menu, clamped into the viewport where the pointer
+    /// asked for it.
+    fn context_layer(&self) -> Option<Element<'_, Message>> {
+        let request = self.context.as_ref()?;
+        let (panel, size): (Element<'static, Message>, Size) = match &request.target {
+            ContextTarget::Row(id) => {
+                let row = book::find_row(&self.library.books, id)?;
+                menus::row_menu(self.tokens, row)
+            }
+            ContextTarget::Folder(id) => {
+                let shelf = shelf::find(&self.library.shelves, id)?;
+                menus::folder_menu(self.tokens, shelf)
+            }
+        };
+        let at = popover::place(request.at, size, self.viewport);
+        Some(
+            container(panel)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: at.y.max(0.0),
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: at.x.max(0.0),
+                })
+                .align_x(Alignment::Start)
+                .align_y(Alignment::Start)
+                .into(),
+        )
+    }
+
+    /// The modal question in flight: the rename sheet or the remove sheet.
+    fn sheet_layer(&self) -> Option<Element<'_, Message>> {
+        let sheet_state = self.sheet.as_ref()?;
+        let panel: Element<'_, Message> = match sheet_state {
+            Sheet::Rename { draft, .. } => {
+                let input = text_input("Name", draft)
+                    .id(SHEET_INPUT)
+                    .on_input(Message::SheetDraft)
+                    .on_submit(Message::SheetSave)
+                    .size(13)
+                    .width(Length::Fill)
+                    .padding(Padding { top: 7.0, right: 10.0, bottom: 7.0, left: 10.0 })
+                    .style(move |_theme, _status| text_input::Style {
+                        background: Background::Color(self.tokens.paper),
+                        border: Border {
+                            color: self.tokens.line,
+                            width: 1.0,
+                            radius: 8.0.into(),
+                        },
+                        icon: self.tokens.muted,
+                        placeholder: self.tokens.muted,
+                        value: self.tokens.ink,
+                        selection: self.tokens.accent_soft,
+                    });
+                sheet::panel(
+                    self.tokens,
+                    "Rename",
+                    input.into(),
+                    vec![
+                        sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel),
+                        sheet::confirm_button(self.tokens, "Save", Message::SheetSave, false),
+                    ],
+                )
+            }
+            Sheet::Remove { name, .. } => {
+                let body = text(format!(
+                    "Remove “{name}” from the library? The file on disk stays where it is."
+                ))
+                .size(13)
+                .color(self.tokens.muted);
+                sheet::panel(
+                    self.tokens,
+                    "Remove",
+                    body.into(),
+                    vec![
+                        sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel),
+                        sheet::confirm_button(self.tokens, "Remove", Message::SheetSave, true),
+                    ],
+                )
+            }
+        };
+        Some(sheet::overlay(panel, Message::SheetCancel))
     }
 
     fn title(&self) -> String {

@@ -42,6 +42,11 @@ fn hex(rgb: u32) -> Color {
     )
 }
 
+/// The palette's danger red, lifted out so the menus and the sheets can
+/// mark the rows that take something away. (The channels are 0xdc2626,
+/// spelled out because `f32::from` is not const.)
+pub const DANGER: Color = Color::from_rgb(0.8627451, 0.14901961, 0.14901961);
+
 impl Tokens {
     /// `:root` — the light base.
     pub fn light() -> Self {

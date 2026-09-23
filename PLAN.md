@@ -348,6 +348,9 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   creation, the file picker's import flow, view persistence (layout/columns/cover/sort)
   and reload-from-disk. The folder walk now imports: it mints a shelf for the folder at
   the level on screen, nests a shelf per subfolder, files each document as a linked
-  book on the ledger's say-so, and reports itself live from a dock pill. Next: the
-  import sheet (formats, threshold, link-or-copy, grouping), watched-folder governance
-  (rescan, restore), context menus, rename/remove, selection and drag.
+  book on the ledger's say-so, and reports itself live from a dock pill. Governance
+  has landed too: the shelf's own menu off the last crumb (rename in place, take
+  apart), right-click menus for books, links and folder shelves, a sheet primitive
+  carrying the rename and remove questions, and OS reveal-in-folder. Next: the
+  import sheet (formats, threshold, link-or-copy, grouping), watched-folder
+  governance (rescan, restore), selection and drag, duplicates.

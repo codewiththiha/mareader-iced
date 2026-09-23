@@ -68,6 +68,45 @@ pub fn ensure_readable_document(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Ask the OS file manager to show a path: the file's folder comes up, and
+/// the file is selected where the platform knows how. The call spawns the
+/// platform's own viewer and leaves it to run — waiting on `explorer` would
+/// wait forever.
+pub fn reveal(address: &str) -> Result<(), String> {
+    let path = Path::new(address);
+    if !path.exists() {
+        return Err(format!("“{address}” is not on this disk right now"));
+    }
+    let spawn = match crate::chrome::platform::os() {
+        crate::chrome::platform::Os::Mac => {
+            // `open -R` selects the file inside its folder.
+            std::process::Command::new("open").arg("-R").arg(path).spawn()
+        }
+        crate::chrome::platform::Os::Windows => {
+            // Explorer wants `/select,<path>` as one argument; a directory
+            // simply opens.
+            if path.is_dir() {
+                std::process::Command::new("explorer").arg(path).spawn()
+            } else {
+                std::process::Command::new("explorer")
+                    .arg(format!("/select,{}", path.display()))
+                    .spawn()
+            }
+        }
+        crate::chrome::platform::Os::Linux => {
+            // No selection protocol to count on: open the folder itself.
+            let dir = if path.is_dir() {
+                path.to_path_buf()
+            } else {
+                path.parent().map(Path::to_path_buf).unwrap_or_default()
+            };
+            std::process::Command::new("xdg-open").arg(dir).spawn()
+        }
+    };
+    spawn.map_err(|e| format!("could not open the folder: {e}"))?;
+    Ok(())
+}
+
 /// Measure one document into the identity an import mints rows from: the
 /// fingerprint the ledger keys on (size, stamp, head hash — the walk's own
 /// measurement) and the format the address names.

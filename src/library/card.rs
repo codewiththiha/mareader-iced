@@ -21,7 +21,7 @@ use library_core::shelf::Shelf;
 use library_core::text::{self as lib_text, plural};
 use reader_core::format::Format;
 
-use crate::app::{MenuKind, Message};
+use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::theme::{mix, wash, Tokens};
 
@@ -179,6 +179,7 @@ pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Eleme
     }
 
     let hover_id = book.id.clone();
+    let right_id = book.id.clone();
     let click = button(card)
         .padding(0)
         .style(move |_, status| card_button_style(tokens, status))
@@ -186,6 +187,7 @@ pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Eleme
     mouse_area(click)
         .on_enter(Message::CardHover(Some(hover_id)))
         .on_exit(Message::CardHover(None))
+        .on_right_press(Message::ContextMenu(ContextTarget::Row(right_id)))
         .into()
 }
 
@@ -274,6 +276,7 @@ pub fn folder_card(tokens: Tokens, shelf: Shelf, width: f32) -> Element<'static,
 
     let count = plural(shelf.books.len(), "book", "books");
     let name = shelf.name.clone();
+    let right_id = shelf.id.clone();
     let click = button(
         column![
             plate,
@@ -286,7 +289,9 @@ pub fn folder_card(tokens: Tokens, shelf: Shelf, width: f32) -> Element<'static,
     .padding(0)
     .style(move |_, status| card_button_style(tokens, status))
     .on_press(Message::Navigate(shelf.id));
-    click.into()
+    mouse_area(click)
+        .on_right_press(Message::ContextMenu(ContextTarget::Folder(right_id)))
+        .into()
 }
 
 /// A row that points at a shelf rather than being a book: the link glyph on
@@ -294,6 +299,7 @@ pub fn folder_card(tokens: Tokens, shelf: Shelf, width: f32) -> Element<'static,
 /// quiet — nothing to open until the shelves it may name exist.
 pub fn link_card(
     tokens: Tokens,
+    id: String,
     name: String,
     target: String,
     width: f32,
@@ -319,12 +325,15 @@ pub fn link_card(
     let action = button(body)
         .padding(0)
         .style(move |_, status| card_button_style(tokens, status));
-    if library_core::id::is_shelf(&target) {
-        action.on_press(Message::Navigate(target)).into()
+    let action = if library_core::id::is_shelf(&target) {
+        action.on_press(Message::Navigate(target))
     } else {
         // Listed but dead: no press, nothing to open.
-        action.into()
-    }
+        action
+    };
+    mouse_area(action)
+        .on_right_press(Message::ContextMenu(ContextTarget::Row(id)))
+        .into()
 }
 
 /// The grid's last cell: the add door. A cover-shaped tile with the plus,

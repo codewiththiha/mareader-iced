@@ -8,6 +8,8 @@
 use iced::widget::{container, row, text};
 use iced::{Alignment, Element, Length, Padding, Size};
 
+use library_core::book::Row;
+use library_core::shelf::Shelf;
 use library_core::sort::SortKey;
 use library_core::view::{CoverFit, LibraryLayout, LibraryView, COLUMNS_MAX, COLUMNS_MIN};
 
@@ -20,6 +22,8 @@ use crate::ui::menu::{self, PanelSize};
 const ADD_W: f32 = 220.0;
 /// The view menu's panel width.
 const VIEW_W: f32 = 264.0;
+/// The shelf menu's panel width.
+const SHELF_W: f32 = 224.0;
 
 /// The sort keys in the order the menu lists them.
 const SORTS: [SortKey; 5] = [
@@ -57,6 +61,172 @@ pub fn add_menu(tokens: Tokens) -> (Element<'static, Message>, Size) {
     size = size.row(menu::ROW_H);
 
     (menu::popover(tokens, rows, ADD_W), size.size())
+}
+
+/// The shelf's own menu, hung off the last crumb: rename it, or take it
+/// apart. Taking a shelf apart is not a question the web app asked twice —
+/// a shelf the reader made holds no copies, so its books simply come up a
+/// level and the shelf goes. (The duplicate that copies bytes lands with
+/// the store.)
+pub fn shelf_menu(tokens: Tokens) -> (Element<'static, Message>, Size) {
+    let mut rows: Vec<Element<'static, Message>> = Vec::new();
+    let mut size = PanelSize::new(SHELF_W);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Type),
+        "Rename…",
+        None,
+        false,
+        Some(Message::StartRename),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Close),
+        "Remove shelf",
+        None,
+        false,
+        Some(Message::RemoveShelf),
+    ));
+    size = size.row(menu::ROW_H);
+
+    (menu::popover(tokens, rows, SHELF_W), size.size())
+}
+
+/// A context menu's panel width.
+const CONTEXT_W: f32 = 232.0;
+
+/// The right-click on a book or a link: open it, rename it, reveal it,
+/// take it out of the library. (Select and Duplicate land with the
+/// selection model and the store; the menu keeps its order when they do.)
+pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) {
+    let mut rows: Vec<Element<'static, Message>> = Vec::new();
+    let mut size = PanelSize::new(CONTEXT_W);
+
+    match row {
+        Row::Book(book) => {
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Open),
+                "Open",
+                None,
+                false,
+                Some(Message::OpenBook(book.id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Pencil),
+                "Rename…",
+                None,
+                false,
+                Some(Message::AskRenameRow(book.id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Folder),
+                "Reveal in folder",
+                None,
+                false,
+                (!book.missing).then(|| Message::RevealRow(book.id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+        }
+        Row::Link { id, target, .. } => {
+            // A link opens onto the shelf it points at — when it still
+            // points at one.
+            let open = library_core::id::is_shelf(target)
+                .then(|| Message::Navigate(target.clone()));
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Open),
+                "Open shelf",
+                None,
+                false,
+                open,
+            ));
+            size = size.row(menu::ROW_H);
+
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Pencil),
+                "Rename…",
+                None,
+                false,
+                Some(Message::AskRenameRow(id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+        }
+    }
+
+    rows.push(menu::separator(tokens));
+    size = size.row(menu::SEP_H);
+
+    let (remove_label, remove_message) = match row {
+        Row::Book { .. } => ("Remove from library", Message::AskRemoveRow(row_id_of(row))),
+        Row::Link { .. } => ("Remove link", Message::AskRemoveRow(row_id_of(row))),
+    };
+    rows.push(menu::danger_item(tokens, remove_label, remove_message));
+    size = size.row(menu::ROW_H);
+
+    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+}
+
+fn row_id_of(row: &Row) -> String {
+    match row {
+        Row::Book(book) => book.id.clone(),
+        Row::Link { id, .. } => id.clone(),
+    }
+}
+
+/// The right-click on a folder shelf: stand on it, rename it, mint a shelf
+/// inside it, take it apart.
+pub fn folder_menu(tokens: Tokens, shelf: &Shelf) -> (Element<'static, Message>, Size) {
+    let mut rows: Vec<Element<'static, Message>> = Vec::new();
+    let mut size = PanelSize::new(CONTEXT_W);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Open),
+        "Open shelf",
+        None,
+        false,
+        Some(Message::Navigate(shelf.id.clone())),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Pencil),
+        "Rename…",
+        None,
+        false,
+        Some(Message::AskRenameShelf(shelf.id.clone())),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Plus),
+        "New shelf",
+        None,
+        false,
+        Some(Message::NewShelfInside(shelf.id.clone())),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::separator(tokens));
+    size = size.row(menu::SEP_H);
+
+    rows.push(menu::danger_item(tokens, "Take shelf apart", Message::TakeApart(shelf.id.clone())));
+    size = size.row(menu::ROW_H);
+
+    (menu::popover(tokens, rows, CONTEXT_W), size.size())
 }
 
 /// The shelf view menu's panel: shelves, layouts, columns, covers, sorting
