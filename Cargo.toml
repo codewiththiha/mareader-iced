@@ -17,9 +17,34 @@ path = "src/main.rs"
 # when they first have something to render with them.
 iced = { version = "0.14.0", features = ["svg"] }
 
+# The reader's format-agnostic domain and the library's: the persisted
+# settings and appearance models drive the theme, and the library blob,
+# folder options and wire types drive the shelf and its imports.
+reader-core = { path = "crates/reader-core" }
+library-core = { path = "crates/library-core" }
+
 # The PDF's geometry and its device-pixel grid: the app feeds the grid the
 # window's live scale factor from the first frame onward.
 pdf-core = { path = "crates/pdf-core" }
+
+# Where the app's data lives, per OS convention.
+directories = "6"
+
+# The persisted blobs are JSON on disk — the schemas are the crates', the
+# encoding is the app's.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The file and folder pickers. Defaults: the XDG portal (with its own
+# dialog thread and a zenity fallback) on Linux, the native async panels
+# elsewhere — no async runtime to host.
+rfd = "0.17.2"
+
+# The subscription building block the progress channel implements:
+# `Recipe` is iced_futures' sanctioned extension point, and the facade
+# does not re-export it. Same version iced itself resolves, so the
+# trait objects are the same types.
+iced_futures = "0.14.0"
 
 [workspace]
 members = [

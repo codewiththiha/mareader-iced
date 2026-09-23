@@ -192,7 +192,7 @@ pub fn view<'a>(state: &Titlebar, ctx: ViewContext<'a>) -> Element<'a, Message> 
     let left: Element<'a, Message> = match os {
         // The traffic lights are painted by AppKit over the content; the
         // bar keeps clear of them and owns no captions of its own.
-        Os::MacOs => Space::new().width(platform::MACOS_LIGHTS_INSET).into(),
+        Os::Mac => Space::new().width(platform::MACOS_LIGHTS_INSET).into(),
         _ => Space::new().width(1.0).into(),
     };
 
@@ -206,7 +206,7 @@ pub fn view<'a>(state: &Titlebar, ctx: ViewContext<'a>) -> Element<'a, Message> 
     .on_press(Message::TogglePin);
 
     let right_pad = match os {
-        Os::MacOs => 16.0,
+        Os::Mac => 16.0,
         Os::Windows => 0.0,
         Os::Linux => 12.0,
     };
@@ -249,10 +249,14 @@ pub(crate) fn ghost_button_style(
         button::Status::Pressed => Some(fade(tokens.line, factor)),
         _ => None,
     };
+    let ink = match status {
+        button::Status::Disabled => tokens.muted,
+        _ => tokens.ink,
+    };
     button::Style {
         background: wash.map(Background::Color),
         border: iced::Border { color: Color::TRANSPARENT, width: 0.0, radius: 6.0.into() },
-        text_color: fade(tokens.ink, factor),
+        text_color: fade(ink, factor),
         shadow: Shadow::default(),
         snap: false,
     }

@@ -9,6 +9,7 @@
 
 use iced::theme::{Palette, Style};
 use iced::{Color, Theme};
+use reader_core::appearance::BaseMode;
 
 /// One base mode's worth of tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,19 +88,27 @@ impl Tokens {
         }
     }
 
-    /// The tokens for a system light/dark answer, until the appearance
-    /// system takes the choice over.
-    pub fn for_mode(dark: bool) -> Self {
-        if dark { Self::dark() } else { Self::light() }
+    /// The tokens of a base mode — the appearance system's own choice,
+    /// read straight off the persisted settings.
+    pub fn for_base(base: BaseMode) -> Self {
+        match base {
+            BaseMode::Light => Self::light(),
+            BaseMode::Dark => Self::dark(),
+            BaseMode::Dim => Self::dim(),
+        }
     }
 }
 
 /// The iced theme built from a token set. Widget-level styling reads the
 /// tokens directly (the chrome styles take `Tokens`); the palette carries
 /// them into the stock widgets' defaults.
-pub fn build(tokens: Tokens, dark: bool) -> Theme {
+pub fn build(tokens: Tokens, base: BaseMode) -> Theme {
     Theme::custom(
-        if dark { "Mareader Dark" } else { "Mareader Light" },
+        match base {
+            BaseMode::Light => "Mareader Light",
+            BaseMode::Dark => "Mareader Dark",
+            BaseMode::Dim => "Mareader Dim",
+        },
         Palette {
             background: tokens.paper,
             text: tokens.ink,

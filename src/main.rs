@@ -11,8 +11,11 @@
 
 mod app;
 mod chrome;
+mod platform;
 mod route;
+mod storage;
 mod theme;
+mod ui;
 
 fn main() -> iced::Result {
     app::run()

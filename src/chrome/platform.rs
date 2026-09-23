@@ -10,7 +10,7 @@
 /// The desktops this app ships on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
-    MacOs,
+    Mac,
     Windows,
     Linux,
 }
@@ -19,7 +19,7 @@ pub enum Os {
 /// Linux: frameless with the app's own caption cluster is the safe default.
 pub fn os() -> Os {
     match std::env::consts::OS {
-        "macos" => Os::MacOs,
+        "macos" => Os::Mac,
         "windows" => Os::Windows,
         _ => Os::Linux,
     }

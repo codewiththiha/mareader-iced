@@ -20,7 +20,7 @@ use crate::theme::{fade, Tokens};
 /// circles on GNOME.
 pub fn view<'a>(tokens: Tokens, os: Os, maximized: bool, factor: f32) -> Element<'a, Message> {
     match os {
-        Os::MacOs => Space::new().into(),
+        Os::Mac => Space::new().into(),
         Os::Windows => windows(tokens, maximized, factor),
         Os::Linux => gnome(tokens, maximized, factor),
     }

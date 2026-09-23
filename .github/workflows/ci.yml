@@ -61,9 +61,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # The lockfile bootstrap: this repository is developed where cargo
-      # cannot run, so the first green run resolves the graph and hands the
-      # lock back as an artifact; it is committed, and the lanes then pin
-      # to it with --locked.
+      # cannot run, so CI resolves the graph and hands the lock back as an
+      # artifact; it is committed, and every later run builds the exact
+      # versions it names. No --locked: dependencies grow phase by phase,
+      # and cargo extends a committed lock on its own when they do.
       - name: Upload resolved Cargo.lock
         if: always()
         uses: actions/upload-artifact@v4
