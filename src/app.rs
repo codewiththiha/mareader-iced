@@ -8,7 +8,7 @@
 //! returns at most a task, and the view is a pure read of the state — the
 //! Elm order the web app's `AppState` kept.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,18 +16,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::time::Instant;
 use iced::widget::{button, column, container, mouse_area, stack, text, Space};
 use iced::{
-    event, keyboard, mouse, window, Alignment, Element, Length, Padding, Point, Size,
-    Subscription, Task, Theme,
+    event, keyboard, mouse, window, Alignment, Background, Border, Color, Element, Length,
+    Padding, Point, Shadow, Size, Subscription, Task, Theme, Vector,
 };
 
 use library_core::blob::LibraryBlob;
 use library_core::book::{self, Book, Origin};
 use library_core::folder::FolderOpts;
+use library_core::ledger;
+use library_core::scan::{subfolder_of, FoundFile};
 use library_core::shelf::{self, ALL_SHELF};
 use library_core::sort::SortKey;
 use library_core::text as lib_text;
 use library_core::view::{CoverFit, LibraryLayout};
 use library_core::wire::ImportProgress;
+use reader_core::format::format_from_ext;
 use reader_core::appearance::BaseMode;
 use reader_core::settings::Settings;
 
@@ -38,7 +41,7 @@ use crate::library::{self, bar, menus};
 use crate::platform::{dialogs, fs, progress};
 use crate::route::Route;
 use crate::storage;
-use crate::theme::{self, fade, Tokens};
+use crate::theme::{self, fade, wash, Tokens};
 use crate::ui::menu as popover;
 use crate::ui::toast::{ToastHost, Tone};
 
@@ -177,9 +180,9 @@ pub enum Message {
     PickFolder,
     /// The folder picker answered.
     FolderPicked(Option<PathBuf>),
-    /// A folder walk finished: the run's id, and the document count or the
-    /// advice the walk answers with.
-    ScanDone(u64, Result<usize, String>),
+    /// A folder walk finished: the run's id, and the documents it found or
+    /// the advice the walk answers with.
+    ScanDone(u64, Result<Vec<FoundFile>, String>),
     /// One progress beat from the run in flight.
     ImportProgress(ImportProgress),
     /// Cycle the appearance base and persist the settings.
@@ -384,20 +387,17 @@ impl Mareader {
                     None
                 };
                 match result {
-                    // A stale success — a run replaced mid-walk — stays
+                    // A stale answer — a run replaced mid-walk — stays
                     // silent; stale advice is still worth surfacing.
-                    Ok(found) => {
-                        if let Some(run) = finished {
-                            self.toasts.show(
-                                Tone::Info,
-                                format!("Found {found} documents in “{}”", run.root),
-                                now,
-                            );
-                        }
+                    Ok(found) => match finished {
+                        Some(run) => self.import_folder(run.root, found),
+                        None => Task::none(),
+                    },
+                    Err(error) => {
+                        self.toasts.show(Tone::Error, error, now);
+                        Task::none()
                     }
-                    Err(error) => self.toasts.show(Tone::Error, error, now),
                 }
-                Task::none()
             }
             Message::ImportProgress(beat) => {
                 if let Some(run) = &mut self.scan
@@ -588,10 +588,123 @@ impl Mareader {
         Task::perform(
             async move {
                 let opts = FolderOpts::default();
-                fs::scan(&task_name, &root, &opts, &sink).map(|found| found.len())
+                fs::scan(&task_name, &root, &opts, &sink)
             },
             move |result| Message::ScanDone(task, result),
         )
+    }
+
+    /// The walk's answer, filed: the folder becomes a shelf at the level
+    /// the reader stands on, each subfolder a shelf beneath it, and every
+    /// document the walk measured becomes a linked book on the shelf of its
+    /// directory. The ledger decides what is new: content the library
+    /// already holds is counted, not copied in again.
+    fn import_folder(&mut self, root_name: String, found: Vec<FoundFile>) -> Task<Message> {
+        if found.is_empty() {
+            self.toasts.show(
+                Tone::Info,
+                format!("No documents found in “{root_name}”"),
+                Instant::now(),
+            );
+            return Task::none();
+        }
+
+        let now = now_ms();
+        let known = ledger::registry_of(&self.library.books);
+        let mut names: HashSet<String> =
+            self.library.shelves.iter().map(|s| s.name.clone()).collect();
+
+        // The folder's own shelf, minted at the level on screen.
+        let folder_shelf = library_core::id::next_shelf_id(now);
+        let folder_name = book::duplicate_title(&root_name, &names);
+        names.insert(folder_name.clone());
+        let parent = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+        self.library.shelves.push(shelf::Shelf::virtual_shelf(
+            folder_shelf.clone(),
+            folder_name,
+            parent,
+        ));
+
+        // One shelf per directory, nested under its parent directory's
+        // shelf. Every ancestor of a found file counts as a directory — a
+        // file three levels down mints all three rungs — and the set's
+        // order walks parents before their children.
+        let mut dirs: BTreeSet<String> = BTreeSet::new();
+        for file in &found {
+            let mut dir = subfolder_of(&file.rel);
+            while !dir.is_empty() {
+                dirs.insert(dir.to_string());
+                dir = dir.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+            }
+        }
+        let mut dir_shelves: HashMap<String, String> = HashMap::new();
+        for dir in dirs {
+            let (parent_id, segment) = match dir.rsplit_once('/') {
+                Some((parent_dir, leaf)) => (
+                    dir_shelves.get(parent_dir).cloned().unwrap_or_else(|| folder_shelf.clone()),
+                    leaf.to_string(),
+                ),
+                None => (folder_shelf.clone(), dir.clone()),
+            };
+            let name = book::duplicate_title(&segment, &names);
+            names.insert(name.clone());
+            let id = library_core::id::next_shelf_id(now);
+            dir_shelves.insert(dir.clone(), id.clone());
+            self.library
+                .shelves
+                .push(shelf::Shelf::virtual_shelf(id, name, Some(parent_id)));
+        }
+
+        // Place the books: new content is minted and filed; content the
+        // library already holds is left where the reader filed it.
+        let mut imported = 0usize;
+        let mut already = 0usize;
+        for file in found {
+            if known.contains_key(&file.fp) {
+                already += 1;
+                continue;
+            }
+            let Some(format) = format_from_ext(&file.ext) else {
+                continue;
+            };
+            let row_id = {
+                let minted = Book::new(
+                    library_core::id::next_id(now),
+                    file.fp,
+                    format,
+                    Origin::Linked { src: file.path },
+                    now,
+                );
+                book::add_book(&mut self.library.books, minted)
+            };
+            let target = match subfolder_of(&file.rel) {
+                "" => folder_shelf.clone(),
+                dir => dir_shelves.get(dir).cloned().unwrap_or_else(|| folder_shelf.clone()),
+            };
+            if let Some(home) = self.library.shelves.iter_mut().find(|s| s.id == target) {
+                shelf::shelf_add(home, &row_id);
+            }
+            imported += 1;
+        }
+
+        if imported > 0 {
+            self.toasts.show(
+                Tone::Info,
+                format!(
+                    "Imported {} from “{}”",
+                    lib_text::plural(imported, "book", "books"),
+                    root_name
+                ),
+                Instant::now(),
+            );
+        } else if already > 0 {
+            self.toasts.show(
+                Tone::Info,
+                format!("Everything in “{root_name}” is already in the library"),
+                Instant::now(),
+            );
+        }
+        self.persist_library()
     }
 
     /// Tell the view what auto-fit measured, and persist it when it moved —
@@ -650,6 +763,12 @@ impl Mareader {
             if let Some(panel) = self.menu_layer() {
                 layers.push(panel);
             }
+        }
+        // The walk's live line, while one is in flight.
+        if self.route == Route::Library
+            && let Some(run) = &self.scan
+        {
+            layers.push(scan_dock(self.tokens, run));
         }
         // A hidden bar is not in the tree at all: nothing to hit, nothing
         // to hover — the reveal band lives in the cursor subscription.
@@ -794,6 +913,41 @@ fn scrim() -> Element<'static, Message> {
     mouse_area(container(Space::new().width(Length::Fill).height(Length::Fill)))
         .on_press(Message::CloseMenu)
         .into()
+}
+
+/// The folder walk's live line: a pill at the foot of the shelf naming the
+/// folder and the count so far. A decoration, not a control — the walk is
+/// not interruptible, so the pill takes no presses and claims no pointer.
+fn scan_dock(tokens: Tokens, run: &ScanRun) -> Element<'static, Message> {
+    let line = match &run.latest {
+        Some(beat) if beat.total > 0 => {
+            format!("Scanning “{}”: {} of {} found", run.root, beat.done, beat.total)
+        }
+        Some(beat) if beat.done > 0 => {
+            format!("Scanning “{}”: {} found", run.root, beat.done)
+        }
+        _ => format!("Scanning “{}”…", run.root),
+    };
+    container(
+        container(text(line).size(12).color(tokens.ink))
+            .padding(Padding { top: 8.0, right: 14.0, bottom: 8.0, left: 14.0 })
+            .style(move |_| container::Style {
+                background: Some(Background::Color(wash(tokens.surface, 0.95))),
+                border: Border { color: tokens.line, width: 1.0, radius: 999.0.into() },
+                shadow: Shadow {
+                    color: wash(Color::BLACK, 0.18),
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 12.0,
+                },
+                ..container::Style::default()
+            }),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(Padding { top: 0.0, right: 0.0, bottom: 20.0, left: 0.0 })
+    .align_x(Alignment::Center)
+    .align_y(Alignment::End)
+    .into()
 }
 
 /// The appearance button's glyph for the base on screen.

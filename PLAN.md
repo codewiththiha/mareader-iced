@@ -346,6 +346,8 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   pill, view menu, appearance button), grid + list layouts with book/folder/link cards
   and the add door, the empty state, shelf navigation, live query filtering, shelf
   creation, the file picker's import flow, view persistence (layout/columns/cover/sort)
-  and reload-from-disk. Next: the import core (folder linking, progress dock, ledger),
-  then governance (context menus, rename/remove, selection, drag), then the live
-  features (suggestions, watched folders, covers from real frames).
+  and reload-from-disk. The folder walk now imports: it mints a shelf for the folder at
+  the level on screen, nests a shelf per subfolder, files each document as a linked
+  book on the ledger's say-so, and reports itself live from a dock pill. Next: the
+  import sheet (formats, threshold, link-or-copy, grouping), watched-folder governance
+  (rescan, restore), context menus, rename/remove, selection and drag.
