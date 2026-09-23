@@ -12,17 +12,15 @@
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use library_core::book::Fingerprint;
 use library_core::folder::FolderOpts;
-use library_core::hash::{HEAD_BYTES, mtime_ms};
-use reader_core::format::{format_of, Format};
+use library_core::hash::{head_hash, mtime_ms, HEAD_BYTES};
 use library_core::paths;
 use library_core::scan::FoundFile;
-use library_core::wire::{ImportPhase, ImportProgress};
+use library_core::wire::{ImportPhase, PathCheck};
 
-use super::progress::ProgressSink;
+use super::progress::{Emitter, ProgressSink};
 
 /// A tree deeper than this is either a loop this walk did not catch or a
 /// directory nobody meant to import; either way the answer is to stop.
@@ -31,12 +29,6 @@ const MAX_DEPTH: usize = 12;
 /// Past this the answer is larger than the state it would update, and the
 /// honest response is to ask for a narrower folder.
 const MAX_FOUND: usize = 20_000;
-
-/// A 2 000-file folder would otherwise push 2 000 beats through the
-/// channel in under a second, and the app would spend the import
-/// repainting a ring.
-const EMIT_EVERY: u32 = 8;
-const EMIT_INTERVAL_MS: u128 = 60;
 
 /// The suffixes this app reads, copies and opens — the format registry's
 /// reach, spelled the way the Tauri shell's document gate spelled it. One
@@ -107,80 +99,46 @@ pub fn reveal(address: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Measure one document into the identity an import mints rows from: the
-/// fingerprint the ledger keys on (size, stamp, head hash — the walk's own
-/// measurement) and the format the address names.
-pub fn measure_document(path: &str) -> Result<(Fingerprint, Format), String> {
-    let file = Path::new(path);
-    let meta = fs::metadata(file)
-        .map_err(|e| format!("could not measure “{path}”: {e}"))?;
+/// One row per path asked about, in the order asked, so the caller can zip
+/// the answer against its own list. A path refused by the document gate,
+/// missing or unreadable answers `exists: false` with zeroed measurements —
+/// the measurement the library's missing-badge and its ledger heal from.
+/// This is the Tauri shell's `verify_paths`, in-process.
+pub fn check_paths(paths: &[String]) -> Vec<PathCheck> {
+    paths.iter().map(|path| check_path(path)).collect()
+}
+
+fn check_path(path: &str) -> PathCheck {
+    let missing = PathCheck {
+        path: path.to_string(),
+        exists: false,
+        size: 0,
+        mtime_ms: 0,
+        head_hash: 0,
+    };
+    if ensure_readable_document(path).is_err() {
+        return missing;
+    }
+    let p = Path::new(path);
+    let Ok(meta) = fs::metadata(p) else {
+        return missing;
+    };
     if !meta.is_file() {
-        return Err(format!("not a file: {path}"));
+        return missing;
     }
-    let fp = Fingerprint::of(
-        meta.len(),
-        mtime_ms(meta.modified().ok()),
-        &read_head(file),
-    );
-    Ok((fp, format_of(path)))
-}
-
-struct Progress<'a> {
-    task: String,
-    phase: ImportPhase,
-    done: u32,
-    total: u32,
-    since_emit: u32,
-    last: Instant,
-    sink: &'a ProgressSink,
-}
-
-impl<'a> Progress<'a> {
-    fn new(task: &str, phase: ImportPhase, total: u32, sink: &'a ProgressSink) -> Self {
-        Self {
-            task: task.to_string(),
-            phase,
-            done: 0,
-            total,
-            since_emit: 0,
-            last: Instant::now(),
-            sink,
-        }
-    }
-
-    /// A dropped beat is not an error: the next one carries the same
-    /// totals and the final one is always flushed. The first file emits
-    /// too — a three-file import that showed nothing until its final flush
-    /// would read as a hang — and after that the throttle holds.
-    fn tick(&mut self, name: &str) {
-        self.done = self.done.saturating_add(1);
-        self.since_emit = self.since_emit.saturating_add(1);
-        if self.done > 1
-            && self.since_emit < EMIT_EVERY
-            && self.last.elapsed().as_millis() < EMIT_INTERVAL_MS
-        {
-            return;
-        }
-        self.flush(name);
-    }
-
-    fn flush(&mut self, name: &str) {
-        self.since_emit = 0;
-        self.last = Instant::now();
-        (self.sink)(&ImportProgress {
-            task: self.task.clone(),
-            phase: self.phase,
-            done: self.done,
-            total: self.total,
-            name: name.to_string(),
-        });
+    PathCheck {
+        path: path.to_string(),
+        exists: true,
+        size: meta.len(),
+        mtime_ms: mtime_ms(meta.modified().ok()),
+        head_hash: head_hash(&read_head(p)),
     }
 }
 
 struct Scan<'a> {
     root: &'a Path,
     opts: &'a FolderOpts,
-    progress: Progress<'a>,
+    progress: Emitter<'a>,
     found: Vec<FoundFile>,
     truncated: bool,
 }
@@ -266,7 +224,7 @@ pub fn scan(
     let mut state = Scan {
         root: &root_path,
         opts,
-        progress: Progress::new(task, ImportPhase::Scan, 0, sink),
+        progress: Emitter::new(task, ImportPhase::Scan, 0, sink),
         found: Vec::new(),
         truncated: false,
     };
@@ -308,7 +266,7 @@ fn path_to_string(path: &Path) -> String {
 /// An unreadable head is not a failed scan: the size and the stamp still
 /// identify the file, and a book that opens is worth more than a hash that
 /// is exact.
-fn read_head(path: &Path) -> Vec<u8> {
+pub(crate) fn read_head(path: &Path) -> Vec<u8> {
     let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };

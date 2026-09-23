@@ -16,19 +16,24 @@ use iced::{
     Vector,
 };
 
-use library_core::book::Book;
-use library_core::shelf::Shelf;
-use library_core::text::{self as lib_text, plural};
+use library_core::blob::LibraryBlob;
+use library_core::book::{self, Book};
+use library_core::shelf::{children_of, find, Shelf};
+use library_core::text as lib_text;
 use reader_core::format::Format;
 
 use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
+use crate::library::facts::{self, Badge, FolderFacts};
 use crate::theme::{mix, wash, Tokens};
 
 /// The cover's aspect, A4 portrait: height = width × 297/210.
 pub const COVER_RATIO: f32 = 297.0 / 210.0;
 /// The most member covers a folder plate shows, in its 2×2 window.
 const THUMB_CAP: usize = 4;
+/// Past this depth a folder cell draws as a glyph: a few pixels of a
+/// nested plate is a smear, not a preview.
+const PLATE_DEPTH: usize = 2;
 
 /// How many characters fit a line of `size`px text in `width` — the elision
 /// budget. iced has no line-clamp; the shelf's texts are pre-cut to the
@@ -212,76 +217,47 @@ fn progress_bar(tokens: Tokens, width: f32, fraction: f64) -> Element<'static, M
     .into()
 }
 
-/// One folder's plate: a 3:4 card whose window shows up to four of its
-/// members' covers, the name and the count beneath. Like the book's card,
-/// the plate owns its shelf.
-pub fn folder_card(tokens: Tokens, shelf: Shelf, width: f32) -> Element<'static, Message> {
-    let plate_h = width * 4.0 / 3.0;
-    let members = shelf.books.len().min(THUMB_CAP);
+/// One folder's plate: a 3:4 window previewing what is inside — folders
+/// first, then books, four cells and no more — with the name and the
+/// summary beneath, and the badges over the plate's corner. Like the book's
+/// card, the plate owns its shelf; the preview and the facts are read fresh
+/// from the library on the frame they are asked for.
+pub fn folder_card(
+    tokens: Tokens,
+    library: &LibraryBlob,
+    shelf: Shelf,
+    facts: FolderFacts,
+    width: f32,
+) -> Element<'static, Message> {
+    // The card's own 8px of air: the plate sits inside it, and the badges
+    // sit 6px inside the plate's corner.
+    let plate_w = width - 16.0;
+    let plate_h = plate_w * 4.0 / 3.0;
 
-    // The seam the tiles float on — the grid.css mix of the line and the
-    // muted ink — shows through the 3px gaps and the 6px inset.
-    let tile_w = (width - 12.0 - 3.0) / 2.0;
-    let tile_h = (plate_h - 12.0 - 3.0) / 2.0;
-
-    let mut tiles: Vec<Element<'static, Message>> = Vec::with_capacity(2);
-    for line_ix in 0..2usize {
-        let mut line = Row::new().spacing(3);
-        for slot_ix in 0..2usize {
-            line = if line_ix * 2 + slot_ix < members {
-                line.push(
-                    container(Space::new().width(tile_w).height(tile_h))
-                        .style(move |_| container::Style {
-                            background: Some(Background::Gradient(cover_gradient(tokens))),
-                            border: Border {
-                                color: Color::TRANSPARENT,
-                                width: 0.0,
-                                radius: 3.0.into(),
-                            },
-                            ..container::Style::default()
-                        }),
-                )
-            } else {
-                line.push(
-                    container(Space::new().width(tile_w).height(tile_h))
-                        .style(move |_| container::Style {
-                            background: Some(Background::Color(wash(tokens.surface, 0.50))),
-                            border: Border {
-                                color: Color::TRANSPARENT,
-                                width: 0.0,
-                                radius: 3.0.into(),
-                            },
-                            ..container::Style::default()
-                        }),
-                )
-            };
-        }
-        tiles.push(line.into());
-    }
-
-    let plate = container(Column::with_children(tiles).spacing(3))
-        .width(width)
+    let plate_view = plate(tokens, library, &shelf.id, 0, plate_w, plate_h);
+    let framed: Element<'static, Message> = match badge_row(tokens, &facts) {
+        Some(badges) => stack![
+            plate_view,
+            container(badges).width(plate_w).padding(6.0).align_x(Alignment::End),
+        ]
+        .width(plate_w)
         .height(plate_h)
-        .padding(6.0)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(wash(mix(tokens.line, tokens.muted, 0.20), 0.35))),
-            border: Border { color: wash(tokens.line, 0.80), width: 1.0, radius: 8.0.into() },
-            shadow: Shadow {
-                color: wash(Color::BLACK, 0.18),
-                offset: Vector::new(0.0, 4.0),
-                blur_radius: 12.0,
-            },
-            ..container::Style::default()
-        });
+        .into(),
+        None => plate_view,
+    };
 
-    let count = plural(shelf.books.len(), "book", "books");
     let name = shelf.name.clone();
+    let summary_line = facts::summary(facts.books, facts.inside);
     let right_id = shelf.id.clone();
     let click = button(
         column![
-            plate,
-            text(elide(&name, chars_per_line(width, 13.6) * 2)).size(13.6).color(tokens.ink),
-            text(count).size(12).color(tokens.muted),
+            container(framed).padding(8.0),
+            column![
+                text(elide(&name, chars_per_line(width, 13.6) * 2)).size(13.6).color(tokens.ink),
+                text(summary_line).size(12).color(tokens.muted),
+            ]
+            .spacing(2)
+            .width(width),
         ]
         .spacing(8)
         .width(width),
@@ -291,6 +267,207 @@ pub fn folder_card(tokens: Tokens, shelf: Shelf, width: f32) -> Element<'static,
     .on_press(Message::Navigate(shelf.id));
     mouse_area(click)
         .on_right_press(Message::ContextMenu(ContextTarget::Folder(right_id)))
+        .into()
+}
+
+/// What fills one cell of a plate: a folder, previewed as a plate of its
+/// own, or a book, previewed as its cover.
+enum PlateItem {
+    Folder(String),
+    Book,
+}
+
+/// Folders first, then books — a plate that disagreed with the page about
+/// the folder's contents would preview something else. Books and folders
+/// share the four cells rather than each getting their own. A member that
+/// is a link and not a book is skipped: a pointer is not content.
+fn plate_items(library: &LibraryBlob, shelf_id: &str) -> Vec<PlateItem> {
+    let mut out: Vec<PlateItem> = children_of(&library.shelves, Some(shelf_id))
+        .into_iter()
+        .map(|child| PlateItem::Folder(child.id.clone()))
+        .collect();
+    if let Some(shelf) = find(&library.shelves, shelf_id) {
+        out.extend(
+            shelf
+                .books
+                .iter()
+                .filter_map(|member| book::find_row(&library.books, member))
+                .filter(|row| row.book().is_some())
+                .map(|_| PlateItem::Book),
+        );
+    }
+    out.truncate(THUMB_CAP);
+    out
+}
+
+/// The joinery the cells float on: the theme's line nudged a fifth of the
+/// way toward the muted ink — a seam at the ink's weight is a stroke, and a
+/// plate drawn in strokes is a table.
+fn plate_seam(tokens: Tokens) -> Color {
+    mix(tokens.line, tokens.muted, 0.20)
+}
+
+/// The recessed tone of a cell with nothing in it: toward the paper rather
+/// than toward the line, so an empty cell and a seam are opposite moves in
+/// every base and never the same tone.
+fn cell_recess(tokens: Tokens) -> Color {
+    mix(tokens.surface, tokens.paper, 0.28)
+}
+
+/// One plate: a 2×2 window over a shelf's contents, recursive on purpose —
+/// a cell that holds a folder holds that folder's own plate, because "what
+/// is inside" is the same question at every depth. Only the outermost plate
+/// wears the hairline and the shadow; a nested one that lifted with the
+/// card would lift twice.
+fn plate(
+    tokens: Tokens,
+    library: &LibraryBlob,
+    shelf_id: &str,
+    depth: usize,
+    width: f32,
+    height: f32,
+) -> Element<'static, Message> {
+    let items = plate_items(library, shelf_id);
+    // The deeper the plate, the tighter the joinery: a quarter of a quarter
+    // is small enough that the outer plate's gutters would eat it.
+    let gap = if depth == 0 { 3.0 } else { 1.0 };
+    let cell_w = (width - gap) / 2.0;
+    let cell_h = (height - gap) / 2.0;
+    let radius = if depth == 0 { 3.0 } else { 1.0 };
+
+    let mut lines: Vec<Element<'static, Message>> = Vec::with_capacity(2);
+    for line_ix in 0..2usize {
+        let mut line = Row::new().spacing(gap);
+        for slot_ix in 0..2usize {
+            let cell = match items.get(line_ix * 2 + slot_ix) {
+                Some(PlateItem::Folder(id)) if depth < PLATE_DEPTH => {
+                    plate(tokens, library, id, depth + 1, cell_w, cell_h)
+                }
+                Some(PlateItem::Folder(_)) => {
+                    recess_cell(tokens, cell_w, cell_h, radius, icon(IconName::Open, 12, tokens.muted))
+                }
+                Some(PlateItem::Book) => container(Space::new().width(cell_w).height(cell_h))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Gradient(cover_gradient(tokens))),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: radius.into(),
+                        },
+                        ..container::Style::default()
+                    })
+                    .into(),
+                None => recess_cell(
+                    tokens,
+                    cell_w,
+                    cell_h,
+                    radius,
+                    Space::new().width(0.0).height(0.0).into(),
+                ),
+            };
+            line = line.push(cell);
+        }
+        lines.push(line.into());
+    }
+
+    let face = container(Column::with_children(lines).spacing(gap)).width(width).height(height);
+    if depth == 0 {
+        face.style(move |_| container::Style {
+            background: Some(Background::Color(plate_seam(tokens))),
+            border: Border { color: plate_seam(tokens), width: 1.0, radius: 8.0.into() },
+            shadow: Shadow {
+                color: wash(Color::BLACK, 0.18),
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 12.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
+    } else {
+        face.style(move |_| container::Style {
+            background: Some(Background::Color(plate_seam(tokens))),
+            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 0.0.into() },
+            ..container::Style::default()
+        })
+        .into()
+    }
+}
+
+/// A cell on the recessed ground: a deep folder's glyph, or nothing at all.
+fn recess_cell(
+    tokens: Tokens,
+    width: f32,
+    height: f32,
+    radius: f32,
+    face: Element<'static, Message>,
+) -> Element<'static, Message> {
+    container(face)
+        .width(width)
+        .height(height)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(cell_recess(tokens))),
+            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: radius.into() },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The plate's corner badges: where the books live, and — when the tree
+/// tracks this rung — the dot that says so. `None` when a shelf wears
+/// neither, and then the corner stays clean.
+fn badge_row(tokens: Tokens, facts: &FolderFacts) -> Option<Element<'static, Message>> {
+    if facts.badge.is_none() && !facts.watched {
+        return None;
+    }
+    let mut badges = Row::new().spacing(4).align_y(Alignment::Center);
+    if let Some(badge) = facts.badge {
+        badges = badges.push(badge_chip(tokens, badge));
+    }
+    if facts.watched {
+        badges = badges.push(watch_dot(tokens));
+    }
+    Some(badges.into())
+}
+
+/// The chip saying where a folder's books live — "Copied", "On disk",
+/// "Mixed". The quietest thing on the plate on purpose: it is true of
+/// nearly every card. Shared by the card's corner and the list's row, so
+/// one shelf cannot describe itself two ways.
+pub fn badge_chip(tokens: Tokens, badge: Badge) -> Element<'static, Message> {
+    let (border, background, color) = if badge.mixed {
+        // Mixed content is slightly louder than the single-kind badges, so
+        // the reader notices the shelf holds two kinds.
+        (
+            mix(tokens.line, tokens.accent, 0.30),
+            mix(tokens.paper, tokens.accent, 0.12),
+            mix(tokens.ink, tokens.muted, 0.20),
+        )
+    } else {
+        (tokens.line, wash(tokens.paper, 0.84), tokens.muted)
+    };
+    container(text(badge.words).size(10).color(color))
+        .padding(Padding { top: 1.0, right: 6.0, bottom: 1.0, left: 6.0 })
+        .style(move |_| container::Style {
+            background: Some(Background::Color(background)),
+            border: Border { color: border, width: 1.0, radius: 999.0.into() },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A watched folder's dot: the accent under a hairline of the line. The web
+/// dot breathed on a 2.4s loop; a breathing decoration would keep the whole
+/// window redrawing for chrome nobody is looking at, so the native dot
+/// holds still and says the same thing.
+fn watch_dot(tokens: Tokens) -> Element<'static, Message> {
+    container(Space::new().width(8.0).height(8.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(tokens.accent)),
+            border: Border { color: tokens.line, width: 1.0, radius: 999.0.into() },
+            ..container::Style::default()
+        })
         .into()
 }
 

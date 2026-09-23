@@ -14,13 +14,14 @@
 
 use std::hash::Hasher as _;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use iced::Subscription;
 use iced::futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use iced::futures::stream::{self, BoxStream};
 use iced_futures::subscription::{from_recipe, EventStream, Hasher, Recipe};
 
-use library_core::wire::ImportProgress;
+use library_core::wire::{ImportPhase, ImportProgress};
 
 /// The send half a worker holds: cloneable, thread-safe, and forgiving — a
 /// beat nobody is listening for is dropped, never an error.
@@ -43,6 +44,70 @@ pub fn channel() -> (ProgressSink, SharedProgress) {
         let _ = tx.unbounded_send(beat.clone());
     });
     (sink, Arc::new(Mutex::new(Some(rx))))
+}
+
+/// A 2 000-file folder would otherwise push 2 000 beats through the channel
+/// in under a second, and the app would spend the import repainting a ring.
+const EMIT_EVERY: u32 = 8;
+const EMIT_INTERVAL_MS: u128 = 60;
+
+/// The worker-side throttle: one phase, one total, and a tick per file that
+/// lets through enough beats to read as alive and suppresses enough that a
+/// fast disk cannot drown the Elm loop. The walk and the store's copies each
+/// hold one; the throttle that kept the web app's progress ring off the
+/// syscall path is this throttle, moved to the channel's side.
+pub struct Emitter<'a> {
+    task: String,
+    phase: ImportPhase,
+    /// The count so far — the worker adjusts it, and the walk adjusts the
+    /// total beside it when the walk ends and the total is finally known.
+    pub done: u32,
+    pub total: u32,
+    since_emit: u32,
+    last: Instant,
+    sink: &'a ProgressSink,
+}
+
+impl<'a> Emitter<'a> {
+    pub fn new(task: &str, phase: ImportPhase, total: u32, sink: &'a ProgressSink) -> Self {
+        Self {
+            task: task.to_string(),
+            phase,
+            done: 0,
+            total,
+            since_emit: 0,
+            last: Instant::now(),
+            sink,
+        }
+    }
+
+    /// A dropped beat is not an error: the next one carries the same totals
+    /// and the final one is always flushed. The first file emits too — a
+    /// three-file import that showed nothing until its final flush would
+    /// read as a hang — and after that the throttle holds.
+    pub fn tick(&mut self, name: &str) {
+        self.done = self.done.saturating_add(1);
+        self.since_emit = self.since_emit.saturating_add(1);
+        if self.done > 1
+            && self.since_emit < EMIT_EVERY
+            && self.last.elapsed().as_millis() < EMIT_INTERVAL_MS
+        {
+            return;
+        }
+        self.flush(name);
+    }
+
+    pub fn flush(&mut self, name: &str) {
+        self.since_emit = 0;
+        self.last = Instant::now();
+        (self.sink)(&ImportProgress {
+            task: self.task.clone(),
+            phase: self.phase,
+            done: self.done,
+            total: self.total,
+            name: name.to_string(),
+        });
+    }
 }
 
 /// The subscription for one run, keyed by its id.

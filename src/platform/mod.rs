@@ -1,7 +1,8 @@
 //! The operating system's touch-points: where the app's data lives, how a
 //! byte reaches the disk safely, the document gate, the folder walks and the
-//! copies behind it, the progress channel that carries their beats to the
-//! Elm loop, and the file and folder pickers.
+//! path checks behind them, the store the library's own copies live in, the
+//! progress channel that carries the runs' beats to the Elm loop, and the
+//! file and folder pickers.
 //!
 //! The web app kept this layer in Tauri's `commands` crate and crossed an
 //! IPC boundary to reach it; natively it is this module, called in-process
@@ -13,6 +14,7 @@
 pub mod dialogs;
 pub mod fs;
 pub mod progress;
+pub mod store;
 
 use std::io;
 use std::path::{Path, PathBuf};

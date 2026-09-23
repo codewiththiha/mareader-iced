@@ -10,13 +10,15 @@
 use iced::widget::{button, column, container, mouse_area, row, text, Column, Space};
 use iced::{Alignment, Background, Border, Element, Length, Padding};
 
+use library_core::blob::LibraryBlob;
 use library_core::book::{Book, Row};
 use library_core::shelf::Shelf;
-use library_core::text::{self as lib_text, plural};
+use library_core::text as lib_text;
 
 use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::card::{self, elide_line};
+use crate::library::facts::{self, FolderFacts};
 use crate::theme::{wash, Tokens};
 
 /// The level as rows: the shelves at this level first, then the books, then
@@ -25,6 +27,7 @@ use crate::theme::{wash, Tokens};
 /// may not borrow the vec they came from.
 pub fn view(
     tokens: Tokens,
+    library: &LibraryBlob,
     rows: Vec<Row>,
     folders: Vec<Shelf>,
 ) -> Element<'static, Message> {
@@ -37,7 +40,8 @@ pub fn view(
     };
 
     for shelf in folders {
-        divided(&mut items, shelf_row(tokens, shelf));
+        let facts = facts::folder_facts(library, &shelf.id);
+        divided(&mut items, shelf_row(tokens, shelf, facts));
     }
     for entry in rows {
         match entry {
@@ -69,22 +73,24 @@ fn hairline(tokens: Tokens) -> Element<'static, Message> {
         .into()
 }
 
-/// A shelf's row: the way-in chevron, the folder glyph, the name and the
-/// count. The row opens the shelf.
-fn shelf_row(tokens: Tokens, shelf: Shelf) -> Element<'static, Message> {
-    let count = plural(shelf.books.len(), "book", "books");
+/// A shelf's row: the way-in chevron, the folder glyph, the name, the
+/// badge saying where its books live and the summary both layouts share.
+/// The row opens the shelf.
+fn shelf_row(tokens: Tokens, shelf: Shelf, facts: FolderFacts) -> Element<'static, Message> {
+    let summary = facts::summary(facts.books, facts.inside);
     let name = elide_line(&shelf.name);
     let right_id = shelf.id.clone();
-    let line = button(
-        row![
-            icon(IconName::Next, 12, tokens.muted),
-            icon(IconName::Folder, 15, tokens.muted),
-            container(text(name).size(13).color(tokens.ink)).width(Length::Fill),
-            text(count).size(12).color(tokens.muted),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
+    let mut face = row![
+        icon(IconName::Next, 12, tokens.muted),
+        icon(IconName::Folder, 15, tokens.muted),
+        container(text(name).size(13).color(tokens.ink)).width(Length::Fill),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    if let Some(badge) = facts.badge {
+        face = face.push(card::badge_chip(tokens, badge));
+    }
+    let line = button(face.push(text(summary).size(12).color(tokens.muted)))
     .width(Length::Fill)
     .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
     .style(move |_, status| card::row_button_style(tokens, status))

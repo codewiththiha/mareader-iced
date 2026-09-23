@@ -16,6 +16,7 @@
 
 pub mod bar;
 pub mod card;
+pub mod facts;
 pub mod list;
 pub mod menus;
 
@@ -133,9 +134,9 @@ pub fn view(
 
         let inner_width = (width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN);
         let layout: Element<'static, Message> = if library.view.is_list() {
-            list::view(tokens, rows, folders)
+            list::view(tokens, library, rows, folders)
         } else {
-            grid(tokens, library.view.columns, rows, folders, hovered, inner_width)
+            grid(tokens, library, library.view.columns, rows, folders, hovered, inner_width)
         };
 
         let mut inner: iced::widget::Column<'static, Message> = column![layout];
@@ -192,6 +193,7 @@ fn framed<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
 /// the cards that paint them.
 fn grid(
     tokens: Tokens,
+    library: &LibraryBlob,
     pinned: Option<u8>,
     rows: Vec<Row>,
     folders: Vec<library_core::shelf::Shelf>,
@@ -206,7 +208,8 @@ fn grid(
 
     let mut cells: Vec<Element<'static, Message>> = Vec::new();
     for shelf in folders {
-        cells.push(card::folder_card(tokens, shelf, cell));
+        let facts = facts::folder_facts(library, &shelf.id);
+        cells.push(card::folder_card(tokens, library, shelf, facts, cell));
     }
     for entry in rows {
         match entry {

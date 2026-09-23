@@ -150,8 +150,9 @@ subscriptions — the same ownership discipline the Leptos effects had, in one d
   * `covers/{book_id}.jpg` — the cover cache (was base64 in its own localStorage key; a
     file per cover is the native equivalent, written atomically, evicted by the same LRU).
   * `gloss.json` — per-document gloss marks (ai-core's persistable JSON).
-  * `store/` — the library's own roof: one folder per stored book under its stable id
-    (`library_core::store` rules unchanged).
+  * `Library/items/{book_id}/source.{ext}` — the library's own roof: the stored copies,
+    under the app-data dir's `Library` folder the Tauri shell built, so both installs of
+    the reader speak one layout (`library_core::store` rules unchanged).
 * Atomic write discipline: temp file + rename, so a crash mid-write cannot corrupt a blob.
 
 ### 3.3 PDF engine (PDFium)
@@ -345,14 +346,20 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
 * **P2 — in flight.** The shelf surface has landed: the library bar (breadcrumb, search
   pill, view menu, appearance button), grid + list layouts with book/folder/link cards
   and the add door, the empty state, shelf navigation, live query filtering, shelf
-  creation, the file picker's import flow, view persistence (layout/columns/cover/sort)
-  and reload-from-disk. The folder walk now imports: it mints a shelf for the folder at
-  the level on screen, nests a shelf per subfolder, files each document as a linked
-  book on the ledger's say-so, and reports itself live from a dock pill. Governance
-has landed too: the shelf's own menu off the last crumb (rename in place, take
-apart), right-click menus for books, links and folder shelves, a sheet primitive
-carrying the rename and remove questions, and OS reveal-in-folder. The folder
-import now asks first: the import sheet sets the formats, the include/exclude
-rule, the size threshold and the shelf-per-subfolder structure, and remembers
-its answers for the next import. Next: watched-folder governance (watch mode,
-rescan, restore), the store's copy mode, selection and drag, duplicates.
+  creation, view persistence (layout/columns/cover/sort) and reload-from-disk. The
+  folder import now runs on the ledger: the import sheet answers how the books are held
+  (copied into the store, read at place, or read at place and watched) alongside the
+  formats, the include/exclude rule, the size threshold and the structure; a walk diffs
+  its findings against the watched folder's ledger (placements, tombstones, per-rung
+  tracking), mints the shelf chain its rungs name, copies through the store with
+  per-file results and each copy wearing its own measurement, and lands linked books at
+  their addresses when the tree reads in place. Loose files from the picker or a drop
+  land as the library's own copies, except where a read-at-place tree answers for them —
+  those come back as that tree's books. Boot and every regained focus measure the
+  library's addresses first, then walk the folders that owe a rescan; runs claim their
+  folder's root so an ask and a rescan never race one ledger row. Removing a book now
+  pays the whole debt: the tombstone that keeps a watched folder quiet, and — for a copy
+  the library owns — the byte in the store. Folder cards and list rows say what they
+  hold: the badge for where the books live, the watch dot, the books-and-shelves summary
+  and the recursive 2×2 plate. Next: the watch toggles and restore menu the ledger now
+  keeps, selection and drag, duplicates, the arrange passes.
