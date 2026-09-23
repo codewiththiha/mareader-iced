@@ -7,6 +7,10 @@
 //! them. Windows gets its square 46px full-height buttons, the close one
 //! flushing red under the pointer. Linux gets the GNOME family: 24px
 //! circles with a translucent fill that tracks the theme's ink.
+//!
+//! Like the bar itself, the clusters are generic over the application's
+//! message: every caption emits the chrome's own [`Message`] through the
+//! `chrome` adapter the bar hands down.
 
 use iced::widget::{button, row, Button, Space};
 use iced::{Alignment, Background, Color, Element, Length};
@@ -18,42 +22,54 @@ use crate::theme::{fade, Tokens};
 
 /// The cluster for a platform: nothing on macOS, squares on Windows,
 /// circles on GNOME.
-pub fn view<'a>(tokens: Tokens, os: Os, maximized: bool, factor: f32) -> Element<'a, Message> {
+pub fn view<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    os: Os,
+    maximized: bool,
+    factor: f32,
+    chrome: fn(Message) -> M,
+) -> Element<'a, M> {
     match os {
         Os::Mac => Space::new().into(),
-        Os::Windows => windows(tokens, maximized, factor),
-        Os::Linux => gnome(tokens, maximized, factor),
+        Os::Windows => windows(tokens, maximized, factor, chrome),
+        Os::Linux => gnome(tokens, maximized, factor, chrome),
     }
 }
 
 /// The Windows caption family: minimize, maximize/restore, close. Full
 /// height, no rounding, a surface wash under the pointer and the platform's
 /// own red under the close button.
-fn windows<'a>(tokens: Tokens, maximized: bool, factor: f32) -> Element<'a, Message> {
+fn windows<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    maximized: bool,
+    factor: f32,
+    chrome: fn(Message) -> M,
+) -> Element<'a, M> {
     let max_glyph =
         if maximized { IconName::WindowRestore } else { IconName::WindowMaximize };
     row![
-        win_button(tokens, factor, IconName::WindowMinimize, WindowAction::Minimize, false),
-        win_button(tokens, factor, max_glyph, WindowAction::ToggleMaximize, false),
-        win_button(tokens, factor, IconName::Close, WindowAction::Close, true),
+        win_button(tokens, factor, IconName::WindowMinimize, WindowAction::Minimize, false, chrome),
+        win_button(tokens, factor, max_glyph, WindowAction::ToggleMaximize, false, chrome),
+        win_button(tokens, factor, IconName::Close, WindowAction::Close, true, chrome),
     ]
     .height(Length::Fill)
     .into()
 }
 
-fn win_button<'a>(
+fn win_button<'a, M: Clone + 'a>(
     tokens: Tokens,
     factor: f32,
     glyph: IconName,
     action: WindowAction,
     is_close: bool,
-) -> Button<'a, Message> {
+    chrome: fn(Message) -> M,
+) -> Button<'a, M> {
     button(icon(glyph, 12, fade(tokens.ink, factor)))
         .width(WIN_CAPTION_W)
         .height(Length::Fill)
         .padding(0)
         .style(move |_, status| win_style(tokens, factor, status, is_close))
-        .on_press(Message::Window(action))
+        .on_press(chrome(Message::Window(action)))
 }
 
 /// The Windows close red, `#e81123`.
@@ -86,31 +102,37 @@ fn win_style(tokens: Tokens, factor: f32, status: button::Status, is_close: bool
 
 /// The GNOME caption family: the same three commands as translucent
 /// circles, the maximize glyph swapping the same way.
-fn gnome<'a>(tokens: Tokens, maximized: bool, factor: f32) -> Element<'a, Message> {
+fn gnome<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    maximized: bool,
+    factor: f32,
+    chrome: fn(Message) -> M,
+) -> Element<'a, M> {
     let max_glyph =
         if maximized { IconName::WindowRestore } else { IconName::WindowMaximize };
     row![
-        gnome_button(tokens, factor, IconName::WindowMinimize, WindowAction::Minimize),
-        gnome_button(tokens, factor, max_glyph, WindowAction::ToggleMaximize),
-        gnome_button(tokens, factor, IconName::Close, WindowAction::Close),
+        gnome_button(tokens, factor, IconName::WindowMinimize, WindowAction::Minimize, chrome),
+        gnome_button(tokens, factor, max_glyph, WindowAction::ToggleMaximize, chrome),
+        gnome_button(tokens, factor, IconName::Close, WindowAction::Close, chrome),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
     .into()
 }
 
-fn gnome_button<'a>(
+fn gnome_button<'a, M: Clone + 'a>(
     tokens: Tokens,
     factor: f32,
     glyph: IconName,
     action: WindowAction,
-) -> Button<'a, Message> {
+    chrome: fn(Message) -> M,
+) -> Button<'a, M> {
     button(icon(glyph, 12, fade(tokens.ink, factor)))
         .width(GNOME_BUTTON_D)
         .height(GNOME_BUTTON_D)
         .padding(0)
         .style(move |_, status| gnome_style(tokens, factor, status))
-        .on_press(Message::Window(action))
+        .on_press(chrome(Message::Window(action)))
 }
 
 fn gnome_style(tokens: Tokens, factor: f32, status: button::Status) -> button::Style {

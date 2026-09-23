@@ -19,7 +19,7 @@
 
 use iced::animation::Animation;
 use iced::time::{Duration, Instant};
-use iced::widget::{button, container, mouse_area, row, stack, text, Space};
+use iced::widget::{button, container, mouse_area, row, stack, text, Row, Space};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Vector};
 
 use super::captions;
@@ -152,23 +152,51 @@ impl Titlebar {
 }
 
 /// Everything the view needs that the bar itself does not own.
-pub struct ViewContext<'a> {
+///
+/// The bar is chrome and knows nothing about the application's message
+/// type: the route's slots arrive as elements that already speak `M`, and
+/// the bar's own business — the pin, the drag band, the captions — travels
+/// home through the `chrome` adapter the app supplies. One bar, every
+/// route, no mapping ceremony at the call site beyond the function itself.
+pub struct ViewContext<'a, M> {
     pub tokens: Tokens,
     pub route: Route,
     /// The window's maximize state, for the caption glyph swap.
     pub maximized: bool,
     /// The reveal's 0..1 progress.
     pub factor: f32,
-    /// The centered title (the reader's floating document title replaces
-    /// this when a book is open).
+    /// The centered title, drawn when the route brings no center slot of
+    /// its own (the reader's floating document title replaces this when a
+    /// book is open).
     pub title: &'a str,
+    /// The route's left cluster — the shelf's breadcrumb. `None` keeps the
+    /// platform's reserved space and nothing else.
+    pub left: Option<Element<'a, M>>,
+    /// The route's center slot — the shelf's search pill. `None` centers
+    /// the title.
+    pub center: Option<Element<'a, M>>,
+    /// Extra right-cluster buttons, seated before the pin — the shelf's
+    /// view and appearance menus.
+    pub right: Vec<Element<'a, M>>,
+    /// Lifts the bar's own messages into the application's.
+    pub chrome: fn(Message) -> M,
 }
 
 /// The bar: a drag band with the content laid over it. The band is the
 /// stack's base, so the buttons — later children, therefore on top — take
 /// their own clicks and everything else lands on the drag.
-pub fn view<'a>(state: &Titlebar, ctx: ViewContext<'a>) -> Element<'a, Message> {
-    let ViewContext { tokens, route, maximized, factor, title } = ctx;
+pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Element<'a, M> {
+    let ViewContext {
+        tokens,
+        route,
+        maximized,
+        factor,
+        title,
+        left,
+        center,
+        right,
+        chrome,
+    } = ctx;
     let os = platform::os();
 
     let band = mouse_area(
@@ -176,25 +204,29 @@ pub fn view<'a>(state: &Titlebar, ctx: ViewContext<'a>) -> Element<'a, Message> 
             .width(Length::Fill)
             .style(move |_| bar_style(tokens, factor)),
     )
-    .on_press(Message::Window(WindowAction::Drag))
-    .on_double_click(Message::Window(WindowAction::ToggleMaximize));
+    .on_press(chrome(Message::Window(WindowAction::Drag)))
+    .on_double_click(chrome(Message::Window(WindowAction::ToggleMaximize)));
 
-    // The center slot: the title centers in the free stretch between the
-    // clusters and elides. The web bar measured its clusters live and
-    // preferred the row's exact center when the title fit there; the
-    // measured upgrade lands with the reader's floating title, and the
-    // free-stretch tier is the honest default until then.
+    // The center slot: the route's own element when it brings one, else the
+    // title centered in the free stretch between the clusters, eliding. The
+    // web bar measured its clusters live and preferred the row's exact
+    // center when the title fit there; the measured upgrade lands with the
+    // reader's floating title, and the free-stretch tier is the honest
+    // default until then.
     let pinned = state.pinned(route);
-    let center = container(text(title).size(13).color(fade(tokens.ink, factor)))
-        .width(Length::Fill)
-        .center_x(Length::Fill);
+    let center_slot: Element<'a, M> = center.unwrap_or_else(|| {
+        container(text(title).size(13).color(fade(tokens.ink, factor)))
+            .width(Length::Fill)
+            .center_x(Length::Fill)
+            .into()
+    });
 
-    let left: Element<'a, Message> = match os {
+    let left_slot: Element<'a, M> = left.unwrap_or_else(|| match os {
         // The traffic lights are painted by AppKit over the content; the
         // bar keeps clear of them and owns no captions of its own.
         Os::Mac => Space::new().width(platform::MACOS_LIGHTS_INSET).into(),
         _ => Space::new().width(1.0).into(),
-    };
+    });
 
     let pin = button(icon(
         IconName::Pin,
@@ -203,18 +235,19 @@ pub fn view<'a>(state: &Titlebar, ctx: ViewContext<'a>) -> Element<'a, Message> 
     ))
     .padding(7.0)
     .style(move |_, status| ghost_button_style(tokens, factor, status))
-    .on_press(Message::TogglePin);
+    .on_press(chrome(Message::TogglePin));
 
     let right_pad = match os {
         Os::Mac => 16.0,
         Os::Windows => 0.0,
         Os::Linux => 12.0,
     };
-    let right = row![pin, captions::view(tokens, os, maximized, factor)]
-        .align_y(Alignment::Center)
-        .spacing(4);
+    let mut cluster: Vec<Element<'a, M>> = right;
+    cluster.push(pin.into());
+    cluster.push(captions::view(tokens, os, maximized, factor, chrome));
+    let right_slot = Row::with_children(cluster).align_y(Alignment::Center).spacing(4);
 
-    let content = row![left, center, right]
+    let content = row![left_slot, center_slot, right_slot]
         .align_y(Alignment::Center)
         .padding(Padding { top: 0.0, right: right_pad, bottom: 0.0, left: 8.0 })
         .height(platform::TITLE_BAR_H);

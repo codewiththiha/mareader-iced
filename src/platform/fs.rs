@@ -17,6 +17,7 @@ use std::time::Instant;
 use library_core::book::Fingerprint;
 use library_core::folder::FolderOpts;
 use library_core::hash::{HEAD_BYTES, mtime_ms};
+use reader_core::format::{format_of, Format};
 use library_core::paths;
 use library_core::scan::FoundFile;
 use library_core::wire::{ImportPhase, ImportProgress};
@@ -65,6 +66,24 @@ pub fn ensure_readable_document(path: &str) -> Result<(), String> {
         return Err(format!("refusing to read a non-document file: {path}"));
     }
     Ok(())
+}
+
+/// Measure one document into the identity an import mints rows from: the
+/// fingerprint the ledger keys on (size, stamp, head hash — the walk's own
+/// measurement) and the format the address names.
+pub fn measure_document(path: &str) -> Result<(Fingerprint, Format), String> {
+    let file = Path::new(path);
+    let meta = fs::metadata(file)
+        .map_err(|e| format!("could not measure “{path}”: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("not a file: {path}"));
+    }
+    let fp = Fingerprint::of(
+        meta.len(),
+        mtime_ms(meta.modified().ok()),
+        &read_head(file),
+    );
+    Ok((fp, format_of(path)))
 }
 
 struct Progress<'a> {

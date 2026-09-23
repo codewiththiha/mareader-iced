@@ -333,3 +333,19 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   that keeps the behaviour, not an imitation of the CSS.
 * **Big-bang risk** → phases are independently shippable; the app is useful from P2 and
   complete-looking from P5.
+
+## 7. Progress
+
+* **P0 — shipped.** Workspace, the ten ported crates, the frameless window and the full
+  titlebar family (hover reveal, per-route pin, drag band, per-OS captions), tokens, the
+  53-icon sprite, CI lanes green on clippy/test/3-OS build.
+* **P1 — shipped.** Data dir, settings + library blob load/save (atomic writes, JSON),
+  the folder walk with throttled progress beats, rfd pickers, toasts, the popover
+  vocabulary on ui-geom, theme mix/wash.
+* **P2 — in flight.** The shelf surface has landed: the library bar (breadcrumb, search
+  pill, view menu, appearance button), grid + list layouts with book/folder/link cards
+  and the add door, the empty state, shelf navigation, live query filtering, shelf
+  creation, the file picker's import flow, view persistence (layout/columns/cover/sort)
+  and reload-from-disk. Next: the import core (folder linking, progress dock, ledger),
+  then governance (context menus, rename/remove, selection, drag), then the live
+  features (suggestions, watched folders, covers from real frames).

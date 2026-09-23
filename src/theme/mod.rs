@@ -130,3 +130,23 @@ pub fn application_style(tokens: Tokens) -> Style {
 pub fn fade(color: Color, factor: f32) -> Color {
     Color { a: color.a * factor.clamp(0.0, 1.0), ..color }
 }
+
+/// Blend two colours, `t` of the way from `from` to `to` — iced has no
+/// `Color::mix`, and the shelf's gradients, seams and washes are all token
+/// colours blended by hand (the CSS `color-mix` the web app leaned on).
+pub fn mix(from: Color, to: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |a: f32, b: f32| a + (b - a) * t;
+    Color {
+        r: lerp(from.r, to.r),
+        g: lerp(from.g, to.g),
+        b: lerp(from.b, to.b),
+        a: lerp(from.a, to.a),
+    }
+}
+
+/// Wash a colour to a fraction of its alpha over transparency — the
+/// `line/60`, `surface/40` family the CSS paints with slash notation.
+pub fn wash(color: Color, alpha: f32) -> Color {
+    Color { a: color.a * alpha.clamp(0.0, 1.0), ..color }
+}

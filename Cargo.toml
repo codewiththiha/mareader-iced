@@ -27,6 +27,10 @@ library-core = { path = "crates/library-core" }
 # window's live scale factor from the first frame onward.
 pdf-core = { path = "crates/pdf-core" }
 
+# The floating-panel placement the menus sit on: the same clamp-and-flip
+# arithmetic the web app's popovers ran, ported verbatim.
+ui-geom = { path = "crates/ui-geom" }
+
 # Where the app's data lives, per OS convention.
 directories = "6"
 

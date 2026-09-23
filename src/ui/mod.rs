@@ -2,4 +2,5 @@
 //! web app kept these in `src/components/primitives`; natively they live
 //! here, one module per primitive.
 
+pub mod menu;
 pub mod toast;

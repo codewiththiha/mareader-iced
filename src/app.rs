@@ -2,21 +2,31 @@
 //!
 //! `Mareader` holds the route on screen, the window's identity and metrics,
 //! the chrome's hover machine, the theme the tokens resolved to, the two
-//! persisted blobs, the toast slot and the filesystem run in flight. Later
-//! phases hang the import dock, the shelf and the reading surfaces off the
-//! same tree — the shape the web app's `AppState` had, in Elm order: every
-//! event is a message, every message returns at most a task, and the view
-//! is a pure read of the state.
+//! persisted blobs, the shelf's navigation facts (the level it stands on,
+//! the query narrowing it, the menu it holds open), the toast slot and the
+//! filesystem run in flight. Every event is a message, every message
+//! returns at most a task, and the view is a pure read of the state — the
+//! Elm order the web app's `AppState` kept.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::time::Instant;
-use iced::widget::{button, column, container, row, stack, text};
-use iced::{event, mouse, window, Alignment, Element, Length, Padding, Point, Subscription, Task, Theme};
+use iced::widget::{button, column, container, mouse_area, stack, text, Space};
+use iced::{
+    event, keyboard, mouse, window, Alignment, Element, Length, Padding, Point, Size,
+    Subscription, Task, Theme,
+};
 
 use library_core::blob::LibraryBlob;
+use library_core::book::{self, Book, Origin};
 use library_core::folder::FolderOpts;
+use library_core::shelf::{self, ALL_SHELF};
+use library_core::sort::SortKey;
+use library_core::text as lib_text;
+use library_core::view::{CoverFit, LibraryLayout};
 use library_core::wire::ImportProgress;
 use reader_core::appearance::BaseMode;
 use reader_core::settings::Settings;
@@ -24,10 +34,12 @@ use reader_core::settings::Settings;
 use crate::chrome::icons::{icon, IconName};
 use crate::chrome::platform::{self, Os};
 use crate::chrome::titlebar::{self, Titlebar};
+use crate::library::{self, bar, menus};
 use crate::platform::{dialogs, fs, progress};
 use crate::route::Route;
 use crate::storage;
-use crate::theme::{self, Tokens};
+use crate::theme::{self, fade, Tokens};
+use crate::ui::menu as popover;
 use crate::ui::toast::{ToastHost, Tone};
 
 /// Runs the reader.
@@ -39,6 +51,15 @@ pub fn run() -> iced::Result {
         .subscription(Mareader::subscription)
         .window(window_settings())
         .run()
+}
+
+/// Which of the bar's panels is open, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKind {
+    /// The add door: pickers for files and folders.
+    Add,
+    /// The shelf view menu: layouts, columns, covers, sorting.
+    View,
 }
 
 /// The whole application state.
@@ -60,9 +81,23 @@ pub struct Mareader {
     /// The persisted look and its neighbours — loaded at boot, saved on
     /// every change, the same contract the web app's storage layer kept.
     settings: Settings,
-    /// The persisted shelf. Read-only until the library's flows land; the
-    /// count it carries is the proof persistence works end to end.
+    /// The persisted shelf: rows, shelves, folders, and the view that
+    /// paints them. Loaded at boot, saved at the moment of every change.
     library: LibraryBlob,
+    /// The level the shelf is standing on — a shelf's id, or the library's
+    /// own spelling of "no shelf".
+    shelf: String,
+    /// The query narrowing the level.
+    query: String,
+    /// The bar's open panel, if any.
+    menu: Option<MenuKind>,
+    /// The last known pointer position in window coordinates — the anchor
+    /// a menu is placed at.
+    cursor: Point,
+    /// The window's size — the viewport a menu is clamped into.
+    viewport: Size,
+    /// The card the pointer is over: the grid's hover truth.
+    hovered_card: Option<String>,
     /// The app-global toast slot.
     toasts: ToastHost,
     /// The document the reader route is showing for — remembered in the
@@ -90,7 +125,7 @@ struct ScanRun {
 pub enum Message {
     /// The main window's identity, from the boot query.
     WindowDiscovered(Option<window::Id>),
-    /// A window lifecycle event: opened, rescaled, a file dropped.
+    /// A window lifecycle event: opened, rescaled, resized, a file dropped.
     WindowEvent(window::Id, window::Event),
     /// The window answered a maximize query.
     Maximized(bool),
@@ -104,10 +139,40 @@ pub enum Message {
     Tick(Instant),
     /// The titlebar's own business.
     Chrome(titlebar::Message),
-    /// The shelf asked for the document picker.
-    PickDocument,
-    /// The picker answered: a path, or nothing when dismissed.
-    FilePicked(Option<PathBuf>),
+    /// Stand on another level of the library.
+    Navigate(String),
+    /// The search pill's text changed.
+    Query(String),
+    /// Open (or toggle shut) one of the bar's panels.
+    ToggleMenu(MenuKind),
+    /// Dismiss the open panel — the scrim, the Escape key.
+    CloseMenu,
+    /// The Escape key, when nothing else owns it.
+    EscapePressed,
+    /// The view's layout: grid or list.
+    SetLayout(LibraryLayout),
+    /// The covers' fit.
+    SetCover(CoverFit),
+    /// The level's sort key.
+    SetSort(SortKey),
+    /// The sort's direction.
+    SetSortAsc(bool),
+    /// Pin the column count one step up or down.
+    StepColumns(i32),
+    /// Hand the column count back to auto-fit.
+    AutoColumns,
+    /// Mint a shelf at the level on screen and step into it.
+    CreateShelf,
+    /// Re-read the library from disk.
+    Reload,
+    /// Open a book from the shelf.
+    OpenBook(String),
+    /// The card the pointer entered or left.
+    CardHover(Option<String>),
+    /// The shelf asked for the multi-file picker.
+    PickFiles,
+    /// The picker answered: paths, or nothing when dismissed.
+    FilesPicked(Option<Vec<PathBuf>>),
     /// The shelf asked for the folder picker.
     PickFolder,
     /// The folder picker answered.
@@ -127,7 +192,7 @@ impl Mareader {
     fn boot() -> (Self, Task<Message>) {
         let settings = storage::load_settings();
         let tokens = Tokens::for_base(settings.appearance.base);
-        let state = Self {
+        let mut state = Self {
             window: None,
             maximized: false,
             route: Route::Library,
@@ -135,15 +200,25 @@ impl Mareader {
             theme: theme::build(tokens, settings.appearance.base),
             tokens,
             library: storage::load_library(),
+            shelf: ALL_SHELF.to_string(),
+            query: String::new(),
+            menu: None,
+            cursor: Point::new(600.0, 400.0),
+            viewport: Size::new(1200.0, 800.0),
+            hovered_card: None,
             settings,
             toasts: ToastHost::default(),
             open_document: None,
             scan: None,
             next_task: 0,
         };
+        // The grid reports its first fit against the window the app opens
+        // in; the Resized event confirms it.
+        state.report_auto_fit();
         (state, window::oldest().map(Message::WindowDiscovered))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn update(&mut self, message: Message) -> Task<Message> {
         let now = Instant::now();
         match message {
@@ -168,6 +243,9 @@ impl Mareader {
                 Task::none()
             }
             Message::Cursor(position) => {
+                if let Some(position) = position {
+                    self.cursor = position;
+                }
                 self.titlebar.on_cursor(position, self.route, now);
                 Task::none()
             }
@@ -194,12 +272,107 @@ impl Mareader {
                     titlebar::WindowAction::Close => window::close(id),
                 }
             }
-            Message::PickDocument => dialogs::pick_document(Message::FilePicked),
-            Message::FilePicked(picked) => match picked {
-                Some(path) => self.open_document_path(path),
-                None => Task::none(),
-            },
-            Message::PickFolder => dialogs::pick_folder(Message::FolderPicked),
+            Message::Navigate(shelf) => {
+                self.menu = None;
+                self.hovered_card = None;
+                self.shelf = shelf;
+                Task::none()
+            }
+            Message::Query(terms) => {
+                self.menu = None;
+                self.query = terms;
+                Task::none()
+            }
+            Message::ToggleMenu(kind) => {
+                self.menu = if self.menu == Some(kind) { None } else { Some(kind) };
+                Task::none()
+            }
+            Message::CloseMenu => {
+                self.menu = None;
+                Task::none()
+            }
+            Message::EscapePressed => {
+                self.menu = None;
+                Task::none()
+            }
+            Message::SetLayout(layout) => {
+                if self.library.view.layout == layout {
+                    self.menu = None;
+                    return Task::none();
+                }
+                self.library.view.layout = layout;
+                self.view_changed()
+            }
+            Message::SetCover(cover) => {
+                if self.library.view.cover == cover {
+                    self.menu = None;
+                    return Task::none();
+                }
+                self.library.view.cover = cover;
+                self.view_changed()
+            }
+            Message::SetSort(key) => {
+                if self.library.view.sort == key {
+                    self.menu = None;
+                    return Task::none();
+                }
+                self.library.view.sort = key;
+                self.view_changed()
+            }
+            Message::SetSortAsc(ascending) => {
+                if self.library.view.sort_asc == ascending {
+                    self.menu = None;
+                    return Task::none();
+                }
+                self.library.view.sort_asc = ascending;
+                self.view_changed()
+            }
+            Message::StepColumns(delta) => {
+                self.library.view.step_columns(delta);
+                self.view_changed()
+            }
+            Message::AutoColumns => {
+                if self.library.view.columns.is_none() {
+                    self.menu = None;
+                    return Task::none();
+                }
+                self.library.view.auto_columns();
+                self.view_changed()
+            }
+            Message::CreateShelf => self.create_shelf(),
+            Message::Reload => {
+                self.menu = None;
+                self.library = storage::load_library();
+                if self.shelf != ALL_SHELF
+                    && shelf::find(&self.library.shelves, &self.shelf).is_none()
+                {
+                    self.shelf = ALL_SHELF.to_string();
+                }
+                self.toasts.show(Tone::Info, "Reloaded the library from disk", now);
+                Task::none()
+            }
+            Message::OpenBook(id) => {
+                self.menu = None;
+                let Some(path) = book::find_by_id(&self.library.books, &id)
+                    .map(|book| PathBuf::from(book.path()))
+                else {
+                    return Task::none();
+                };
+                self.open_document_path(path)
+            }
+            Message::CardHover(hovered) => {
+                self.hovered_card = hovered;
+                Task::none()
+            }
+            Message::PickFiles => {
+                self.menu = None;
+                dialogs::pick_files(Message::FilesPicked)
+            }
+            Message::FilesPicked(picked) => self.import_files(picked),
+            Message::PickFolder => {
+                self.menu = None;
+                dialogs::pick_folder(Message::FolderPicked)
+            }
             Message::FolderPicked(picked) => match picked {
                 Some(dir) => self.start_scan(dir),
                 None => Task::none(),
@@ -249,6 +422,7 @@ impl Mareader {
             }
             Message::BackToShelf => {
                 self.route = Route::Library;
+                self.menu = None;
                 Task::none()
             }
         }
@@ -266,11 +440,14 @@ impl Mareader {
                 self.set_scale_factor(factor);
                 Task::none()
             }
+            window::Event::Resized(size) => {
+                self.viewport = size;
+                self.report_auto_fit();
+                Task::none()
+            }
             // A drop anywhere in the window is an open request — the same
             // door the picker uses, with the same gate in front of it.
             window::Event::FileDropped(path) => self.open_document_path(path),
-            // CloseRequested will become the persistence flush's cue once
-            // there is anything left to flush that change-time saves miss.
             _ => Task::none(),
         }
     }
@@ -279,6 +456,104 @@ impl Mareader {
     /// page geometry snaps to — at open and on every rescale.
     fn set_scale_factor(&mut self, factor: f32) {
         pdf_core::pixel_grid::set_device_pixel_ratio(f64::from(factor));
+    }
+
+    /// A view fact changed: close the menu that changed it and persist the
+    /// library.
+    fn view_changed(&mut self) -> Task<Message> {
+        self.menu = None;
+        self.persist_library()
+    }
+
+    /// Mint a shelf at the level on screen and step into it — the web app's
+    /// create-and-enter, one message.
+    fn create_shelf(&mut self) -> Task<Message> {
+        let now = now_ms();
+        let id = library_core::id::next_shelf_id(now);
+        let in_use: HashSet<String> =
+            self.library.shelves.iter().map(|shelf| shelf.name.clone()).collect();
+        let name = book::duplicate_title("New shelf", &in_use);
+        let parent = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
+        self.library
+            .shelves
+            .push(shelf::Shelf::virtual_shelf(id.clone(), name, parent));
+        self.menu = None;
+        self.shelf = id;
+        self.persist_library()
+    }
+
+    /// The pickers' answer: measure each file, mint its row, and — when the
+    /// shelf stands on a shelf — file it there. The fingerprint dedupes: a
+    /// file the library already holds is placed, not copied in again.
+    fn import_files(&mut self, picked: Option<Vec<PathBuf>>) -> Task<Message> {
+        self.menu = None;
+        let Some(paths) = picked else { return Task::none() };
+        if paths.is_empty() {
+            return Task::none();
+        }
+
+        let now = now_ms();
+        let on_shelf = self.shelf != ALL_SHELF;
+        let mut added = 0usize;
+        let mut already = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+
+        for path in paths {
+            let address = path.to_string_lossy().into_owned();
+            if let Err(error) = fs::ensure_readable_document(&address) {
+                failures.push(error);
+                continue;
+            }
+            match fs::measure_document(&address) {
+                Ok((fingerprint, format)) => {
+                    let existed = self.library.books.iter().any(|row| {
+                        row.book().is_some_and(|book| book.fp == fingerprint)
+                    });
+                    let row_id = {
+                        let minted = Book::new(
+                            library_core::id::next_id(now),
+                            fingerprint,
+                            format,
+                            Origin::Linked { src: address },
+                            now,
+                        );
+                        book::add_book(&mut self.library.books, minted)
+                    };
+                    if on_shelf
+                        && let Some(current) =
+                            self.library.shelves.iter_mut().find(|s| s.id == self.shelf)
+                    {
+                        shelf::shelf_add(current, &row_id);
+                    }
+                    if existed {
+                        already += 1;
+                    } else {
+                        added += 1;
+                    }
+                }
+                Err(error) => failures.push(error),
+            }
+        }
+
+        let mut outcome = Task::none();
+        if added > 0 {
+            let line = if on_shelf {
+                format!("Added {} to this shelf", lib_text::plural(added, "book", "books"))
+            } else {
+                format!("Added {}", lib_text::plural(added, "book", "books"))
+            };
+            self.toasts.show(Tone::Info, line, Instant::now());
+            outcome = self.persist_library();
+        } else if already > 0 {
+            self.toasts.show(Tone::Info, "Already in the library", Instant::now());
+            if on_shelf {
+                outcome = self.persist_library();
+            }
+        }
+        if !failures.is_empty() && added == 0 {
+            self.toasts.show(Tone::Error, failures.swap_remove(0), Instant::now());
+        }
+        outcome
     }
 
     /// Admit a document through the gate, remember it, and route to the
@@ -319,6 +594,14 @@ impl Mareader {
         )
     }
 
+    /// Tell the view what auto-fit measured, and persist it when it moved —
+    /// the stepper's `+` starts from what the shelf shows.
+    fn report_auto_fit(&mut self) {
+        if library::report_fit(&mut self.library.view, self.viewport.width) {
+            let _ = self.persist_library();
+        }
+    }
+
     fn apply_appearance(&mut self) {
         let base = self.settings.appearance.base;
         self.tokens = Tokens::for_base(base);
@@ -334,39 +617,117 @@ impl Mareader {
         Task::none()
     }
 
+    /// The library's own save contract: the same moment-of-change rule.
+    fn persist_library(&mut self) -> Task<Message> {
+        if let Err(error) = storage::save_library(&self.library) {
+            self.toasts.show(Tone::Error, error, Instant::now());
+        }
+        Task::none()
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let now = Instant::now();
         let factor = self.titlebar.factor(now);
 
-        let content = match self.route {
-            Route::Library => {
-                shelf(self.tokens, &self.library, self.settings.appearance.base, self.scan.as_ref())
-            }
+        let content: Element<'_, Message> = match self.route {
+            Route::Library => library::view(
+                self.tokens,
+                &self.library,
+                &self.shelf,
+                &self.query,
+                self.hovered_card.as_deref(),
+                self.viewport.width,
+            ),
             Route::Reader => reader_surface(self.tokens, self.open_document.as_deref()),
         };
 
         let mut layers: Vec<Element<'_, Message>> = vec![content];
+        // An open panel: the scrim that closes it on any outside press, and
+        // the panel itself placed at the pointer. The bar stays above the
+        // scrim, so its trigger still toggles the panel shut.
+        if self.menu.is_some() {
+            layers.push(scrim());
+            if let Some(panel) = self.menu_layer() {
+                layers.push(panel);
+            }
+        }
         // A hidden bar is not in the tree at all: nothing to hit, nothing
         // to hover — the reveal band lives in the cursor subscription.
         if factor > 0.0 {
-            let bar = titlebar::view(
-                &self.titlebar,
-                titlebar::ViewContext {
-                    tokens: self.tokens,
-                    route: self.route,
-                    maximized: self.maximized,
-                    factor,
-                    title: self.route.title(),
-                },
-            )
-            .map(Message::Chrome);
-            layers.push(bar);
+            layers.push(self.bar(factor));
         }
         if let Some(toast) = self.toasts.view(self.tokens) {
             layers.push(toast);
         }
 
         stack(layers).width(Length::Fill).height(Length::Fill).into()
+    }
+
+    /// The titlebar with the route's slots hung on it.
+    fn bar(&self, factor: f32) -> Element<'_, Message> {
+        let (left, center, right) = match self.route {
+            Route::Library => {
+                let book_count = book::book_rows(&self.library.books).count();
+                let view_trigger = button(icon(IconName::More, 15, fade(self.tokens.ink, factor)))
+                    .padding(7.0)
+                    .style(move |_, status| titlebar::ghost_button_style(self.tokens, factor, status))
+                    .on_press(Message::ToggleMenu(MenuKind::View));
+                let appearance =
+                    button(icon(appearance_glyph(self.settings.appearance.base), 15, fade(self.tokens.ink, factor)))
+                        .padding(7.0)
+                        .style(move |_, status| {
+                            titlebar::ghost_button_style(self.tokens, factor, status)
+                        })
+                        .on_press(Message::CycleAppearance);
+                (
+                    Some(bar::breadcrumb(self.tokens, &self.library, &self.shelf, factor)),
+                    Some(bar::search(self.tokens, book_count, &self.query, factor)),
+                    vec![view_trigger.into(), appearance.into()],
+                )
+            }
+            Route::Reader => (None, None, Vec::new()),
+        };
+
+        titlebar::view(
+            &self.titlebar,
+            titlebar::ViewContext {
+                tokens: self.tokens,
+                route: self.route,
+                maximized: self.maximized,
+                factor,
+                title: self.route.title(),
+                left,
+                center,
+                right,
+                chrome: Message::Chrome,
+            },
+        )
+    }
+
+    /// The open panel, clamped into the viewport at the pointer's last
+    /// position.
+    fn menu_layer(&self) -> Option<Element<'_, Message>> {
+        let kind = self.menu?;
+        let (panel, size) = match kind {
+            MenuKind::Add => menus::add_menu(self.tokens),
+            MenuKind::View => menus::view_menu(self.tokens, &self.library.view),
+        };
+        let anchor = Point::new(self.cursor.x, platform::TITLE_BAR_H + 2.0);
+        let at = popover::place(anchor, size, self.viewport);
+        Some(
+            container(panel)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: at.y.max(0.0),
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: at.x.max(0.0),
+                })
+                .align_x(Alignment::Start)
+                .align_y(Alignment::Start)
+                .into(),
+        )
     }
 
     fn title(&self) -> String {
@@ -419,8 +780,38 @@ fn on_event(event: iced::Event, _status: event::Status, id: window::Id) -> Optio
             Some(Message::Cursor(Some(position)))
         }
         iced::Event::Mouse(mouse::Event::CursorLeft) => Some(Message::Cursor(None)),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::EscapePressed),
         _ => None,
     }
+}
+
+/// The scrim under an open menu: transparent, window-wide, and closing the
+/// menu on any press that reaches it.
+fn scrim() -> Element<'static, Message> {
+    mouse_area(container(Space::new().width(Length::Fill).height(Length::Fill)))
+        .on_press(Message::CloseMenu)
+        .into()
+}
+
+/// The appearance button's glyph for the base on screen.
+fn appearance_glyph(base: BaseMode) -> IconName {
+    match base {
+        BaseMode::Light => IconName::Sun,
+        BaseMode::Dark => IconName::Moon,
+        BaseMode::Dim => IconName::Dim,
+    }
+}
+
+/// Milliseconds since the epoch — the stamp the library's ids and rows are
+/// minted with.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The window the app opens in: the original's 1200×800 with its 640×480
@@ -457,64 +848,6 @@ fn window_settings() -> window::Settings {
     settings
 }
 
-/// The shelf until the library lands: the app's mark, the honest count of
-/// what the persisted blob holds, the open buttons that exercise the
-/// platform layer end to end, and the walk's live line.
-fn shelf<'a>(
-    tokens: Tokens,
-    library: &LibraryBlob,
-    base: BaseMode,
-    scan: Option<&'a ScanRun>,
-) -> Element<'a, Message> {
-    let status = match library.books.len() {
-        0 => "The shelf is empty — the library's import flows land next.".to_owned(),
-        1 => "1 book on the shelf.".to_owned(),
-        n => format!("{n} books on the shelf."),
-    };
-
-    let (glyph, label) = match base {
-        BaseMode::Light => (IconName::Sun, "Light"),
-        BaseMode::Dark => (IconName::Moon, "Dark"),
-        BaseMode::Dim => (IconName::Dim, "Dim"),
-    };
-
-    let mut content = column![
-        icon(IconName::Library, 44, tokens.accent),
-        text("Mareader").size(26).color(tokens.ink),
-        text(status).size(13).color(tokens.muted),
-        row![
-            pill(tokens, text("Open Document…").size(13).color(tokens.ink).into(), Message::PickDocument, true),
-            pill(tokens, text("Open Folder…").size(13).color(tokens.ink).into(), Message::PickFolder, scan.is_none()),
-            pill(
-                tokens,
-                row![icon(glyph, 14, tokens.ink), text(label).size(13).color(tokens.ink)]
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                    .into(),
-                Message::CycleAppearance,
-                true,
-            ),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    ]
-    .align_x(Alignment::Center)
-    .spacing(14)
-    .width(Length::Shrink);
-
-    if let Some(run) = scan {
-        let line = match &run.latest {
-            Some(beat) if beat.total > 0 => {
-                format!("Scanning “{}”: {} of {} found", run.root, beat.done, beat.total)
-            }
-            _ => format!("Scanning “{}”…", run.root),
-        };
-        content = content.push(text(line).size(12).color(tokens.muted));
-    }
-
-    centered(content)
-}
-
 /// The reader route until the engines land: the document's name, the fact
 /// that it is remembered, and the way back.
 fn reader_surface(tokens: Tokens, document: Option<&Path>) -> Element<'static, Message> {
@@ -522,46 +855,31 @@ fn reader_surface(tokens: Tokens, document: Option<&Path>) -> Element<'static, M
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "the document".to_owned());
-    centered(
+    container(
         column![
             icon(IconName::Type, 40, tokens.accent),
             text(name).size(18).color(tokens.ink),
             text("Selected, remembered, and safe — the reading surfaces land with the engines.")
                 .size(13)
                 .color(tokens.muted),
-            pill(
-                tokens,
-                text("Back to the shelf").size(13).color(tokens.ink).into(),
-                Message::BackToShelf,
-                true,
-            ),
+            button(text("Back to the shelf").size(13).color(tokens.ink))
+                .padding(Padding { top: 8.0, right: 14.0, bottom: 8.0, left: 14.0 })
+                .style(move |_, status| titlebar::ghost_button_style(tokens, 1.0, status))
+                .on_press(Message::BackToShelf),
         ]
         .align_x(Alignment::Center)
         .spacing(12)
         .width(Length::Shrink),
     )
-}
-
-/// A quiet text button: the chrome's ghost style at full presence — the
-/// same hover wash the titlebar's pin wears.
-fn pill<'a>(
-    tokens: Tokens,
-    label: Element<'a, Message>,
-    message: Message,
-    enabled: bool,
-) -> Element<'a, Message> {
-    let action = button(label)
-        .padding(Padding { top: 8.0, right: 14.0, bottom: 8.0, left: 14.0 })
-        .style(move |_, status| titlebar::ghost_button_style(tokens, 1.0, status));
-    (if enabled { action.on_press(message) } else { action }).into()
-}
-
-/// Both placeholder surfaces' frame: dead center in the window.
-fn centered<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .into()
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .padding(Padding {
+        top: platform::TITLE_BAR_H,
+        right: 0.0,
+        bottom: 0.0,
+        left: 0.0,
+    })
+    .into()
 }

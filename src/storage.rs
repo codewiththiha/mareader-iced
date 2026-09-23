@@ -37,6 +37,12 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
     write_json(&platform::settings_path(), settings)
 }
 
+/// The library to disk, atomically — the same change-time contract the
+/// settings keep: every flow that moves the blob ends with this.
+pub fn save_library(library: &LibraryBlob) -> Result<(), String> {
+    write_json(&platform::library_path(), library)
+}
+
 /// The library on disk; a missing or unreadable file is an empty shelf.
 pub fn load_library() -> LibraryBlob {
     read(platform::library_path())
