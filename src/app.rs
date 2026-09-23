@@ -52,6 +52,7 @@ use crate::library::drag::{
     drop_effect, fold_items, fold_preview, Band, DragPayload, DropEffect, DropQuery,
     DropTargetKind, FoldPreview,
 };
+use crate::library::departure::{self, CopyAnswer, CopyAsk, CopyWork, RowMove};
 use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
 use crate::platform::{dialogs, fs, progress, store};
@@ -237,6 +238,9 @@ enum Sheet {
     /// from the tree's own, and its Import writes the watch answer back
     /// onto the rung the pick names.
     Import { root: PathBuf, ground: Option<GroundWatch> },
+    /// A move about to store copies: the departure's question, carrying the
+    /// gesture it interrupted.
+    Copy { ask: CopyAsk },
 }
 
 /// Which question a folder run answers; a boolean at the signature could
@@ -326,6 +330,9 @@ enum Stage {
     /// The store is copying a duplicate's bytes; the landing waits in the
     /// work.
     Duplicating { work: Box<DupWork> },
+    /// The store is copying a departure's books; the interrupted gesture
+    /// waits in the work.
+    Departing { work: Box<DepartWork> },
 }
 
 /// A duplicate's landing, waiting on its copies: one book filed beside the
@@ -334,6 +341,14 @@ enum Stage {
 enum DupWork {
     Book(Box<BookCopy>),
     Tree(TreePlan),
+}
+
+/// A departure run's landing: the gesture's whole id list, the rows the
+/// copies were asked for, and the hand that resumes when they come home.
+struct DepartWork {
+    ids: Vec<String>,
+    converting: Vec<String>,
+    hand: RowMove,
 }
 
 /// The folder walk's answer, planned against the ledger and waiting for its
@@ -603,6 +618,9 @@ pub enum Message {
     DuplicateShelf(String),
     /// The set's "Duplicate": every chosen entry, in turn.
     DuplicateSelection,
+    /// The copy sheet's own answer: buy the copies and finish the gesture,
+    /// finish it without them, or leave everything as it is.
+    AnswerCopy(CopyAnswer),
     /// A cell was tapped. One message for every cell: the app decides what
     /// a tap means — a membership while choosing, an open otherwise.
     CardTap(String),
@@ -971,6 +989,20 @@ impl Mareader {
             Message::SheetCancel => {
                 self.sheet = None;
                 Task::none()
+            }
+            Message::AnswerCopy(answer) => {
+                let Some(Sheet::Copy { ask }) = self.sheet.take() else {
+                    return Task::none();
+                };
+                match answer {
+                    // Nothing moves and nothing copies. The rows' door has no
+                    // without-copies answer of its own — the gesture simply
+                    // stays where the folder's tree put it; the shelf's and
+                    // the removal's doors arrive with the systems that own
+                    // them.
+                    CopyAnswer::Cancel | CopyAnswer::WithoutCopies => Task::none(),
+                    CopyAnswer::Copy => self.copy_and_finish(ask),
+                }
             }
             Message::SheetSave => self.save_sheet(),
             Message::SheetImportFormat(format) => {
@@ -1803,14 +1835,7 @@ impl Mareader {
                 // folders get no position: a level renders its folders
                 // before its books.
                 let (to, index) = self.insert_anchor(&book_id, shelf.as_deref(), after);
-                moved |= library::arrange::move_many_to_shelf(
-                    &mut self.library.shelves,
-                    &mut self.library.books,
-                    &payload.books,
-                    from.as_deref(),
-                    &to,
-                    index,
-                );
+                moved |= self.gated_seat(&payload.books, from.clone(), to.clone(), index);
                 moved |= land_folders(&mut self.library.shelves, &payload.folders, &to);
             }
             DropEffect::ShelfSibling { anchor_id, after } => {
@@ -1824,11 +1849,7 @@ impl Mareader {
             DropEffect::FileToShelf { shelf_id } if shelf_id.is_empty() => {
                 match from.as_deref() {
                     Some(shelf) => {
-                        moved |= library::arrange::unfile_books(
-                            &mut self.library.shelves,
-                            &payload.books,
-                            shelf,
-                        );
+                        moved |= self.gated_unfile(&payload.books, shelf);
                     }
                     None => {
                         moved |= library::arrange::move_many_to_shelf(
@@ -1844,25 +1865,11 @@ impl Mareader {
                 moved |= land_folders(&mut self.library.shelves, &payload.folders, ALL_SHELF);
             }
             DropEffect::FileToShelf { shelf_id } => {
-                moved |= library::arrange::move_many_to_shelf(
-                    &mut self.library.shelves,
-                    &mut self.library.books,
-                    &payload.books,
-                    from.as_deref(),
-                    &shelf_id,
-                    None,
-                );
+                moved |= self.gated_seat(&payload.books, from.clone(), shelf_id.clone(), None);
                 moved |= land_folders(&mut self.library.shelves, &payload.folders, &shelf_id);
             }
             DropEffect::NestInto { folder_id } => {
-                moved |= library::arrange::move_many_to_shelf(
-                    &mut self.library.shelves,
-                    &mut self.library.books,
-                    &payload.books,
-                    from.as_deref(),
-                    &folder_id,
-                    None,
-                );
+                moved |= self.gated_seat(&payload.books, from.clone(), folder_id.clone(), None);
                 moved |= land_folders(&mut self.library.shelves, &payload.folders, &folder_id);
             }
             DropEffect::CreateFolder { with_book_id } => {
@@ -1875,14 +1882,7 @@ impl Mareader {
                 if !books.contains(&with_book_id) {
                     books.push(with_book_id);
                 }
-                moved |= library::arrange::move_many_to_shelf(
-                    &mut self.library.shelves,
-                    &mut self.library.books,
-                    &books,
-                    from.as_deref(),
-                    &shelf_id,
-                    None,
-                );
+                moved |= self.gated_seat(&books, from.clone(), shelf_id.clone(), None);
                 moved |= land_folders(&mut self.library.shelves, &payload.folders, &shelf_id);
             }
         }
@@ -1974,6 +1974,18 @@ impl Mareader {
         };
         let mut moved = library::arrange::file_many(&mut self.library.shelves, &book_ids, &target);
         moved |= library::arrange::nest_many(&mut self.library.shelves, &folder_ids, &target);
+        // A second membership is an arrival like any other: a stored book
+        // landing on a folder's shelf can be the file's return, and the bind
+        // is a write the persist has to cover.
+        for id in &book_ids {
+            moved |= departure::bind_returned(
+                &self.library.books,
+                &self.library.shelves,
+                &mut self.library.folders,
+                id,
+                &target,
+            );
+        }
         self.exit_selection();
         if moved {
             return self.persist_library();
@@ -2033,6 +2045,10 @@ impl Mareader {
             }
             Sheet::Remove { id, .. } => self.remove_row(&id),
             Sheet::RemoveMany { books, shelves } => self.remove_many(books, shelves),
+            // The copy sheet's buttons carry their own answers; its
+            // affirmative one — the sheet's "Save", an Enter on the panel —
+            // is the ask's primary: buy the copies and finish the gesture.
+            Sheet::Copy { ask } => self.copy_and_finish(ask),
             Sheet::Import { root, ground } => {
                 let opts = self.import_opts.clone();
                 let root_str = root.to_string_lossy().into_owned();
@@ -2468,7 +2484,8 @@ impl Mareader {
                 | Stage::Copying { .. }
                 | Stage::Restoring { .. }
                 | Stage::RestoreCopying { .. }
-                | Stage::Duplicating { .. } => false,
+                | Stage::Duplicating { .. }
+                | Stage::Departing { .. } => false,
             };
             if !holds {
                 continue;
@@ -2480,7 +2497,8 @@ impl Mareader {
                 | Stage::Copying { .. }
                 | Stage::Restoring { .. }
                 | Stage::RestoreCopying { .. }
-                | Stage::Duplicating { .. } => false,
+                | Stage::Duplicating { .. }
+                | Stage::Departing { .. } => false,
             };
             return if focus_walk { Claim::HeldByWalk } else { Claim::HeldByAsk };
         }
@@ -2682,6 +2700,7 @@ impl Mareader {
                 Task::batch([outcome, release])
             }
             Stage::Duplicating { work } => self.duplicates_done(*work, results),
+            Stage::Departing { work } => self.departing_done(*work, results),
             _ => Task::none(),
         }
     }
@@ -2802,23 +2821,249 @@ impl Mareader {
         requests: Vec<BookFileRequest>,
         work: DupWork,
     ) -> Task<Message> {
+        self.begin_store_run(label, requests, Stage::Duplicating { work: Box::new(work) })
+    }
+
+    /// One store batch of the reader's own asking: one card for the whole
+    /// gesture, and the stage that lands when the copies come home.
+    fn begin_store_run(
+        &mut self,
+        label: String,
+        requests: Vec<BookFileRequest>,
+        stage: Stage,
+    ) -> Task<Message> {
         let (sink, rx) = progress::channel();
         self.next_task += 1;
         let task = self.next_task;
-        self.runs.push(FsRun {
-            task,
-            label,
-            sink,
-            rx,
-            latest: None,
-            stage: Stage::Duplicating { work: Box::new(work) },
-        });
+        self.runs.push(FsRun { task, label, sink, rx, latest: None, stage });
         let emit = Arc::clone(&self.runs[self.runs.len() - 1].sink);
         let task_name = task.to_string();
         Task::perform(
             async move { store::store_books(&task_name, &requests, &emit) },
             move |results| Message::CopiesDone(task, results),
         )
+    }
+
+    /// The book half of a move, screened by the departure's gate: a
+    /// read-at-place book leaving the ground that made it becomes the
+    /// library's own stored copy, and a copy is a cost the reader agrees to
+    /// before anything moves. True when the move — or a return's bind —
+    /// wrote; a gated move writes nothing and waits in the sheet.
+    fn gated_seat(
+        &mut self,
+        books: &[String],
+        from: Option<String>,
+        to: String,
+        index: Option<usize>,
+    ) -> bool {
+        // A re-order leaves nothing behind — the rows are arriving where they
+        // already are — and every other hand-move is screened by the one
+        // departure rule, which reads the book's own rung and not the shelf
+        // it happens to stand on.
+        let arriving_elsewhere = match from.as_deref() {
+            Some(from) => from != to,
+            None => to != ALL_SHELF,
+        };
+        if arriving_elsewhere {
+            let hand = RowMove::Seat { from: from.clone(), to: to.clone(), index };
+            if self.ask_move_copy(books, &to, hand) {
+                return false;
+            }
+        }
+        let mut wrote = library::arrange::move_many_to_shelf(
+            &mut self.library.shelves,
+            &mut self.library.books,
+            books,
+            from.as_deref(),
+            &to,
+            index,
+        );
+        // Every stored book the move lands can bind a folder's moved-out log
+        // as a return: the address they share is the bind.
+        for id in books {
+            wrote |= departure::bind_returned(
+                &self.library.books,
+                &self.library.shelves,
+                &mut self.library.folders,
+                id,
+                &to,
+            );
+        }
+        wrote
+    }
+
+    /// The lift out of one shelf, screened the same way: to the library's own
+    /// floor is a departure for every read-at-place book a folder placed. No
+    /// bind on this door — a lift out arrives nowhere a log could name.
+    fn gated_unfile(&mut self, books: &[String], shelf: &str) -> bool {
+        let hand = RowMove::Unfile { shelf: shelf.to_string() };
+        if self.ask_move_copy(books, ALL_SHELF, hand) {
+            return false;
+        }
+        library::arrange::unfile_books(&mut self.library.shelves, books, shelf)
+    }
+
+    /// The gate every hand-move rides: a row that reads in place and is
+    /// leaving the ground that made it becomes the library's own stored
+    /// copy, and a copy is a question. True means the move waits on the
+    /// sheet.
+    fn ask_move_copy(&mut self, ids: &[String], to: &str, hand: RowMove) -> bool {
+        let converting =
+            departure::converting_rows(&self.library.books, &self.library.folders, ids, to);
+        let Some(ask) =
+            departure::ask_of_rows(&self.library.books, &self.library.folders, &converting, hand)
+        else {
+            return false;
+        };
+        self.sheet = Some(Sheet::Copy { ask });
+        true
+    }
+
+    /// The sheet's "Copy and move": the copies ride a store batch of their
+    /// own — one card for the whole gesture, the way fifty books leaving
+    /// their ground are one thing the reader asked for — and the interrupted
+    /// move resumes when they come home.
+    fn copy_and_finish(&mut self, ask: CopyAsk) -> Task<Message> {
+        let CopyWork::Rows { ids, hand } = ask.work;
+        // The answer screens again, because the sheet was up while the
+        // library went on living.
+        let converting =
+            departure::converting_rows(&self.library.books, &self.library.folders, &ids, hand.to());
+        let requests: Vec<BookFileRequest> = converting
+            .iter()
+            .filter_map(|id| {
+                let book = book::find_row(&self.library.books, id)?.book()?;
+                Some(BookFileRequest { from: book.path().to_string(), id: id.clone() })
+            })
+            .collect();
+        if requests.is_empty() {
+            // Nothing left to copy: the rows the gate named went while the
+            // sheet was up, and the gesture resumes without them — a copy
+            // that failed costs that book its move and nothing else.
+            let rest: Vec<String> =
+                ids.into_iter().filter(|id| !converting.contains(id)).collect();
+            let moved =
+                if rest.is_empty() { false } else { self.resume_move(hand, rest, Vec::new()) };
+            return if moved { self.persist_library() } else { Task::none() };
+        }
+        let label = match converting.len() {
+            1 => book::find_row(&self.library.books, &converting[0])
+                .map(|row| row.display_name())
+                .unwrap_or_else(|| "1 book".to_string()),
+            n => format!("{n} books"),
+        };
+        let work = DepartWork { ids, converting, hand };
+        self.begin_store_run(label, requests, Stage::Departing { work: Box::new(work) })
+    }
+
+    /// The store's answer for a departure: the copies become the library's
+    /// own — the moved-out log first, because the tombstone wears the book's
+    /// ORIGINAL fingerprint — and the interrupted gesture resumes with what
+    /// came home.
+    fn departing_done(&mut self, work: DepartWork, results: Vec<StoreResult>) -> Task<Message> {
+        let (copies, failure) = partition_store_results(results);
+        let now = now_ms();
+        let mut departed: Vec<String> = Vec::new();
+        for id in &work.converting {
+            let Some((store, measured)) = copies.get(id) else { continue };
+            let Some(book) = book::find_by_id(&self.library.books, id) else { continue };
+            let path = book.path().to_string();
+            departure::write_moved_stones(
+                &mut self.library.folders,
+                &self.library.shelves,
+                book,
+                None,
+                now,
+            );
+            if let Some(book) = book::find_book_mut(&mut self.library.books, id) {
+                book.become_stored(&path, store.clone(), *measured);
+            }
+            departed.push(id.clone());
+        }
+        if let Some(error) = failure {
+            self.toasts.show(Tone::Error, error, Instant::now());
+        }
+        // A copy that failed costs that book its move and nothing else: it
+        // stays where it was, and every screen downstream sees the books as
+        // what they are about to be.
+        let failed: HashSet<String> = work
+            .converting
+            .iter()
+            .filter(|id| !departed.contains(*id))
+            .cloned()
+            .collect();
+        let rest: Vec<String> = work.ids.into_iter().filter(|id| !failed.contains(id)).collect();
+        let any_copies = !departed.is_empty();
+        let moved =
+            if rest.is_empty() { false } else { self.resume_move(work.hand, rest, departed) };
+        if moved || any_copies {
+            return self.persist_library();
+        }
+        Task::none()
+    }
+
+    /// The gesture a copy question interrupted, finished: the same rows land,
+    /// and the copies land marked — a departure is not a return, so a copied
+    /// book binds no folder's moved-out log.
+    fn resume_move(&mut self, hand: RowMove, ids: Vec<String>, departed: Vec<String>) -> bool {
+        match hand {
+            RowMove::Seat { from, to, index } => {
+                let mut wrote = library::arrange::move_many_to_shelf(
+                    &mut self.library.shelves,
+                    &mut self.library.books,
+                    &ids,
+                    from.as_deref(),
+                    &to,
+                    index,
+                );
+                for id in &ids {
+                    if !departed.contains(id) {
+                        wrote |= departure::bind_returned(
+                            &self.library.books,
+                            &self.library.shelves,
+                            &mut self.library.folders,
+                            id,
+                            &to,
+                        );
+                    }
+                }
+                wrote
+            }
+            RowMove::Row { to, index } => {
+                // One row's own move: off every shelf it was on and onto the
+                // one named. The single-row door arrives with the conflict
+                // sheet; the resume answers it from the first day.
+                let mut wrote = false;
+                for id in &ids {
+                    shelf::forget_everywhere(&mut self.library.shelves, id);
+                    if to == ALL_SHELF {
+                        if index.is_some() {
+                            wrote |= library::arrange::reorder_root(
+                                &mut self.library.books,
+                                std::slice::from_ref(id),
+                                index,
+                            );
+                        }
+                    } else if let Some(shelf) = shelf::find_mut(&mut self.library.shelves, &to) {
+                        shelf::place(&mut shelf.books, id, index);
+                        wrote = true;
+                    }
+                    if !departed.contains(id) {
+                        wrote |= departure::bind_returned(
+                            &self.library.books,
+                            &self.library.shelves,
+                            &mut self.library.folders,
+                            id,
+                            &to,
+                        );
+                    }
+                }
+                wrote
+            }
+            RowMove::Unfile { shelf } => {
+                library::arrange::unfile_books(&mut self.library.shelves, &ids, &shelf)
+            }
+        }
     }
 
     /// The diff's answer, written to the live lists: relinks first, then
@@ -3934,6 +4179,36 @@ impl Mareader {
                     sheet::confirm_button(self.tokens, "Import", Message::SheetSave, false),
                 ],
             ),
+            // The departure's question: the action as the heading, the
+            // subject and the cost as the body's own lines, and one button
+            // per answer the ask was raised with — Cancel always first, the
+            // way the web sheet's footer stood them.
+            Sheet::Copy { ask } => {
+                let mut body = Column::new().spacing(6);
+                body = body.push(text(ask.subject.clone()).size(13).color(self.tokens.muted));
+                for line in &ask.lines {
+                    body = body.push(text(line.clone()).size(12).color(self.tokens.muted));
+                }
+                let mut actions =
+                    vec![sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel)];
+                for option in &ask.options {
+                    actions.push(if option.primary {
+                        sheet::confirm_button(
+                            self.tokens,
+                            &option.label,
+                            Message::AnswerCopy(option.answer),
+                            false,
+                        )
+                    } else {
+                        sheet::cancel_button(
+                            self.tokens,
+                            &option.label,
+                            Message::AnswerCopy(option.answer),
+                        )
+                    });
+                }
+                sheet::panel(self.tokens, &ask.action, body.into(), actions)
+            }
         };
         Some(sheet::overlay(panel, Message::SheetCancel))
     }
@@ -4327,7 +4602,8 @@ fn run_line(run: &FsRun) -> String {
             Stage::Restoring { .. } => format!("Restoring “{}”…", run.label),
             Stage::Copying { .. }
             | Stage::RestoreCopying { .. }
-            | Stage::Duplicating { .. } => {
+            | Stage::Duplicating { .. }
+            | Stage::Departing { .. } => {
                 format!("Copying “{}”…", run.label)
             }
             Stage::Walking { .. } | Stage::Storing { .. } => {

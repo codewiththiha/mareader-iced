@@ -414,5 +414,17 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   and the menus grew the web's own rows (Select, Duplicate) in the web's own order,
   the set's disabled Duplicate row waking up with the queue that walks it. The
   highlights' half of a duplicate waits on the reader's marks store, documented
-  where the landing lives. Next: the departure and conflict gates around the moves
-  — the copy modal, the conflict modal and the already-imported note.
+  where the landing lives. The departure's gate has arrived around the moves: one
+  pure module (`library/departure.rs`, with the web screen's own tests) says which
+  rows a move takes into the store — a read-at-place book leaving the ground that
+  made it, and only that — and the sheet asks the cost before anything moves. The
+  answer rides a store batch of its own (one card for the whole gesture), the
+  copies come home as the library's own with their moved-out logs written FIRST —
+  the tombstone wears the book's original fingerprint — and the interrupted
+  gesture resumes with what landed: a copy that failed costs that book its move
+  and nothing else. Returns bind by address: a stored row landing where its source
+  file stood spends the folder's moved-out log, and a departure's own landing
+  never binds the log it just wrote. The covers a departure prunes wait on the
+  engines, documented where the web does them. Next: the conflict sheet's name
+  screen around the same moves, then the shelf's, the rung's and the removal's own
+  copy doors, and the already-imported note.

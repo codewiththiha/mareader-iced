@@ -6,10 +6,11 @@
 //! OS file a read-in-place book points at is never renamed, moved or
 //! deleted from here.
 //!
-//! The gates the web app wraps around these edits — the departure's copy
-//! question, the conflict sheet's name screen, the moved-out log a return
-//! binds — arrive with the systems that own them; until then a move is the
-//! membership edit alone, which is also all a reorder ever was.
+//! The departure's copy question and the moved-out log a return binds live
+//! in [`super::departure`], and the app's own callers wrap these edits with
+//! them; the conflict sheet's name screen arrives with the system that owns
+//! it. Until then a screened move is the membership edit alone, which is
+//! also all a reorder ever was.
 
 use library_core::book::Row;
 use library_core::shelf::{self, Shelf, ALL_SHELF};

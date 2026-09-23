@@ -17,6 +17,7 @@
 pub mod arrange;
 pub mod bar;
 pub mod card;
+pub mod departure;
 pub mod drag;
 pub mod duplicate;
 pub mod facts;
