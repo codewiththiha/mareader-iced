@@ -10,7 +10,7 @@
 //! do natively, so the shadow carries the lift alone.
 
 use iced::gradient::Linear;
-use iced::widget::{button, column, container, mouse_area, stack, text, Column, Row, Space};
+use iced::widget::{button, column, container, mouse_area, stack, text, Column, Row, Space, Stack};
 use iced::{
     Alignment, Background, Border, Color, Element, Gradient, Length, Padding, Radians, Shadow,
     Vector,
@@ -25,6 +25,7 @@ use reader_core::format::Format;
 use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::facts::{self, Badge, FolderFacts};
+use crate::library::SelectionFacts;
 use crate::theme::{mix, wash, Tokens};
 
 /// The cover's aspect, A4 portrait: height = width × 297/210.
@@ -65,7 +66,7 @@ fn cover_gradient(tokens: Tokens) -> Gradient {
 
 /// The cover frame: the gradient, the radius, and the shadow that deepens
 /// under the pointer.
-fn cover_style(tokens: Tokens, hovered: bool) -> container::Style {
+fn cover_style(tokens: Tokens, hovered: bool, selected: bool) -> container::Style {
     let shadow = if hovered {
         Shadow {
             color: wash(Color::BLACK, 0.26),
@@ -81,7 +82,12 @@ fn cover_style(tokens: Tokens, hovered: bool) -> container::Style {
     };
     container::Style {
         background: Some(Background::Gradient(cover_gradient(tokens))),
-        border: Border { color: wash(tokens.line, 0.80), width: 1.0, radius: 6.0.into() },
+        border: if selected {
+            // The ring of membership (select.css: 0 0 0 2px accent).
+            Border { color: tokens.accent, width: 2.0, radius: 6.0.into() }
+        } else {
+            Border { color: wash(tokens.line, 0.80), width: 1.0, radius: 6.0.into() }
+        },
         shadow,
         ..container::Style::default()
     }
@@ -103,11 +109,81 @@ fn card_button_style(tokens: Tokens, status: button::Status) -> button::Style {
     }
 }
 
+/// The mark that says which ones you have already tapped. Empty it is a
+/// ring on the art; filled it is the accent with a check, so the set is
+/// legible without reading the bar's count. Bottom-left rather than
+/// top-left: the top-left corner is the missing-file badge's, and a book
+/// can be both missing and selected.
+fn check_chip(tokens: Tokens, selected: bool) -> Element<'static, Message> {
+    let face: Element<'static, Message> = if selected {
+        container(icon(IconName::Check, 11, tokens.paper))
+            .width(18.0)
+            .height(18.0)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    } else {
+        Space::new().width(18.0).height(18.0).into()
+    };
+    container(face)
+        .width(18.0)
+        .height(18.0)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(if selected {
+                tokens.accent
+            } else {
+                wash(Color::BLACK, 0.34)
+            })),
+            border: Border {
+                color: if selected { tokens.accent } else { wash(Color::WHITE, 0.78) },
+                width: 1.5,
+                radius: 999.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The chip parked in the art's bottom-left corner, 6px in.
+fn check_corner(tokens: Tokens, selected: bool) -> Element<'static, Message> {
+    container(check_chip(tokens, selected))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(6.0)
+        .align_x(Alignment::Start)
+        .align_y(Alignment::End)
+        .into()
+}
+
+/// The step back a card out of the set takes while choosing: the web card's
+/// 0.62 opacity, here a wash of the paper over it — and 0.95 under the
+/// pointer, because the reader is about to tap one of them. A layout cell
+/// cannot fade its own ink, so the wash carries the step back. The add door
+/// never wears it: dimming a door would advertise a choice it does not
+/// offer.
+pub fn dim_layer(tokens: Tokens, hovered: bool) -> Element<'static, Message> {
+    container(Space::new().width(Length::Fill).height(Length::Fill))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(wash(
+                tokens.paper,
+                if hovered { 0.05 } else { 0.38 },
+            ))),
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// One book's card in the grid: cover, info, and the progress hairline.
 /// The card OWNS its book — the level's rows are computed fresh on every
 /// view, and an element may not borrow a vec that dies with the function
 /// that built it.
-pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Element<'static, Message> {
+pub fn book_card(
+    tokens: Tokens,
+    book: Book,
+    width: f32,
+    hovered: bool,
+    selection: SelectionFacts,
+) -> Element<'static, Message> {
     let cover_h = width * COVER_RATIO;
     let title = book.title();
     let sub = book
@@ -115,6 +191,7 @@ pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Eleme
         .unwrap_or_else(|| lib_text::page_line(book.page, book.num_pages));
     let progress = book.progress();
     let missing = book.missing;
+    let selected = selection.selected.contains(book.id.as_str());
 
     // The cover face: the title centred on the gradient, and — for a book
     // the library has lost sight of — the wash and the badge that say so.
@@ -129,14 +206,20 @@ pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Eleme
     .center_x(Length::Fill)
     .center_y(Length::Fill);
 
-    let face: Element<'static, Message> = if missing {
-        stack![
-            title_layer,
+    // The cover's layers by depth: the title, then the missing wash and
+    // badge when the library has lost sight of the book, then the
+    // selection's mark — the corner pieces never overlap.
+    let mut layers: Vec<Element<'static, Message>> = vec![title_layer.into()];
+    if missing {
+        layers.push(
             container(Space::new().width(Length::Fill).height(Length::Fill))
                 .style(move |_| container::Style {
                     background: Some(Background::Color(wash(tokens.paper, 0.55))),
                     ..container::Style::default()
-                }),
+                })
+                .into(),
+        );
+        layers.push(
             container(
                 container(icon(IconName::Close, 11, tokens.muted))
                     .padding(4.0)
@@ -154,19 +237,18 @@ pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Eleme
             .height(Length::Fill)
             .padding(6.0)
             .align_x(Alignment::End)
-            .align_y(Alignment::Start),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-    } else {
-        title_layer.into()
-    };
+            .align_y(Alignment::Start)
+            .into(),
+        );
+    }
+    if selection.selecting {
+        layers.push(check_corner(tokens, selected));
+    }
 
-    let cover = container(face)
+    let cover = container(Stack::with_children(layers).width(Length::Fill).height(Length::Fill))
         .width(width)
         .height(cover_h)
-        .style(move |_| cover_style(tokens, hovered));
+        .style(move |_| cover_style(tokens, hovered, selected));
 
     let info: Element<'static, Message> = column![
         text(elide(&title, chars_per_line(width, 13.6) * 2)).size(13.6).color(tokens.ink),
@@ -183,17 +265,30 @@ pub fn book_card(tokens: Tokens, book: Book, width: f32, hovered: bool) -> Eleme
         card = card.push(progress_bar(tokens, width, fraction));
     }
 
+    // One tap message for every cell: the app decides what a tap means —
+    // a membership while choosing, an open otherwise — and what the hold
+    // that started on this card swallowed.
+    let tap_id = book.id.clone();
     let hover_id = book.id.clone();
-    let right_id = book.id.clone();
+    let right = if selection.selecting && selected {
+        ContextTarget::Selection
+    } else {
+        ContextTarget::Row(book.id)
+    };
     let click = button(card)
         .padding(0)
         .style(move |_, status| card_button_style(tokens, status))
-        .on_press(Message::OpenBook(book.id));
-    mouse_area(click)
+        .on_press(Message::CardTap(tap_id));
+    let cell: Element<'static, Message> = mouse_area(click)
         .on_enter(Message::CardHover(Some(hover_id)))
         .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(ContextTarget::Row(right_id)))
-        .into()
+        .on_right_press(Message::ContextMenu(right))
+        .into();
+    if selection.selecting && !selected {
+        stack![cell, dim_layer(tokens, hovered)].into()
+    } else {
+        cell
+    }
 }
 
 /// The 3px progress hairline: the line at 60% as the track, the accent as
@@ -228,27 +323,36 @@ pub fn folder_card(
     shelf: Shelf,
     facts: FolderFacts,
     width: f32,
+    hovered: bool,
+    selection: SelectionFacts,
 ) -> Element<'static, Message> {
     // The card's own 8px of air: the plate sits inside it, and the badges
     // sit 6px inside the plate's corner.
     let plate_w = width - 16.0;
     let plate_h = plate_w * 4.0 / 3.0;
+    let selected = selection.selected.contains(shelf.id.as_str());
 
     let plate_view = plate(tokens, library, &shelf.id, 0, plate_w, plate_h);
-    let framed: Element<'static, Message> = match badge_row(tokens, &facts) {
-        Some(badges) => stack![
-            plate_view,
-            container(badges).width(plate_w).padding(6.0).align_x(Alignment::End),
-        ]
-        .width(plate_w)
-        .height(plate_h)
-        .into(),
-        None => plate_view,
-    };
+    let mut layers: Vec<Element<'static, Message>> = vec![plate_view];
+    if let Some(badges) = badge_row(tokens, &facts) {
+        layers
+            .push(container(badges).width(plate_w).padding(6.0).align_x(Alignment::End).into());
+    }
+    if selection.selecting {
+        layers.push(check_corner(tokens, selected));
+    }
+    let framed: Element<'static, Message> =
+        Stack::with_children(layers).width(plate_w).height(plate_h).into();
 
     let name = shelf.name.clone();
     let summary_line = facts::summary(facts.books, facts.inside);
-    let right_id = shelf.id.clone();
+    let tap_id = shelf.id.clone();
+    let hover_id = shelf.id.clone();
+    let right = if selection.selecting && selected {
+        ContextTarget::Selection
+    } else {
+        ContextTarget::Folder(shelf.id)
+    };
     let click = button(
         column![
             container(framed).padding(8.0),
@@ -264,10 +368,30 @@ pub fn folder_card(
     )
     .padding(0)
     .style(move |_, status| card_button_style(tokens, status))
-    .on_press(Message::Navigate(shelf.id));
-    mouse_area(click)
-        .on_right_press(Message::ContextMenu(ContextTarget::Folder(right_id)))
-        .into()
+    .on_press(Message::CardTap(tap_id));
+    let cell: Element<'static, Message> = mouse_area(click)
+        .on_enter(Message::CardHover(Some(hover_id)))
+        .on_exit(Message::CardHover(None))
+        .on_right_press(Message::ContextMenu(right))
+        .into();
+    // A folder's membership is its whole cell: the accent's tint and inset
+    // ring (folder.css), not a ring on the plate alone.
+    let cell: Element<'static, Message> = if selected {
+        container(cell)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(wash(tokens.accent, 0.10))),
+                border: Border { color: tokens.accent, width: 2.0, radius: 10.0.into() },
+                ..container::Style::default()
+            })
+            .into()
+    } else {
+        cell
+    };
+    if selection.selecting && !selected {
+        stack![cell, dim_layer(tokens, hovered)].into()
+    } else {
+        cell
+    }
 }
 
 /// What fills one cell of a plate: a folder, previewed as a plate of its
@@ -480,16 +604,32 @@ pub fn link_card(
     name: String,
     target: String,
     width: f32,
+    hovered: bool,
+    selection: SelectionFacts,
 ) -> Element<'static, Message> {
     let cover_h = width * COVER_RATIO;
-    let face = container(icon(IconName::Link, 28, wash(tokens.muted, 0.90)))
+    let selected = selection.selected.contains(id.as_str());
+    let mut layers: Vec<Element<'static, Message>> = vec![
+        container(icon(IconName::Link, 28, wash(tokens.muted, 0.90)))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into(),
+    ];
+    if selection.selecting {
+        layers.push(check_corner(tokens, selected));
+    }
+    let face = container(Stack::with_children(layers).width(Length::Fill).height(Length::Fill))
         .width(width)
         .height(cover_h)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
         .style(move |_| container::Style {
             background: Some(Background::Color(wash(tokens.surface, 0.60))),
-            border: Border { color: wash(tokens.line, 0.80), width: 1.0, radius: 6.0.into() },
+            border: if selected {
+                Border { color: tokens.accent, width: 2.0, radius: 6.0.into() }
+            } else {
+                Border { color: wash(tokens.line, 0.80), width: 1.0, radius: 6.0.into() }
+            },
             ..container::Style::default()
         });
     let body = column![
@@ -499,18 +639,31 @@ pub fn link_card(
     .spacing(8)
     .width(width);
 
+    let hover_id = id.clone();
+    let right = if selection.selecting && selected {
+        ContextTarget::Selection
+    } else {
+        ContextTarget::Row(id.clone())
+    };
     let action = button(body)
         .padding(0)
         .style(move |_, status| card_button_style(tokens, status));
     let action = if library_core::id::is_shelf(&target) {
-        action.on_press(Message::Navigate(target))
+        action.on_press(Message::CardTap(id))
     } else {
         // Listed but dead: no press, nothing to open.
         action
     };
-    mouse_area(action)
-        .on_right_press(Message::ContextMenu(ContextTarget::Row(id)))
-        .into()
+    let cell: Element<'static, Message> = mouse_area(action)
+        .on_enter(Message::CardHover(Some(hover_id)))
+        .on_exit(Message::CardHover(None))
+        .on_right_press(Message::ContextMenu(right))
+        .into();
+    if selection.selecting && !selected {
+        stack![cell, dim_layer(tokens, hovered)].into()
+    } else {
+        cell
+    }
 }
 
 /// The grid's last cell: the add door. A cover-shaped tile with the plus,
@@ -544,20 +697,47 @@ pub fn add_card(tokens: Tokens, width: f32) -> Element<'static, Message> {
 }
 
 /// The list's book thumbnail: the cover's gradient in the row's footprint.
-pub fn list_thumb(tokens: Tokens) -> Element<'static, Message> {
+pub fn list_thumb(tokens: Tokens, check: Option<bool>) -> Element<'static, Message> {
     let width = 41.6;
-    container(Space::new().width(width).height(width * COVER_RATIO))
-        .style(move |_| container::Style {
-            background: Some(Background::Gradient(cover_gradient(tokens))),
-            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 3.0.into() },
-            shadow: Shadow {
-                color: wash(Color::BLACK, 0.16),
-                offset: Vector::new(0.0, 1.0),
-                blur_radius: 2.0,
-            },
-            ..container::Style::default()
-        })
-        .into()
+    let base: Element<'static, Message> =
+        container(Space::new().width(width).height(width * COVER_RATIO))
+            .style(move |_| container::Style {
+                background: Some(Background::Gradient(cover_gradient(tokens))),
+                border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 3.0.into() },
+                shadow: Shadow {
+                    color: wash(Color::BLACK, 0.16),
+                    offset: Vector::new(0.0, 1.0),
+                    blur_radius: 2.0,
+                },
+                ..container::Style::default()
+            })
+            .into();
+    let Some(selected) = check else {
+        return base;
+    };
+    // The row's thumbnail is small enough that the mark covers it rather
+    // than sitting in a corner of it: the wash over the art, the check
+    // centred on the wash.
+    let mut layers = vec![base];
+    layers.push(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(wash(Color::BLACK, 0.34))),
+                ..container::Style::default()
+            })
+            .into(),
+    );
+    if selected {
+        layers.push(
+            container(icon(IconName::Check, 13, tokens.paper))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into(),
+        );
+    }
+    Stack::with_children(layers).width(width).height(width * COVER_RATIO).into()
 }
 
 /// The list's format chip, worn only by the formats that are not PDF — the
@@ -579,12 +759,23 @@ pub fn format_chip(tokens: Tokens, format: Format) -> Option<Element<'static, Me
 }
 
 /// The row's shared chrome: nothing at rest, the line's wash under the
-/// pointer.
-pub fn row_button_style(tokens: Tokens, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => Some(Background::Color(wash(tokens.line, 0.45))),
-        button::Status::Pressed => Some(Background::Color(wash(tokens.line, 0.70))),
-        _ => None,
+/// pointer — and, for a row in the set, the accent's tint of membership
+/// (select.css: accent at 10%, a shade deeper under the pointer).
+pub fn row_button_style(tokens: Tokens, status: button::Status, selected: bool) -> button::Style {
+    let background = if selected {
+        Some(Background::Color(wash(
+            tokens.accent,
+            match status {
+                button::Status::Hovered | button::Status::Pressed => 0.18,
+                _ => 0.10,
+            },
+        )))
+    } else {
+        match status {
+            button::Status::Hovered => Some(Background::Color(wash(tokens.line, 0.45))),
+            button::Status::Pressed => Some(Background::Color(wash(tokens.line, 0.70))),
+            _ => None,
+        }
     };
     button::Style {
         background,

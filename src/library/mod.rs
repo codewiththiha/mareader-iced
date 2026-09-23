@@ -14,6 +14,7 @@
 //! The bar's slots (breadcrumb, search, menus) live in [`bar`] and
 //! [`menus`]; the cells in [`card`] and [`list`].
 
+pub mod arrange;
 pub mod bar;
 pub mod card;
 pub mod facts;
@@ -22,7 +23,7 @@ pub mod menus;
 
 use std::collections::HashSet;
 
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow};
 
 use library_core::blob::LibraryBlob;
@@ -33,10 +34,21 @@ use library_core::sort;
 use library_core::sort::SortKey;
 use library_core::view::LibraryView;
 
-use crate::app::{MenuKind, Message};
+use crate::app::{ContextTarget, MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::chrome::platform;
 use crate::theme::{mix, Tokens};
+
+/// What the level's cells read about a selection: the mode, and the set.
+/// One value threaded through both layouts so a grid and a list cannot
+/// disagree about who is dimmed, who wears the ring, and where a
+/// right-click lands. Borrowed on purpose — the set outlives every frame
+/// that paints it.
+#[derive(Clone, Copy)]
+pub struct SelectionFacts<'a> {
+    pub selecting: bool,
+    pub selected: &'a HashSet<String>,
+}
 
 /// The grid's geometry, straight off grid.css: 152px tracks with a 24px
 /// gutter decide how many columns a width holds, rows sit 32px apart, and
@@ -111,6 +123,7 @@ pub fn view(
     terms: &str,
     hovered: Option<&str>,
     width: f32,
+    selection: SelectionFacts<'_>,
 ) -> Element<'static, Message> {
     let rows = level_rows(library, shelf, terms);
     let folders = level_folders(library, shelf, terms);
@@ -134,9 +147,18 @@ pub fn view(
 
         let inner_width = (width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN);
         let layout: Element<'static, Message> = if library.view.is_list() {
-            list::view(tokens, library, rows, folders)
+            list::view(tokens, library, rows, folders, hovered, selection)
         } else {
-            grid(tokens, library, library.view.columns, rows, folders, hovered, inner_width)
+            grid(
+                tokens,
+                library,
+                library.view.columns,
+                rows,
+                folders,
+                hovered,
+                inner_width,
+                selection,
+            )
         };
 
         let mut inner: iced::widget::Column<'static, Message> = column![layout];
@@ -151,7 +173,14 @@ pub fn view(
         framed(inner.into())
     };
 
-    container(body)
+    // The level's own floor: a press on the empty ground leaves the
+    // selection and closes a context menu, and a right-click on it asks
+    // the level's menu. Card and row presses are captured by their own
+    // widgets first, so the floor only hears the presses nothing claimed.
+    let floor = mouse_area(body)
+        .on_press(Message::FloorPressed)
+        .on_right_press(Message::ContextMenu(ContextTarget::Level));
+    container(floor)
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(Padding {
@@ -191,6 +220,7 @@ fn framed<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
 /// when the reader pinned them, else whatever the live width holds. The
 /// rows and the folders arrive by ownership and move, cell by cell, into
 /// the cards that paint them.
+#[allow(clippy::too_many_arguments)]
 fn grid(
     tokens: Tokens,
     library: &LibraryBlob,
@@ -199,6 +229,7 @@ fn grid(
     folders: Vec<library_core::shelf::Shelf>,
     hovered: Option<&str>,
     width: f32,
+    selection: SelectionFacts<'_>,
 ) -> Element<'static, Message> {
     let tracks = match pinned {
         Some(count) => usize::from(count).max(1),
@@ -209,16 +240,18 @@ fn grid(
     let mut cells: Vec<Element<'static, Message>> = Vec::new();
     for shelf in folders {
         let facts = facts::folder_facts(library, &shelf.id);
-        cells.push(card::folder_card(tokens, library, shelf, facts, cell));
+        let hot = hovered.is_some_and(|id| id == shelf.id.as_str());
+        cells.push(card::folder_card(tokens, library, shelf, facts, cell, hot, selection));
     }
     for entry in rows {
         match entry {
             Row::Book(book) => {
                 let hot = hovered.is_some_and(|id| id == book.id.as_str());
-                cells.push(card::book_card(tokens, book, cell, hot));
+                cells.push(card::book_card(tokens, book, cell, hot, selection));
             }
             Row::Link { id, name, target, .. } => {
-                cells.push(card::link_card(tokens, id, name, target, cell));
+                let hot = hovered.is_some_and(|hovered| hovered == id.as_str());
+                cells.push(card::link_card(tokens, id, name, target, cell, hot, selection));
             }
         }
     }

@@ -361,5 +361,20 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   pays the whole debt: the tombstone that keeps a watched folder quiet, and — for a copy
   the library owns — the byte in the store. Folder cards and list rows say what they
   hold: the badge for where the books live, the watch dot, the books-and-shelves summary
-  and the recursive 2×2 plate. Next: the watch toggles and restore menu the ledger now
-  keeps, selection and drag, duplicates, the arrange passes.
+  and the recursive 2×2 plate. The folder shelf now answers for its watch seat: the
+  context menu's toggle row flips the rung the shelf holds, the add menu lists what the
+  ledger remembers — removed books a click gives back (copies restored through the store,
+  each wearing a fresh measurement) and books that moved, offered as show-here-also or
+  go-and-look — and the import sheet seeds its answers from the ground's own tree, writing
+  the watch answer back onto the rung the pick names. Selection has landed: a 450ms hold
+  on any cell starts the choosing mode (Shift+Enter is its keyboard twin), taps toggle
+  memberships, the set wears the ring, the check chip, the tint and the step back the web
+  shelf wore, and one bar answers for it — All, Add to shelf (every shelf the whole set
+  may nest onto, or a new one minted for the filing), Remove (one sheet, one receipt, one
+  persist), Done. Right-clicks answer per target: a member of the set asks the selection's
+  menu, the level's own floor asks for a shelf or the select-all door. The membership edits
+  live in library/arrange.rs — filings, unfilings, bulk moves, nestings and sibling
+  reorders on the id lists alone, with the web app's own lift-and-reinsert arithmetic and
+  its tests; a move never touches a file the reader owns. Next: the drag session (ghost,
+  seams, dwell targets, commits into arrange), duplicates, the departure and conflict
+  gates around the moves.

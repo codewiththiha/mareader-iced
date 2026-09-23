@@ -547,3 +547,92 @@ fn direction_row(tokens: Tokens, ascending: bool) -> Element<'static, Message> {
         .padding(Padding { top: 4.0, right: 8.0, bottom: 4.0, left: 8.0 })
         .into()
 }
+
+/// Right-click on an item that is in the set, while choosing: the menu
+/// answers about the whole set, not the item under the cursor. Duplicate is
+/// listed disabled until the copy work it belongs to lands — a row the
+/// reader can see and not click beats a row that is quietly missing.
+pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message>, Size) {
+    let mut rows: Vec<Element<'static, Message>> = Vec::new();
+    let mut size = PanelSize::new(CONTEXT_W);
+
+    rows.push(menu::owned_section(tokens, format!("{count} selected")));
+    size = size.row(menu::SECTION_H);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Plus),
+        "New shelf from these",
+        None,
+        false,
+        Some(Message::FileSelectionOnNewShelf),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::owned_item(
+        tokens,
+        Some(IconName::Copy),
+        format!("Duplicate ({count})"),
+        None,
+        false,
+        None,
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::separator(tokens));
+    size = size.row(menu::SEP_H);
+
+    rows.push(menu::owned_danger_item(
+        tokens,
+        Some(IconName::Close),
+        format!("Remove ({count})"),
+        Message::AskRemoveSelection,
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Undo),
+        "Clear selection",
+        None,
+        false,
+        Some(Message::ClearSelection),
+    ));
+    size = size.row(menu::ROW_H);
+
+    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+}
+
+/// Right-click on the level's own floor: make a shelf here, and — when the
+/// level holds anything — the selection's two doors, which trade places
+/// with the mode the reader is in.
+pub fn level_menu(
+    tokens: Tokens,
+    selecting: bool,
+    anything: bool,
+) -> (Element<'static, Message>, Size) {
+    let mut rows: Vec<Element<'static, Message>> = Vec::new();
+    let mut size = PanelSize::new(CONTEXT_W);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Plus),
+        "New shelf",
+        None,
+        false,
+        Some(Message::CreateShelf),
+    ));
+    size = size.row(menu::ROW_H);
+
+    if anything {
+        let (icon, label, message) = if selecting {
+            (IconName::Undo, "Clear selection", Message::ClearSelection)
+        } else {
+            (IconName::Check, "Select all", Message::SelectAll)
+        };
+        rows.push(menu::item(tokens, Some(icon), label, None, false, Some(message)));
+        size = size.row(menu::ROW_H);
+    }
+
+    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+}

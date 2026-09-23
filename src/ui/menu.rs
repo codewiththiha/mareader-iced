@@ -225,6 +225,44 @@ fn danger_style(status: button::Status) -> button::Style {
     }
 }
 
+/// The owned twin of [`danger_item`], with the glyph slot [`item`] has: a
+/// danger row whose label is computed when the menu is built, and whose
+/// icon answers with the row.
+pub fn owned_danger_item<M: Clone + 'static>(
+    tokens: Tokens,
+    glyph: Option<IconName>,
+    label: String,
+    message: M,
+) -> Element<'static, M> {
+    let icon_slot: Element<'static, M> = match glyph {
+        Some(name) => container(icon(name, 15, crate::theme::DANGER)).width(16.0).into(),
+        None => Space::new().width(16.0).into(),
+    };
+    let face = row![
+        icon_slot,
+        container(text(label).size(13).color(crate::theme::DANGER))
+            .width(Length::Fill)
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let _ = tokens;
+    button(face)
+        .width(Length::Fill)
+        .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 })
+        .style(move |_, status| danger_style(status))
+        .on_press(message)
+        .into()
+}
+
+/// The owned twin of [`section`]: the same caption for a heading computed
+/// when the menu is built.
+pub fn owned_section<M: Clone + 'static>(tokens: Tokens, label: String) -> Element<'static, M> {
+    container(text(label).size(11).color(tokens.muted))
+        .width(Length::Fill)
+        .padding(Padding { top: 6.0, right: 8.0, bottom: 4.0, left: 8.0 })
+        .into()
+}
+
 /// A section caption: the small muted label the menu's groups open with.
 pub fn section<'a, M: Clone + 'a>(tokens: Tokens, label: &'a str) -> Element<'a, M> {
     container(text(label).size(11).color(tokens.muted))

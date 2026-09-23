@@ -88,6 +88,10 @@ pub enum ContextTarget {
     Row(String),
     /// A folder shelf.
     Folder(String),
+    /// The whole chosen set: the right-click on a member while choosing.
+    Selection,
+    /// The level's own floor.
+    Level,
 }
 
 /// One right-click, answered: what was asked about, and where the pointer
@@ -97,6 +101,26 @@ struct ContextRequest {
     target: ContextTarget,
     at: Point,
 }
+
+/// A hold in flight: the cell the press landed on, where it landed, and
+/// when it started. A press that moves past the drag's threshold stops
+/// being a hold — the gesture that arrives with the drag session owns the
+/// same fields from there.
+struct Press {
+    id: String,
+    at: Point,
+    started: Instant,
+}
+
+/// The web gesture's tuning, carried over whole (long_press.rs): the hold
+/// decides at 450ms, a press that travelled more than 8px is no hold, and
+/// a press that travelled more than 6px is a drag — the drag's threshold
+/// is inside the hold's slop, so a press that moved enough to drag can
+/// never also decide to hold.
+const SELECT_PRESS_MS: u128 = 450;
+const SELECT_SLOP_PX: f32 = 8.0;
+const DRAG_THRESHOLD_PX: f32 = 6.0;
+const _: () = assert!(DRAG_THRESHOLD_PX < SELECT_SLOP_PX);
 
 /// What the two sheets rename, so one sheet shape serves both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +136,9 @@ enum Sheet {
     Rename { kind: RenameKind, id: String, draft: String },
     /// A row about to leave the library.
     Remove { id: String, name: String },
+    /// The chosen set about to leave the library: its books, and the
+    /// folder shelves themselves.
+    RemoveMany { books: Vec<String>, shelves: Vec<String> },
     /// A folder about to be imported: the options sheet decides what the
     /// walk admits, and how the books are held. `ground` is the tree the
     /// pick belongs to, when one governs it — the sheet seeds its answers
@@ -296,6 +323,20 @@ pub struct Mareader {
     viewport: Size,
     /// The card the pointer is over: the grid's hover truth.
     hovered_card: Option<String>,
+    /// Whether the shelf is in the choosing mode a hold starts.
+    selecting: bool,
+    /// The chosen set: row ids and shelf ids on the level.
+    selected: HashSet<String>,
+    /// The hold in flight, if the press landed on a cell.
+    press: Option<Press>,
+    /// The tap a hold swallowed: the release after a hold still belongs to
+    /// the cell's button, and this flag tells that one tap to stay quiet.
+    /// Cleared at the START of the next press rather than at the release,
+    /// so the order of widget and listener messages inside one event can
+    /// never matter.
+    tap_swallow: Option<String>,
+    /// Whether the selection bar's shelf popover is open.
+    select_pop: bool,
     /// Whether the last crumb is a rename field right now.
     renaming: bool,
     /// What the rename field holds, mid-typing.
@@ -417,6 +458,36 @@ pub enum Message {
     OpenBook(String),
     /// The card the pointer entered or left.
     CardHover(Option<String>),
+    /// A cell was tapped. One message for every cell: the app decides what
+    /// a tap means — a membership while choosing, an open otherwise.
+    CardTap(String),
+    /// The left button went down somewhere in the window: the hold
+    /// machine's starting gun. It decides for itself whether the press
+    /// landed on a cell it may hold.
+    PressStarted,
+    /// The left button came up: the hold machine stops counting.
+    PressEnded,
+    /// A press on the level's floor that no cell claimed.
+    FloorPressed,
+    /// Choose everything on screen.
+    SelectAll,
+    /// The selection bar's shelf popover: open or close.
+    ToggleSelectPop,
+    /// File the chosen set onto the shelf that was named.
+    FileSelection(String),
+    /// Mint a new shelf and file the chosen set onto it.
+    FileSelectionOnNewShelf,
+    /// Ask the remove sheet about the whole chosen set.
+    AskRemoveSelection,
+    /// Leave the choosing mode, keeping nothing.
+    ClearSelection,
+    /// Enter on the shelf, when no field owns the key: a tap by keyboard.
+    EnterPressed,
+    /// Shift+Enter on the shelf: the keyboard's hold.
+    ShiftEnter,
+    /// A press on the selection bar's own chrome — captured so it cannot
+    /// fall through to the floor, and answered with nothing.
+    KeepSelection,
     /// The shelf asked for the multi-file picker.
     PickFiles,
     /// The picker answered: paths, or nothing when dismissed.
@@ -490,6 +561,11 @@ impl Mareader {
             cursor: Point::new(600.0, 400.0),
             viewport: Size::new(1200.0, 800.0),
             hovered_card: None,
+            selecting: false,
+            selected: HashSet::new(),
+            press: None,
+            tap_swallow: None,
+            select_pop: false,
             renaming: false,
             rename_draft: String::new(),
             context: None,
@@ -547,6 +623,7 @@ impl Mareader {
             Message::Tick(at) => {
                 self.titlebar.on_tick(self.route, at);
                 self.toasts.on_tick(at);
+                self.on_hold_tick(at);
                 Task::none()
             }
             Message::Chrome(titlebar::Message::TogglePin) => {
@@ -568,14 +645,7 @@ impl Mareader {
                 }
             }
             Message::Navigate(shelf) => {
-                self.menu = None;
-                self.menu_confirm = None;
-                self.context = None;
-                // A rename in flight belongs to the shelf it started on;
-                // stepping away abandons it rather than carrying the draft.
-                self.renaming = false;
-                self.hovered_card = None;
-                self.shelf = shelf;
+                self.navigate_to(shelf);
                 Task::none()
             }
             Message::Query(terms) => {
@@ -614,6 +684,10 @@ impl Mareader {
                 }
                 if self.renaming {
                     self.renaming = false;
+                    return Task::none();
+                }
+                if self.selecting {
+                    self.exit_selection();
                     return Task::none();
                 }
                 self.menu = None;
@@ -777,6 +851,7 @@ impl Mareader {
             Message::CreateShelf => self.create_shelf(),
             Message::Reload => {
                 self.menu = None;
+                self.exit_selection();
                 self.library = storage::load_library();
                 if self.shelf != ALL_SHELF
                     && shelf::find(&self.library.shelves, &self.shelf).is_none()
@@ -789,6 +864,7 @@ impl Mareader {
             Message::OpenBook(id) => {
                 self.menu = None;
                 self.context = None;
+                self.exit_selection();
                 let Some(path) = book::find_by_id(&self.library.books, &id)
                     .map(|book| PathBuf::from(book.path()))
                 else {
@@ -800,6 +876,94 @@ impl Mareader {
                 self.hovered_card = hovered;
                 Task::none()
             }
+            Message::CardTap(id) => self.card_tap(&id),
+            Message::PressStarted => {
+                // The next press owns the swallow flag: clearing it here
+                // rather than at the release makes the machine's answer
+                // independent of the order widget and listener messages
+                // queue in.
+                self.tap_swallow = None;
+                // The hold machine starts on the shelf alone, on a cell
+                // alone, and with nothing covering the level.
+                if self.route == Route::Library
+                    && self.sheet.is_none()
+                    && self.menu.is_none()
+                    && self.context.is_none()
+                    && let Some(id) = self.hovered_card.clone()
+                {
+                    self.press = Some(Press { id, at: self.cursor, started: now });
+                }
+                Task::none()
+            }
+            Message::PressEnded => {
+                self.press = None;
+                Task::none()
+            }
+            Message::FloorPressed => {
+                self.exit_selection();
+                self.context = None;
+                Task::none()
+            }
+            Message::SelectAll => {
+                self.context = None;
+                let folders = library::level_folders(&self.library, &self.shelf, &self.query);
+                let rows = library::level_rows(&self.library, &self.shelf, &self.query);
+                self.selecting = true;
+                self.selected.extend(folders.into_iter().map(|shelf| shelf.id));
+                self.selected.extend(rows.iter().map(|row| row.id().to_string()));
+                Task::none()
+            }
+            Message::ToggleSelectPop => {
+                self.select_pop = !self.select_pop;
+                Task::none()
+            }
+            Message::FileSelection(shelf_id) => self.file_selection_to(Some(shelf_id)),
+            Message::FileSelectionOnNewShelf => self.file_selection_to(None),
+            Message::AskRemoveSelection => {
+                self.context = None;
+                let (books, shelves) = self.split_selection();
+                if books.is_empty() && shelves.is_empty() {
+                    return Task::none();
+                }
+                self.exit_selection();
+                self.sheet = Some(Sheet::RemoveMany { books, shelves });
+                Task::none()
+            }
+            Message::ClearSelection => {
+                self.context = None;
+                self.exit_selection();
+                Task::none()
+            }
+            Message::EnterPressed => {
+                if self.route != Route::Library
+                    || self.sheet.is_some()
+                    || self.context.is_some()
+                    || self.menu.is_some()
+                {
+                    return Task::none();
+                }
+                let Some(id) = self.hovered_card.clone() else { return Task::none() };
+                if self.selecting {
+                    self.toggle_selected(&id);
+                    Task::none()
+                } else {
+                    self.card_tap(&id)
+                }
+            }
+            Message::ShiftEnter => {
+                if self.route != Route::Library
+                    || self.selecting
+                    || self.sheet.is_some()
+                    || self.context.is_some()
+                    || self.menu.is_some()
+                {
+                    return Task::none();
+                }
+                let Some(id) = self.hovered_card.clone() else { return Task::none() };
+                self.enter_selection(&id);
+                Task::none()
+            }
+            Message::KeepSelection => Task::none(),
             Message::PickFiles => {
                 self.menu = None;
                 dialogs::pick_files(Message::FilesPicked)
@@ -936,6 +1100,21 @@ impl Mareader {
 
     /// Mint a shelf at the level on screen and step into it — the web app's
     /// create-and-enter, one message.
+    /// Stand on another level: the panels close, the rename and the choice
+    /// in flight belong to the level they started on, and the hover truth
+    /// resets — the pointer is over new ground now.
+    fn navigate_to(&mut self, shelf: String) {
+        self.menu = None;
+        self.menu_confirm = None;
+        self.context = None;
+        // A rename in flight belongs to the shelf it started on;
+        // stepping away abandons it rather than carrying the draft.
+        self.renaming = false;
+        self.hovered_card = None;
+        self.exit_selection();
+        self.shelf = shelf;
+    }
+
     fn create_shelf(&mut self) -> Task<Message> {
         let parent = (self.shelf != ALL_SHELF).then(|| self.shelf.clone());
         self.create_shelf_in(parent)
@@ -944,12 +1123,21 @@ impl Mareader {
     /// Mint a shelf under an explicit parent — `None` hangs it at the top
     /// level — and step into it.
     fn create_shelf_in(&mut self, parent: Option<String>) -> Task<Message> {
-        let now = now_ms();
-        let id = library_core::id::next_shelf_id(now);
+        let id = self.mint_shelf(parent);
+        self.menu = None;
+        self.context = None;
+        self.shelf = id;
+        self.persist_library()
+    }
+
+    /// Mint a shelf and hand back its id, without stepping into it: the
+    /// selection's answers file onto a shelf the reader never leaves the
+    /// level for. The first one is simply "New shelf"; the counter starts
+    /// only once that name is taken.
+    fn mint_shelf(&mut self, parent: Option<String>) -> String {
+        let id = library_core::id::next_shelf_id(now_ms());
         let in_use: HashSet<String> =
             self.library.shelves.iter().map(|shelf| shelf.name.clone()).collect();
-        // The first one is simply "New shelf"; the counter starts only once
-        // that name is taken.
         let name = if in_use.contains("New shelf") {
             book::duplicate_title("New shelf", &in_use)
         } else {
@@ -958,10 +1146,7 @@ impl Mareader {
         self.library
             .shelves
             .push(shelf::Shelf::virtual_shelf(id.clone(), name, parent));
-        self.menu = None;
-        self.context = None;
-        self.shelf = id;
-        self.persist_library()
+        id
     }
 
     /// Take a shelf apart the way the web app takes a reader-made shelf
@@ -974,13 +1159,21 @@ impl Mareader {
     fn remove_shelf_with(&mut self, id: &str) -> Task<Message> {
         self.menu = None;
         self.context = None;
-        let Some(gone) = shelf::find(&self.library.shelves, id) else {
+        if !self.dismantle_shelf(id) {
             return Task::none();
+        }
+        self.persist_library()
+    }
+
+    /// A shelf taken apart, receipt aside: the children re-hang on its
+    /// parent, it goes, and a reader standing anywhere inside it steps out
+    /// to the level it hung from. True when the id named a shelf.
+    fn dismantle_shelf(&mut self, id: &str) -> bool {
+        let Some(gone) = shelf::find(&self.library.shelves, id) else {
+            return false;
         };
         let step_out = gone.parent.clone().unwrap_or_else(|| ALL_SHELF.to_string());
         let gone_id = gone.id.clone();
-        // Standing on the shelf that goes — or somewhere inside it — means
-        // stepping out to the level it hung from.
         let standing_within =
             shelf::subtree_ids(&self.library.shelves, std::slice::from_ref(&gone_id))
                 .contains(&self.shelf);
@@ -989,7 +1182,135 @@ impl Mareader {
         if standing_within {
             self.shelf = step_out;
         }
-        self.persist_library()
+        true
+    }
+
+    /// What a tap means: a membership while choosing, an open otherwise.
+    /// The flag a finished hold leaves behind swallows this one tap — the
+    /// release still belongs to the cell's button, and the choice the hold
+    /// just started must not immediately toggle the cell back out.
+    fn card_tap(&mut self, id: &str) -> Task<Message> {
+        if self.tap_swallow.take().is_some_and(|swallowed| swallowed == id) {
+            return Task::none();
+        }
+        if self.selecting {
+            self.toggle_selected(id);
+            return Task::none();
+        }
+        self.menu = None;
+        self.context = None;
+        // Resolved to an owned answer first: the resolve borrows the blob,
+        // and the acts that follow borrow the app.
+        enum Tap {
+            Open(PathBuf),
+            Shelf(String),
+            Nothing,
+        }
+        let tap = match book::find_row(&self.library.books, id) {
+            Some(book::Row::Book(book)) => Tap::Open(PathBuf::from(book.path())),
+            // A link opens onto the shelf it points at — when it still
+            // points at one.
+            Some(book::Row::Link { target, .. }) if library_core::id::is_shelf(target) => {
+                Tap::Shelf(target.clone())
+            }
+            _ => {
+                if shelf::find(&self.library.shelves, id).is_some() {
+                    Tap::Shelf(id.to_string())
+                } else {
+                    Tap::Nothing
+                }
+            }
+        };
+        match tap {
+            Tap::Open(path) => self.open_document_path(path),
+            Tap::Shelf(shelf) => {
+                self.navigate_to(shelf);
+                Task::none()
+            }
+            Tap::Nothing => Task::none(),
+        }
+    }
+
+    /// The hold machine's beat: a press that travelled past the drag's
+    /// threshold is no hold (the drag session that lands later owns the
+    /// gesture from there); a press that stayed quiet long enough starts
+    /// the choice and marks the coming tap swallowed.
+    fn on_hold_tick(&mut self, at: Instant) {
+        let Some(press) = &self.press else { return };
+        let moved = (self.cursor.x - press.at.x).hypot(self.cursor.y - press.at.y);
+        if moved > DRAG_THRESHOLD_PX {
+            self.press = None;
+            return;
+        }
+        if at.duration_since(press.started).as_millis() >= SELECT_PRESS_MS && moved <= SELECT_SLOP_PX
+        {
+            let id = press.id.clone();
+            self.press = None;
+            self.tap_swallow = Some(id.clone());
+            self.enter_selection(&id);
+        }
+    }
+
+    /// The hold's answer: the mode is on and the cell held is its first
+    /// member.
+    fn enter_selection(&mut self, id: &str) {
+        self.selecting = true;
+        self.selected.insert(id.to_string());
+    }
+
+    /// A tap while choosing: in out, out in. An empty set keeps the mode —
+    /// leaving is Done's, Escape's, or the floor's answer, never a count's.
+    fn toggle_selected(&mut self, id: &str) {
+        if !self.selected.remove(id) {
+            self.selected.insert(id.to_string());
+        }
+    }
+
+    /// Every exit goes through here — Done, Escape, a press on the floor,
+    /// an action that consumed the set, leaving the page.
+    fn exit_selection(&mut self) {
+        self.selecting = false;
+        self.selected.clear();
+        self.select_pop = false;
+    }
+
+    /// The set split into its two kinds, in the level's own order: the
+    /// folders the level renders, then the rows it renders. A payload for
+    /// a filing keeps the page's order, because putting the set back in
+    /// the list's order would be an act that quietly shuffled the hand.
+    fn split_selection(&self) -> (Vec<String>, Vec<String>) {
+        let books = library::level_rows(&self.library, &self.shelf, &self.query)
+            .iter()
+            .map(|row| row.id().to_string())
+            .filter(|id| self.selected.contains(id))
+            .collect();
+        let shelves = library::level_folders(&self.library, &self.shelf, &self.query)
+            .into_iter()
+            .map(|shelf| shelf.id)
+            .filter(|id| self.selected.contains(id))
+            .collect();
+        (books, shelves)
+    }
+
+    /// The bar's two filing answers: onto the shelf named, or onto a shelf
+    /// minted for the occasion. Books go as memberships, folders go as
+    /// nestings, and one persist covers the batch. A folder that cannot be
+    /// nested onto the target — it would end up inside itself — stays
+    /// where it is rather than failing the batch.
+    fn file_selection_to(&mut self, target: Option<String>) -> Task<Message> {
+        self.context = None;
+        let (book_ids, folder_ids) = self.split_selection();
+        let target = match target {
+            Some(id) => id,
+            None => self.mint_shelf(None),
+        };
+        let mut moved = library::arrange::file_many(&mut self.library.shelves, &book_ids, &target);
+        moved |= library::arrange::nest_many(&mut self.library.shelves, &folder_ids, &target);
+        self.exit_selection();
+        if moved {
+            return self.persist_library();
+        }
+        Task::none()
     }
 
     /// Ask the rename sheet for a name, prefilled with the one on show.
@@ -1043,6 +1364,7 @@ impl Mareader {
                 self.persist_library()
             }
             Sheet::Remove { id, .. } => self.remove_row(&id),
+            Sheet::RemoveMany { books, shelves } => self.remove_many(books, shelves),
             Sheet::Import { root, ground } => {
                 let opts = self.import_opts.clone();
                 let root_str = root.to_string_lossy().into_owned();
@@ -1080,6 +1402,48 @@ impl Mareader {
             return Task::none();
         };
         let name = row.display_name();
+        let was_book = row.book().is_some();
+        if !self.purge_row(id) {
+            return Task::none();
+        }
+        let line = if was_book {
+            format!("Removed “{name}” from the library")
+        } else {
+            format!("Removed the link “{name}”")
+        };
+        self.toasts.show(Tone::Info, line, Instant::now());
+        self.persist_library()
+    }
+
+    /// The set's removal, answered: every book leaves the library the way
+    /// one does — the ledger's tombstone, the swept copy, the memberships,
+    /// the links — and every shelf comes apart the way one does. One
+    /// receipt and one persist: a bulk act is one act, not n of them.
+    fn remove_many(&mut self, books: Vec<String>, shelves: Vec<String>) -> Task<Message> {
+        let removed_books = books.iter().filter(|id| self.purge_row(id)).count();
+        let removed_shelves = shelves.iter().filter(|id| self.dismantle_shelf(id)).count();
+        if removed_books == 0 && removed_shelves == 0 {
+            return Task::none();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if removed_books > 0 {
+            parts.push(lib_text::plural(removed_books, "book", "books"));
+        }
+        if removed_shelves > 0 {
+            parts.push(lib_text::plural(removed_shelves, "shelf", "shelves"));
+        }
+        let line = format!("Removed {} from the library", parts.join(" and "));
+        self.toasts.show(Tone::Info, line, Instant::now());
+        self.persist_library()
+    }
+
+    /// A row leaving the library, receipt aside: the tombstone the ledger
+    /// needs, the copy swept when no twin reads the byte, the memberships,
+    /// the links that pointed at it. True when the id named a row.
+    fn purge_row(&mut self, id: &str) -> bool {
+        let Some(row) = book::find_row(&self.library.books, id) else {
+            return false;
+        };
         let doomed = row.book().cloned();
         if let Some(book) = &doomed {
             // Read the world before writing any of it: the tombstone needs
@@ -1109,13 +1473,7 @@ impl Mareader {
         book::remove_row(&mut self.library.books, id);
         book::drop_dangling_links(&mut self.library.books);
         shelf::forget_everywhere(&mut self.library.shelves, id);
-        let line = if doomed.is_some() {
-            format!("Removed “{name}” from the library")
-        } else {
-            format!("Removed the link “{name}”")
-        };
-        self.toasts.show(Tone::Info, line, Instant::now());
-        self.persist_library()
+        true
     }
 
     /// The pickers' and the drop's answer: measure the files, then land
@@ -2406,6 +2764,7 @@ impl Mareader {
                 &self.query,
                 self.hovered_card.as_deref(),
                 self.viewport.width,
+                library::SelectionFacts { selecting: self.selecting, selected: &self.selected },
             ),
             Route::Reader => reader_surface(self.tokens, self.open_document.as_deref()),
         };
@@ -2431,6 +2790,12 @@ impl Mareader {
         // The runs' live lines, while any are in flight.
         if self.route == Route::Library && !self.runs.is_empty() {
             layers.push(runs_dock(self.tokens, &self.runs));
+        }
+        // The selection's bar, while the mode is on. Bottom-right, where
+        // the web ActionBar stood; the runs' dock holds the centre, so the
+        // two never argue over one corner.
+        if self.route == Route::Library && self.selecting {
+            layers.push(self.select_bar());
         }
         // A hidden bar is not in the tree at all: nothing to hit, nothing
         // to hover — the reveal band lives in the cursor subscription.
@@ -2539,6 +2904,14 @@ impl Mareader {
                 let shelf = shelf::find(&self.library.shelves, id)?;
                 menus::folder_menu(self.tokens, shelf, self.watch_facts(id))
             }
+            ContextTarget::Selection => menus::selection_menu(self.tokens, self.selected.len()),
+            ContextTarget::Level => {
+                let anything = !library::level_rows(&self.library, &self.shelf, &self.query)
+                    .is_empty()
+                    || !library::level_folders(&self.library, &self.shelf, &self.query)
+                        .is_empty();
+                menus::level_menu(self.tokens, self.selecting, anything)
+            }
         };
         let at = popover::place(request.at, size, self.viewport);
         Some(
@@ -2608,6 +2981,31 @@ impl Mareader {
                     ],
                 )
             }
+            Sheet::RemoveMany { books, shelves } => {
+                let mut parts: Vec<String> = Vec::new();
+                if !books.is_empty() {
+                    parts.push(lib_text::plural(books.len(), "book", "books"));
+                }
+                if !shelves.is_empty() {
+                    parts.push(lib_text::plural(shelves.len(), "shelf", "shelves"));
+                }
+                let body = text(format!(
+                    "Remove {} from the library? {}",
+                    parts.join(" and "),
+                    "The files on disk stay where they are."
+                ))
+                .size(13)
+                .color(self.tokens.muted);
+                sheet::panel(
+                    self.tokens,
+                    "Remove",
+                    body.into(),
+                    vec![
+                        sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel),
+                        sheet::confirm_button(self.tokens, "Remove", Message::SheetSave, true),
+                    ],
+                )
+            }
             Sheet::Import { root, ground } => sheet::panel_sized(
                 self.tokens,
                 sheet::IMPORT_W,
@@ -2620,6 +3018,68 @@ impl Mareader {
             ),
         };
         Some(sheet::overlay(panel, Message::SheetCancel))
+    }
+
+    /// The selection's bar: the count, All, the shelf answer, Remove, and
+    /// Done in a pill at the shelf's bottom-right — the ActionBar's shape,
+    /// surface and hairline and fully round. The bar and its popover sit in
+    /// mouse areas that capture and answer nothing, so a press on their
+    /// chrome cannot fall through to the floor underneath and leave the
+    /// mode the bar is for.
+    fn select_bar(&self) -> Element<'_, Message> {
+        let count = self.selected.len();
+        let mut face = Column::new().spacing(8).align_x(Alignment::End);
+        if self.select_pop {
+            face = face
+                .push(mouse_area(self.select_pop_panel()).on_press(Message::KeepSelection));
+        }
+        face = face.push(
+            mouse_area(select_pill(self.tokens, count, self.select_pop))
+                .on_press(Message::KeepSelection),
+        );
+        container(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding { top: 0.0, right: 20.0, bottom: 20.0, left: 0.0 })
+            .align_x(Alignment::End)
+            .align_y(Alignment::End)
+            .into()
+    }
+
+    /// The bar's "Add to shelf" panel: every shelf the WHOLE set may land
+    /// on — one any chosen folder would end up inside itself on answers
+    /// for none of them, and renders disabled rather than vanishing — and
+    /// the door to a shelf minted for the occasion.
+    fn select_pop_panel(&self) -> Element<'static, Message> {
+        let (_, folder_ids) = self.split_selection();
+        let mut rows: Vec<Element<'static, Message>> = Vec::new();
+        rows.push(popover::section(self.tokens, "Add to shelf"));
+        for shelf in &self.library.shelves {
+            if shelf.id == ALL_SHELF {
+                continue;
+            }
+            let nestable = folder_ids
+                .iter()
+                .all(|id| shelf::can_nest(&self.library.shelves, id, &shelf.id));
+            rows.push(popover::owned_item(
+                self.tokens,
+                Some(IconName::Folder),
+                shelf.name.clone(),
+                None,
+                false,
+                nestable.then(|| Message::FileSelection(shelf.id.clone())),
+            ));
+        }
+        rows.push(popover::separator(self.tokens));
+        rows.push(popover::item(
+            self.tokens,
+            Some(IconName::Plus),
+            "New shelf",
+            None,
+            false,
+            Some(Message::FileSelectionOnNewShelf),
+        ));
+        popover::popover(self.tokens, rows, SELECT_POP_W)
     }
 
     fn title(&self) -> String {
@@ -2647,7 +3107,7 @@ impl Mareader {
         // animating, a hide waiting out its grace, or a toast waiting out
         // its stamp. An idle window subscribes to nothing and costs no
         // redraws.
-        if self.titlebar.needs_tick(now) || self.toasts.needs_tick(now) {
+        if self.titlebar.needs_tick(now) || self.toasts.needs_tick(now) || self.press.is_some() {
             subscriptions.push(window::frames().map(Message::Tick));
         }
         // A run's beats flow while the run lives: same id, same
@@ -2769,17 +3229,36 @@ fn write_folder_row(folders: &mut Vec<WatchedFolder>, folder: WatchedFolder) {
 /// The runtime's event firehose, narrowed to what the state tree consumes.
 /// A plain `fn` — `listen_with` takes one by design, so the filter cannot
 /// smuggle captured state into the subscription's identity.
-fn on_event(event: iced::Event, _status: event::Status, id: window::Id) -> Option<Message> {
+fn on_event(event: iced::Event, status: event::Status, id: window::Id) -> Option<Message> {
     match event {
         iced::Event::Window(event) => Some(Message::WindowEvent(id, event)),
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
             Some(Message::Cursor(Some(position)))
         }
         iced::Event::Mouse(mouse::Event::CursorLeft) => Some(Message::Cursor(None)),
+        // The hold machine listens to EVERY left press and release, not
+        // just the ones no widget claimed: a hold starts on a card, and a
+        // card's button claims the press. The machine's own guards decide
+        // which presses are holds.
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+            Some(Message::PressStarted)
+        }
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Some(Message::PressEnded)
+        }
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(keyboard::key::Named::Escape),
             ..
         }) => Some(Message::EscapePressed),
+        // Enter only while nothing captured it: a focused field owns the
+        // key, and the shelf hears what the fields decline.
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Enter),
+            modifiers,
+            ..
+        }) if matches!(status, event::Status::Ignored) => {
+            Some(if modifiers.shift() { Message::ShiftEnter } else { Message::EnterPressed })
+        }
         _ => None,
     }
 }
@@ -2790,6 +3269,84 @@ fn scrim() -> Element<'static, Message> {
     mouse_area(container(Space::new().width(Length::Fill).height(Length::Fill)))
         .on_press(Message::CloseMenu)
         .into()
+}
+
+/// The selection bar's popover width.
+const SELECT_POP_W: f32 = 240.0;
+
+/// The bar's own pill: the count readout and the four answers, in the
+/// ActionBar's chrome — the surface, the hairline, the float's shadow.
+fn select_pill(tokens: Tokens, count: usize, pop_open: bool) -> Element<'static, Message> {
+    let face = row![
+        container(text(format!("{count} selected")).size(12).color(tokens.muted))
+            .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 0.0 }),
+        pill_button(tokens, "All", false, Some(Message::SelectAll)),
+        pill_button(
+            tokens,
+            "Add to shelf",
+            pop_open,
+            Some(Message::ToggleSelectPop),
+        ),
+        pill_button(
+            tokens,
+            &format!("Remove ({count})"),
+            false,
+            (count > 0).then_some(Message::AskRemoveSelection),
+        ),
+        pill_button(tokens, "Done", false, Some(Message::ClearSelection)),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+    container(face)
+        .padding(Padding { top: 6.0, right: 6.0, bottom: 6.0, left: 16.0 })
+        .style(move |_| container::Style {
+            background: Some(Background::Color(tokens.surface)),
+            border: Border { color: tokens.line, width: 1.0, radius: 999.0.into() },
+            shadow: Shadow {
+                color: wash(Color::BLACK, 0.18),
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 12.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// One answer on the bar: quiet text in a round ghost, red for the
+/// dangerous one, washed while open for the one holding the popover.
+/// `None` for the message renders the answer disabled — listed, but not
+/// quietly dropped.
+fn pill_button(
+    tokens: Tokens,
+    label: &str,
+    active: bool,
+    message: Option<Message>,
+) -> Element<'static, Message> {
+    let danger = message.as_ref().is_some_and(|message| {
+        matches!(message, Message::AskRemoveSelection)
+    });
+    let ink = if danger { crate::theme::DANGER } else { tokens.ink };
+    let action = button(text(label.to_string()).size(12).color(ink))
+        .padding(Padding { top: 5.0, right: 12.0, bottom: 5.0, left: 12.0 })
+        .style(move |_, status| {
+            let wash_of = if danger { crate::theme::DANGER } else { tokens.accent };
+            let background = match status {
+                button::Status::Hovered => Some(Background::Color(wash(wash_of, 0.12))),
+                button::Status::Pressed => Some(Background::Color(wash(wash_of, 0.20))),
+                _ => active.then_some(Background::Color(wash(tokens.accent, 0.12))),
+            };
+            button::Style {
+                background,
+                border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
+                text_color: ink,
+                shadow: Shadow::default(),
+                snap: false,
+            }
+        });
+    match message {
+        Some(message) => action.on_press(message).into(),
+        None => action.into(),
+    }
 }
 
 /// The runs' live lines: a pill per run at the foot of the shelf, naming
