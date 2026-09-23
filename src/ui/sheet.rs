@@ -13,7 +13,11 @@ use crate::theme::{wash, Tokens};
 
 /// The panel's width — wide enough for a question and a name, narrow enough
 /// to read as a card over the shelf.
-const SHEET_W: f32 = 380.0;
+pub const SHEET_W: f32 = 380.0;
+
+/// The import sheet's width: it carries whole sections of options, so it
+/// needs the room the question sheets do not.
+pub const IMPORT_W: f32 = 460.0;
 
 const MEDIUM: Font = Font { weight: iced::font::Weight::Medium, ..Font::DEFAULT };
 
@@ -42,6 +46,17 @@ pub fn panel<'a, M: Clone + 'a>(
     body: Element<'a, M>,
     actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
+    panel_sized(tokens, SHEET_W, title, body, actions)
+}
+
+/// The panel at an explicit width, for sheets wider than a question.
+pub fn panel_sized<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    width: f32,
+    title: &'a str,
+    body: Element<'a, M>,
+    actions: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
     container(
         Column::new()
             .push(text(title).size(15).font(MEDIUM).color(tokens.ink))
@@ -54,7 +69,7 @@ pub fn panel<'a, M: Clone + 'a>(
             .spacing(14)
             .width(Length::Fill),
     )
-    .width(SHEET_W)
+    .width(width)
     .padding(Padding { top: 20.0, right: 20.0, bottom: 20.0, left: 20.0 })
     .style(move |_| container::Style {
         background: Some(Background::Color(tokens.surface)),

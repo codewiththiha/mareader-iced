@@ -14,7 +14,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::time::Instant;
-use iced::widget::{button, column, container, mouse_area, operation, stack, text, text_input, Id, Space};
+use iced::widget::{
+    button, column, container, mouse_area, operation, row, stack, text, text_input, Column, Id,
+    Row, Space,
+};
 use iced::{
     event, keyboard, mouse, window, Alignment, Background, Border, Color, Element, Length,
     Padding, Point, Shadow, Size, Subscription, Task, Theme, Vector,
@@ -22,15 +25,15 @@ use iced::{
 
 use library_core::blob::LibraryBlob;
 use library_core::book::{self, Book, Origin};
-use library_core::folder::FolderOpts;
+use library_core::folder::{FolderOpts, MIN_SIZE_CEIL, MIN_SIZE_FLOOR};
 use library_core::ledger;
-use library_core::scan::{subfolder_of, FoundFile};
+use library_core::scan::{selectable_formats, subfolder_of, FoundFile};
 use library_core::shelf::{self, ALL_SHELF};
 use library_core::sort::SortKey;
 use library_core::text as lib_text;
 use library_core::view::{CoverFit, LibraryLayout};
 use library_core::wire::ImportProgress;
-use reader_core::format::format_from_ext;
+use reader_core::format::{format_from_ext, Format};
 use reader_core::appearance::BaseMode;
 use reader_core::settings::Settings;
 
@@ -104,6 +107,9 @@ enum Sheet {
     Rename { kind: RenameKind, id: String, draft: String },
     /// A row about to leave the library.
     Remove { id: String, name: String },
+    /// A folder about to be imported: the options sheet decides what the
+    /// walk admits.
+    Import { root: PathBuf },
 }
 
 /// The whole application state.
@@ -150,6 +156,9 @@ pub struct Mareader {
     context: Option<ContextRequest>,
     /// The modal question in flight, if any.
     sheet: Option<Sheet>,
+    /// The import sheet's options. They outlive the sheet: a second folder
+    /// is usually imported the same way as the first.
+    import_opts: FolderOpts,
     /// The app-global toast slot.
     toasts: ToastHost,
     /// The document the reader route is showing for — remembered in the
@@ -168,6 +177,9 @@ pub struct Mareader {
 struct ScanRun {
     task: u64,
     root: String,
+    /// The structure answer the import sheet gave: one shelf per subfolder,
+    /// or the whole tree on one shelf.
+    groups: bool,
     rx: progress::SharedProgress,
     latest: Option<ImportProgress>,
 }
@@ -229,6 +241,16 @@ pub enum Message {
     SheetSave,
     /// The sheet's scrim, its Cancel button, or Escape.
     SheetCancel,
+    /// The import sheet: flip one format in or out of the walk's reach.
+    SheetImportFormat(Format),
+    /// The import sheet: the selected formats are what the walk admits —
+    /// or what it refuses.
+    SheetImportInclude(bool),
+    /// The import sheet: step the size threshold up or down.
+    SheetImportSize(i32),
+    /// The import sheet: one shelf per subfolder, or one shelf for the
+    /// whole tree.
+    SheetImportGroups,
     /// The view's layout: grid or list.
     SetLayout(LibraryLayout),
     /// The covers' fit.
@@ -290,6 +312,7 @@ impl Mareader {
             rename_draft: String::new(),
             context: None,
             sheet: None,
+            import_opts: FolderOpts::default(),
             settings,
             toasts: ToastHost::default(),
             open_document: None,
@@ -482,6 +505,24 @@ impl Mareader {
                 Task::none()
             }
             Message::SheetSave => self.save_sheet(),
+            Message::SheetImportFormat(format) => {
+                if !self.import_opts.formats.remove(&format) {
+                    self.import_opts.formats.insert(format);
+                }
+                Task::none()
+            }
+            Message::SheetImportInclude(include) => {
+                self.import_opts.include_selected = include;
+                Task::none()
+            }
+            Message::SheetImportSize(delta) => {
+                self.import_opts.step_min_size(delta);
+                Task::none()
+            }
+            Message::SheetImportGroups => {
+                self.import_opts.groups = !self.import_opts.groups;
+                Task::none()
+            }
             Message::SetLayout(layout) => {
                 if self.library.view.layout == layout {
                     self.menu = None;
@@ -562,7 +603,12 @@ impl Mareader {
                 dialogs::pick_folder(Message::FolderPicked)
             }
             Message::FolderPicked(picked) => match picked {
-                Some(dir) => self.start_scan(dir),
+                // The walk waits on the sheet: what the import is allowed
+                // to be is an answer the reader gives first.
+                Some(dir) => {
+                    self.sheet = Some(Sheet::Import { root: dir });
+                    Task::none()
+                }
                 None => Task::none(),
             },
             Message::ScanDone(task, result) => {
@@ -575,7 +621,7 @@ impl Mareader {
                     // A stale answer — a run replaced mid-walk — stays
                     // silent; stale advice is still worth surfacing.
                     Ok(found) => match finished {
-                        Some(run) => self.import_folder(run.root, found),
+                        Some(run) => self.import_folder(run.root, found, run.groups),
                         None => Task::none(),
                     },
                     Err(error) => {
@@ -771,6 +817,10 @@ impl Mareader {
                 }
                 self.persist_library()
             }
+            Sheet::Import { root } => {
+                let opts = self.import_opts.clone();
+                self.start_scan(root, opts)
+            }
         }
     }
 
@@ -864,8 +914,9 @@ impl Mareader {
     }
 
     /// Kick off a folder walk: one run id, one channel, one subscription
-    /// that lives exactly as long as the run.
-    fn start_scan(&mut self, dir: PathBuf) -> Task<Message> {
+    /// that lives exactly as long as the run. The options come from the
+    /// import sheet — what the walk admits is the sheet's answer.
+    fn start_scan(&mut self, dir: PathBuf, opts: FolderOpts) -> Task<Message> {
         let root = dir.to_string_lossy().into_owned();
         let display = dir
             .file_name()
@@ -874,14 +925,11 @@ impl Mareader {
         let (sink, rx) = progress::channel();
         self.next_task += 1;
         let task = self.next_task;
-        self.scan = Some(ScanRun { task, root: display, rx, latest: None });
+        self.scan = Some(ScanRun { task, root: display, groups: opts.groups, rx, latest: None });
 
         let task_name = task.to_string();
         Task::perform(
-            async move {
-                let opts = FolderOpts::default();
-                fs::scan(&task_name, &root, &opts, &sink)
-            },
+            async move { fs::scan(&task_name, &root, &opts, &sink) },
             move |result| Message::ScanDone(task, result),
         )
     }
@@ -891,7 +939,12 @@ impl Mareader {
     /// document the walk measured becomes a linked book on the shelf of its
     /// directory. The ledger decides what is new: content the library
     /// already holds is counted, not copied in again.
-    fn import_folder(&mut self, root_name: String, found: Vec<FoundFile>) -> Task<Message> {
+    fn import_folder(
+        &mut self,
+        root_name: String,
+        found: Vec<FoundFile>,
+        groups: bool,
+    ) -> Task<Message> {
         if found.is_empty() {
             self.toasts.show(
                 Tone::Info,
@@ -918,33 +971,36 @@ impl Mareader {
         ));
 
         // One shelf per directory, nested under its parent directory's
-        // shelf. Every ancestor of a found file counts as a directory — a
-        // file three levels down mints all three rungs — and the set's
+        // shelf — when the sheet's structure answer asks for shelves per
+        // subfolder. Every ancestor of a found file counts as a directory —
+        // a file three levels down mints all three rungs — and the set's
         // order walks parents before their children.
-        let mut dirs: BTreeSet<String> = BTreeSet::new();
-        for file in &found {
-            let mut dir = subfolder_of(&file.rel);
-            while !dir.is_empty() {
-                dirs.insert(dir.to_string());
-                dir = dir.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
-            }
-        }
         let mut dir_shelves: HashMap<String, String> = HashMap::new();
-        for dir in dirs {
-            let (parent_id, segment) = match dir.rsplit_once('/') {
-                Some((parent_dir, leaf)) => (
-                    dir_shelves.get(parent_dir).cloned().unwrap_or_else(|| folder_shelf.clone()),
-                    leaf.to_string(),
-                ),
-                None => (folder_shelf.clone(), dir.clone()),
-            };
-            let name = book::duplicate_title(&segment, &names);
-            names.insert(name.clone());
-            let id = library_core::id::next_shelf_id(now);
-            dir_shelves.insert(dir.clone(), id.clone());
-            self.library
-                .shelves
-                .push(shelf::Shelf::virtual_shelf(id, name, Some(parent_id)));
+        if groups {
+            let mut dirs: BTreeSet<String> = BTreeSet::new();
+            for file in &found {
+                let mut dir = subfolder_of(&file.rel);
+                while !dir.is_empty() {
+                    dirs.insert(dir.to_string());
+                    dir = dir.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+                }
+            }
+            for dir in dirs {
+                let (parent_id, segment) = match dir.rsplit_once('/') {
+                    Some((parent_dir, leaf)) => (
+                        dir_shelves.get(parent_dir).cloned().unwrap_or_else(|| folder_shelf.clone()),
+                        leaf.to_string(),
+                    ),
+                    None => (folder_shelf.clone(), dir.clone()),
+                };
+                let name = book::duplicate_title(&segment, &names);
+                names.insert(name.clone());
+                let id = library_core::id::next_shelf_id(now);
+                dir_shelves.insert(dir.clone(), id.clone());
+                self.library
+                    .shelves
+                    .push(shelf::Shelf::virtual_shelf(id, name, Some(parent_id)));
+            }
         }
 
         // Place the books: new content is minted and filed; content the
@@ -1245,6 +1301,16 @@ impl Mareader {
                     ],
                 )
             }
+            Sheet::Import { root } => sheet::panel_sized(
+                self.tokens,
+                sheet::IMPORT_W,
+                "Import books",
+                import_sheet(self.tokens, root, &self.import_opts),
+                vec![
+                    sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel),
+                    sheet::confirm_button(self.tokens, "Import", Message::SheetSave, false),
+                ],
+            ),
         };
         Some(sheet::overlay(panel, Message::SheetCancel))
     }
@@ -1348,6 +1414,156 @@ fn scan_dock(tokens: Tokens, run: &ScanRun) -> Element<'static, Message> {
     .align_x(Alignment::Center)
     .align_y(Alignment::End)
     .into()
+}
+
+/// The import sheet's body: the folder, the formats, the size threshold and
+/// the structure answer — the walk's orders, written before it walks.
+fn import_sheet(tokens: Tokens, root: &Path, opts: &FolderOpts) -> Element<'static, Message> {
+    let section = |label: &'static str| -> Element<'static, Message> {
+        container(text(label).size(11).color(tokens.muted))
+            .padding(Padding { top: 2.0, right: 0.0, bottom: 6.0, left: 0.0 })
+            .into()
+    };
+
+    // The folder's address, in a bordered pill.
+    let path = root.to_string_lossy().into_owned();
+    let folder_pill = container(
+        row![
+            icon(IconName::Open, 15, tokens.muted),
+            container(text(path).size(13).color(tokens.ink)).width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
+    .style(move |_| container::Style {
+        border: Border { color: tokens.line, width: 1.0, radius: 10.0.into() },
+        ..container::Style::default()
+    });
+
+    let include_row = row![
+        chip(tokens, "Include selected", opts.include_selected, Some(Message::SheetImportInclude(true))),
+        chip(tokens, "Exclude selected", !opts.include_selected, Some(Message::SheetImportInclude(false))),
+    ]
+    .spacing(6);
+
+    // The format chips, two to a line.
+    let mut format_rows: Vec<Element<'static, Message>> = Vec::new();
+    for chunk in selectable_formats().chunks(2) {
+        let mut line = Row::new().spacing(6);
+        for format in chunk {
+            line = line.push(chip(
+                tokens,
+                format.label(),
+                opts.formats.contains(format),
+                Some(Message::SheetImportFormat(*format)),
+            ));
+        }
+        if chunk.len() == 1 {
+            line = line.push(Space::new().width(Length::Fill));
+        }
+        format_rows.push(line.into());
+    }
+
+    // The size threshold, with its adjusters.
+    let at_floor = opts.min_size == MIN_SIZE_FLOOR;
+    let at_ceil = opts.min_size >= MIN_SIZE_CEIL;
+    let size_row = row![
+        container(text(opts.min_size_label()).size(12).color(tokens.ink))
+            .padding(Padding { top: 3.0, right: 9.0, bottom: 3.0, left: 9.0 })
+            .style(move |_| container::Style {
+                background: Some(Background::Color(wash(tokens.line, 0.50))),
+                border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 6.0.into() },
+                ..container::Style::default()
+            }),
+        Space::new().width(Length::Fill),
+        stepper(tokens, IconName::Minus, !at_floor, Message::SheetImportSize(-1)),
+        stepper(tokens, IconName::Plus, !at_ceil, Message::SheetImportSize(1)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    // The structure answer, one wide chip.
+    let groups_row = chip(
+        tokens,
+        if opts.groups { "One shelf per subfolder" } else { "One shelf for the whole folder" },
+        true,
+        Some(Message::SheetImportGroups),
+    );
+
+    Column::new()
+        .push(section("FOLDER"))
+        .push(folder_pill)
+        .push(section("FORMATS"))
+        .push(include_row)
+        .push(Column::with_children(format_rows).spacing(6))
+        .push(section("FILE SIZE LARGER THAN"))
+        .push(size_row)
+        .push(section("STRUCTURE"))
+        .push(groups_row)
+        .spacing(10)
+        .width(Length::Fill)
+        .into()
+}
+
+/// A toggle chip: the active one wears the accent's soft bed, the inactive
+/// one waits quiet. `None` for the message renders it disabled.
+fn chip(
+    tokens: Tokens,
+    label: &'static str,
+    active: bool,
+    message: Option<Message>,
+) -> Element<'static, Message> {
+    let action = button(text(label).size(12).color(if active { tokens.ink } else { tokens.muted }))
+        .width(Length::Fill)
+        .padding(Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 })
+        .style(move |_, status| {
+            let background = if active {
+                tokens.accent_soft
+            } else {
+                match status {
+                    button::Status::Hovered | button::Status::Pressed => wash(tokens.line, 0.45),
+                    _ => Color::TRANSPARENT,
+                }
+            };
+            button::Style {
+                background: Some(Background::Color(background)),
+                border: Border {
+                    color: if active { tokens.accent } else { tokens.line },
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                text_color: if active { tokens.ink } else { tokens.muted },
+                shadow: Shadow::default(),
+                snap: false,
+            }
+        });
+    match message {
+        Some(message) => action.on_press(message).into(),
+        None => action.into(),
+    }
+}
+
+/// The size threshold's round adjuster.
+fn stepper(tokens: Tokens, glyph: IconName, enabled: bool, message: Message) -> Element<'static, Message> {
+    let face = container(icon(glyph, 13, if enabled { tokens.ink } else { tokens.muted }))
+        .padding(5.0);
+    let action = button(face).style(move |_, status| button::Style {
+        background: Some(Background::Color(match status {
+            button::Status::Hovered | button::Status::Pressed if enabled => wash(tokens.line, 0.60),
+            _ => wash(tokens.line, 0.35),
+        })),
+        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
+        text_color: tokens.ink,
+        shadow: Shadow::default(),
+        snap: false,
+    });
+    if enabled {
+        action.on_press(message).into()
+    } else {
+        action.into()
+    }
 }
 
 /// The appearance button's glyph for the base on screen.
