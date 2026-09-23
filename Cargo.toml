@@ -1,0 +1,53 @@
+[package]
+name = "mareader-iced"
+version = "0.1.0"
+edition = "2024"
+description = "Mareader — a desktop document reader for long-form reading, built natively with iced."
+license = "MIT"
+
+[[bin]]
+name = "mareader"
+path = "src/main.rs"
+
+[dependencies]
+# The interface. The default feature set already carries the wgpu + tiny-skia
+# renderers, the thread-pool executor (no async runtime to drag along) and
+# both windowing backends; `svg` paints the icon sprite. Later phases add
+# `image` (page rasters), `canvas` (overlays) and `lazy` (virtualized rails)
+# when they first have something to render with them.
+iced = { version = "0.14.0", features = ["svg"] }
+
+# The PDF's geometry and its device-pixel grid: the app feeds the grid the
+# window's live scale factor from the first frame onward.
+pdf-core = { path = "crates/pdf-core" }
+
+[workspace]
+members = [
+  "crates/ai-core",
+  "crates/library-core",
+  "crates/md-core",
+  "crates/pdf-core",
+  "crates/pdf-paper",
+  "crates/reader-core",
+  "crates/reflow-core",
+  "crates/txt-core",
+  "crates/ui-geom",
+  "crates/virtual-list",
+]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# Debug info stays out of the build: it multiplies artifact size for nothing
+# CI ever reads, and a step-through session is one `debug = 2` edit away.
+[profile.dev]
+debug = false
+strip = "debuginfo"
+
+# Dependencies are not what is being debugged; optimising them costs nothing
+# after the first build.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

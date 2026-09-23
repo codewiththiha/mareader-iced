@@ -1,0 +1,12 @@
+# Build artifacts
+/target
+**/*.rs.bk
+
+# The PDFium sidecar a dev checkout drops next to the binary; the release
+# pipeline fetches its own pinned copy and never commits one.
+libpdfium*
+pdfium*
+
+# OS noise
+.DS_Store
+Thumbs.db

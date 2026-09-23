@@ -1,0 +1,25 @@
+[package]
+name = "ai-core"
+version = "0.1.0"
+edition = "2024"
+description = "The format-agnostic core of the AI reading features: the word-explanation wire types, the gloss card's geometry and spring, the gloss mark and its page anchor. No format-specific code — a reflowable document carries its spot in the mark's context envelope."
+license = "MIT"
+
+[dependencies]
+# The persisted gloss settings belong to the reader's core; the spring the
+# gloss box rides and the floating-box geometry it converts into belong to
+# `ui-geom`, the dependency-free leaf the chrome crate also places panels with.
+# Neither dependency runs the other way: no general crate knows AI exists.
+reader-core = { path = "../reader-core" }
+ui-geom = { path = "../ui-geom" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.rust]
+# Warnings are denied, not printed: a gate that only shows up in the log is a
+# gate that gets read past. The priority applies the group first, so the
+# individual levels below it remain deliberate overrides.
+warnings = { level = "deny", priority = -1 }
+unsafe_code = "forbid"

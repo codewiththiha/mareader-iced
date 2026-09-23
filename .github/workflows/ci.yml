@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    # Every branch: the work happens on branches, and CI that only watches
+    # main watches almost nothing.
+    branches: ["**"]
+    # Tags belong to the release workflow; nothing here should build them twice.
+    tags-ignore: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts are useless across runners and only inflate the cache.
+  CARGO_INCREMENTAL: "0"
+  # Debug info stays out of CI builds; Cargo.toml asks for the same, this
+  # pins it from the CI side too.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # A crates.io hiccup should cost a retry, not a red run.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_DOWNLOAD_TIMEOUT: "600"
+
+# Same-branch pushes cancel the previous run; a pull request groups by its
+# number so a force-push cannot be seen contending with an open PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Clippy does not link, but winit's platform crates are happier with
+      # the headers present, and the apt step is seconds on a warm runner.
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get -qq update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint-cache
+
+      # Denied, not printed: a gate that only shows up in the log is a gate
+      # that gets read past. A lint genuinely wrong for one site gets a
+      # reasoned #[allow] at that site.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The lockfile bootstrap: this repository is developed where cargo
+      # cannot run, so the first green run resolves the graph and hands the
+      # lock back as an artifact; it is committed, and the lanes then pin
+      # to it with --locked.
+      - name: Upload resolved Cargo.lock
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  test:
+    name: Test (workspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get -qq update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-cache
+
+      # --workspace, not a bare cargo test: the manifest root is also the
+      # app package, and a bare run would silently skip the ten domain
+      # crates whose ~1,000 tests are the parity proof of this port.
+      - name: Tests
+        run: cargo test --workspace
+
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get -qq update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-${{ matrix.os }}
+
+      # The app must compile where it ships. The binary itself is the
+      # release workflow's business; this lane only proves the build.
+      - name: Build
+        run: cargo build --workspace

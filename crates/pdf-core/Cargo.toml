@@ -1,0 +1,20 @@
+[package]
+name = "pdf-core"
+version = "0.5.0"
+edition = "2024"
+description = "PDF-only domain logic: the page frame's constants, the outline a PDF carries, the page-text search index, and the device-pixel snapping every composite layer of a page is written against. Everything format-agnostic lives in reader-core. No platform code at all — the app feeds it the one display value it needs."
+license = "MIT"
+
+[dependencies]
+reader-core = { path = "../reader-core" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.rust]
+# Warnings are denied, not printed: a gate that only shows up in the log is a
+# gate that gets read past. The priority applies the group first, so the
+# individual levels below it remain deliberate overrides.
+warnings = { level = "deny", priority = -1 }
+unsafe_code = "forbid"
