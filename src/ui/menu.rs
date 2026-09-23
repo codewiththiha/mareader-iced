@@ -124,6 +124,51 @@ pub fn item<'a, M: Clone + 'a>(
     }
 }
 
+/// The owned twin of [`item`]: the same row for a label computed at the
+/// moment the menu is built — a restore row, a watch row — where nothing
+/// borrows outlives the builder.
+#[allow(clippy::too_many_arguments)]
+pub fn owned_item<M: Clone + 'static>(
+    tokens: Tokens,
+    glyph: Option<IconName>,
+    label: String,
+    sublabel: Option<String>,
+    checked: bool,
+    message: Option<M>,
+) -> Element<'static, M> {
+    let icon_slot: Element<'static, M> = match glyph {
+        Some(name) => container(icon(name, 15, tokens.muted)).width(16.0).into(),
+        None => Space::new().width(16.0).into(),
+    };
+    let labels: Element<'static, M> = match sublabel {
+        Some(sub) => column![
+            text(label).size(13).color(tokens.ink),
+            text(sub).size(11).color(tokens.muted),
+        ]
+        .spacing(1)
+        .width(Length::Fill)
+        .into(),
+        None => container(text(label).size(13).color(tokens.ink))
+            .width(Length::Fill)
+            .into(),
+    };
+    let check_slot: Element<'static, M> = if checked {
+        container(icon(IconName::Check, 14, tokens.accent)).width(16.0).into()
+    } else {
+        Space::new().width(16.0).into()
+    };
+
+    let face = row![icon_slot, labels, check_slot].spacing(8).align_y(Alignment::Center);
+    let action = button(face)
+        .width(Length::Fill)
+        .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 })
+        .style(move |_, status| item_style(tokens, status));
+    match message {
+        Some(message) => action.on_press(message).into(),
+        None => action.into(),
+    }
+}
+
 /// The item row's chrome: nothing at rest, a line wash under the pointer,
 /// muted ink when the row is disabled.
 fn item_style(tokens: Tokens, status: button::Status) -> button::Style {

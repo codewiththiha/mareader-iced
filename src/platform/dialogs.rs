@@ -91,6 +91,16 @@ where
     Task::perform(pick_files_async(None), picked)
 }
 
+/// Ask for several documents, opening the sheet inside `root` — the
+/// "choose files from this folder" door of a watched shelf, where the
+/// level the reader stands on is the place to browse to.
+pub fn pick_files_in<M>(root: String, picked: fn(Option<Vec<PathBuf>>) -> M) -> Task<M>
+where
+    M: Send + 'static,
+{
+    Task::perform(pick_files_async(Some(root)), picked)
+}
+
 async fn pick_folder_async() -> Option<PathBuf> {
     pick_folder_in_async(String::new()).await
 }

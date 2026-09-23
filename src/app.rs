@@ -29,7 +29,8 @@ use library_core::folder::{
     self as folder_ops, rel_under, FolderMode, FolderOpts, Tombstone, WatchedFolder,
     MIN_SIZE_CEIL, MIN_SIZE_FLOOR,
 };
-use library_core::ledger::{self, ScanAction};
+use library_core::governance::Governance;
+use library_core::ledger::{self, Recovered, ScanAction};
 use library_core::paths;
 use library_core::scan::{selectable_formats, FoundFile};
 use library_core::shelf::{self, ALL_SHELF};
@@ -112,8 +113,11 @@ enum Sheet {
     /// A row about to leave the library.
     Remove { id: String, name: String },
     /// A folder about to be imported: the options sheet decides what the
-    /// walk admits, and how the books are held.
-    Import { root: PathBuf },
+    /// walk admits, and how the books are held. `ground` is the tree the
+    /// pick belongs to, when one governs it — the sheet seeds its answers
+    /// from the tree's own, and its Import writes the watch answer back
+    /// onto the rung the pick names.
+    Import { root: PathBuf, ground: Option<GroundWatch> },
 }
 
 /// Which question a folder run answers; a boolean at the signature could
@@ -123,6 +127,43 @@ enum Sheet {
 enum Asked {
     Explicitly,
     OnFocus,
+}
+
+/// What a picked ground belongs to: the tree that governs it, the rung the
+/// ground names inside the tree, the watch answer that rung carries, and
+/// the tree's own options with the rung's shape answer. The import sheet
+/// opens seeded from these — a folder inside a governed tree asks nothing
+/// the tree already answered — and its Import writes the watch answer back
+/// onto the rung, never onto the tree's root.
+#[derive(Debug, Clone)]
+struct GroundWatch {
+    tree_id: String,
+    rung: String,
+    on: bool,
+    opts: FolderOpts,
+}
+
+/// The watch seat a folder shelf answers for: which rung of which tree,
+/// what that rung watches now, and the labels the toggle row speaks. The
+/// row the folder context menu has and no other menu does, because no
+/// other shelf has a rung to answer for.
+struct ShelfWatch {
+    folder_id: String,
+    rung: String,
+    on: bool,
+    label: String,
+    rung_label: Option<String>,
+}
+
+/// The Moved row the add menu is confirming: a book still inside the
+/// folder on disk but filed on shelves elsewhere. The confirm face offers
+/// two answers — show it here as well, or go look at where it went.
+#[derive(Debug, Clone)]
+pub struct MovedAsk {
+    book_id: String,
+    title: Option<String>,
+    path: String,
+    home_shelf: Option<String>,
 }
 
 /// One filesystem run and its channel: the id the beats carry, the label
@@ -153,6 +194,16 @@ enum Stage {
     /// The store is copying the picker's files; the landings wait in the
     /// plan.
     Copying { plan: Box<FilesPlan> },
+    /// A restore is measuring the one file its log remembered.
+    Restoring { folder_id: String, stone: Box<Tombstone>, opts: FolderOpts },
+    /// The store is copying a restore's file; the landing waits in the run.
+    RestoreCopying {
+        folder_id: String,
+        stone: Box<Tombstone>,
+        opts: FolderOpts,
+        found: Box<FoundFile>,
+        book_id: String,
+    },
 }
 
 /// The folder walk's answer, planned against the ledger and waiting for its
@@ -193,9 +244,13 @@ struct FilesPlan {
     restored: usize,
 }
 
+/// One copy's landing: the address it stored at and the measurement of its
+/// own bytes.
+type Stored = (String, Option<Fingerprint>);
+
 /// The store batch's answer, keyed: the book id each copy was requested
 /// under to the address it landed at and the measurement of its own bytes.
-type CopyMap = HashMap<String, (String, Option<Fingerprint>)>;
+type CopyMap = HashMap<String, Stored>;
 
 /// The whole application state.
 pub struct Mareader {
@@ -227,6 +282,13 @@ pub struct Mareader {
     query: String,
     /// The bar's open panel, if any.
     menu: Option<MenuKind>,
+    /// The add menu's confirm face: the Moved row the reader asked about,
+    /// holding the panel open as a two-choice question.
+    menu_confirm: Option<MovedAsk>,
+    /// The paths the add menu's gone check answered missing: a restore row
+    /// whose file is no longer on disk renders disabled rather than
+    /// promising a landing that cannot happen.
+    restore_gone: HashSet<String>,
     /// The last known pointer position in window coordinates — the anchor
     /// a menu is placed at.
     cursor: Point,
@@ -376,6 +438,30 @@ pub enum Message {
     /// The boot-and-focus measure pass finished: one check per address the
     /// library holds.
     ChecksDone(Vec<PathCheck>),
+    /// The folder context menu's watch row: flip the seat's rung.
+    ToggleWatch(String),
+    /// The add menu's in-folder door: browse the watched folder's own root
+    /// for documents.
+    PickFilesInFolder(String),
+    /// The add menu's gone check answered: which of the logged addresses
+    /// are no longer on disk.
+    RestoreChecked(Vec<PathCheck>),
+    /// A restore row was clicked: give this removed book back.
+    RestoreDeleted(String, Fingerprint),
+    /// A restore's one-file measurement finished.
+    RestoreMeasured(u64, Vec<PathCheck>),
+    /// A restore's store copy finished.
+    RestoreCopied(u64, Vec<StoreResult>),
+    /// A Moved row was clicked: swap the panel into the two-choice face.
+    ConfirmMoved(MovedAsk),
+    /// The confirm face's first answer: one book, two shelves, nothing
+    /// copied.
+    AlsoShow(String, String),
+    /// The confirm face's second answer: close the menu and go look at the
+    /// shelf the book is on.
+    GoAndLook(String),
+    /// The confirm face's Back row: the panel becomes the menu again.
+    MenuBack,
     /// One progress beat from a run in flight.
     ImportProgress(ImportProgress),
     /// Cycle the appearance base and persist the settings.
@@ -399,6 +485,8 @@ impl Mareader {
             shelf: ALL_SHELF.to_string(),
             query: String::new(),
             menu: None,
+            menu_confirm: None,
+            restore_gone: HashSet::new(),
             cursor: Point::new(600.0, 400.0),
             viewport: Size::new(1200.0, 800.0),
             hovered_card: None,
@@ -481,6 +569,7 @@ impl Mareader {
             }
             Message::Navigate(shelf) => {
                 self.menu = None;
+                self.menu_confirm = None;
                 self.context = None;
                 // A rename in flight belongs to the shelf it started on;
                 // stepping away abandons it rather than carrying the draft.
@@ -497,10 +586,18 @@ impl Mareader {
             Message::ToggleMenu(kind) => {
                 self.menu = if self.menu == Some(kind) { None } else { Some(kind) };
                 self.renaming = false;
+                self.menu_confirm = None;
+                // The add menu's Restore section promises files, and a
+                // promise is checked before it is kept: the gone check
+                // rides along with the panel opening.
+                if self.menu == Some(MenuKind::Add) {
+                    return self.check_restore_paths();
+                }
                 Task::none()
             }
             Message::CloseMenu => {
                 self.menu = None;
+                self.menu_confirm = None;
                 self.renaming = false;
                 Task::none()
             }
@@ -520,6 +617,7 @@ impl Mareader {
                     return Task::none();
                 }
                 self.menu = None;
+                self.menu_confirm = None;
                 Task::none()
             }
             Message::StartRename => {
@@ -552,6 +650,7 @@ impl Mareader {
             }
             Message::ContextMenu(target) => {
                 self.menu = None;
+                self.menu_confirm = None;
                 self.context = Some(ContextRequest { target, at: self.cursor });
                 Task::none()
             }
@@ -714,7 +813,7 @@ impl Mareader {
                 // The walk waits on the sheet: what the import is allowed
                 // to be is an answer the reader gives first.
                 Some(dir) => {
-                    self.sheet = Some(Sheet::Import { root: dir });
+                    self.open_import_sheet(dir);
                     Task::none()
                 }
                 None => Task::none(),
@@ -724,6 +823,36 @@ impl Mareader {
             Message::FilesChecked(task, checks) => self.files_checked(task, checks),
             Message::FilesCopied(task, results) => self.files_copied(task, results),
             Message::ChecksDone(checks) => self.checks_done(checks),
+            Message::ToggleWatch(shelf_id) => self.toggle_watch(&shelf_id),
+            Message::PickFilesInFolder(root) => {
+                self.menu = None;
+                dialogs::pick_files_in(root, Message::FilesPicked)
+            }
+            Message::RestoreChecked(checks) => {
+                // The answer belongs to the panel that asked: a menu
+                // closed while the check was in flight ignores it.
+                if self.menu == Some(MenuKind::Add) {
+                    self.restore_gone = checks
+                        .iter()
+                        .filter(|check| !check.exists)
+                        .map(|check| check.path.clone())
+                        .collect();
+                }
+                Task::none()
+            }
+            Message::RestoreDeleted(folder_id, fp) => self.restore_deleted(folder_id, fp),
+            Message::RestoreMeasured(task, checks) => self.restore_measured(task, checks),
+            Message::RestoreCopied(task, results) => self.restore_copied(task, results),
+            Message::ConfirmMoved(ask) => {
+                self.menu_confirm = Some(ask);
+                Task::none()
+            }
+            Message::AlsoShow(book_id, shelf_id) => self.also_show(&book_id, &shelf_id),
+            Message::GoAndLook(book_id) => self.go_and_look(&book_id),
+            Message::MenuBack => {
+                self.menu_confirm = None;
+                Task::none()
+            }
             Message::ImportProgress(beat) => {
                 if let Some(run) =
                     self.runs.iter_mut().find(|run| run.task.to_string() == beat.task)
@@ -781,7 +910,7 @@ impl Mareader {
                 Route::Reader => self.open_document_path(path),
                 Route::Library => {
                     if path.is_dir() {
-                        self.sheet = Some(Sheet::Import { root: path });
+                        self.open_import_sheet(path);
                         Task::none()
                     } else {
                         self.import_files(Some(vec![path]))
@@ -914,9 +1043,30 @@ impl Mareader {
                 self.persist_library()
             }
             Sheet::Remove { id, .. } => self.remove_row(&id),
-            Sheet::Import { root } => {
+            Sheet::Import { root, ground } => {
                 let opts = self.import_opts.clone();
-                self.begin_folder_walk(root, opts, Asked::Explicitly)
+                let root_str = root.to_string_lossy().into_owned();
+                // The sheet's watch answer belongs to the picked ground's
+                // rung — a subfolder's import must not write the tree's
+                // root — and only a read-at-place import watches at all.
+                let mut persisted = Task::none();
+                if opts.mode().reads_in_place()
+                    && let Some(mut watch) = ground
+                {
+                    watch.on = opts.watch;
+                    persisted = self.write_rung_tracking(&watch);
+                }
+                // A covered ground walks the covering tree: a rung cannot
+                // mint a second instance of itself, and removed books come
+                // back wherever in the tree they stood. The walk's own
+                // shelf map seats the pick on the shelf it named.
+                let walk_root = if opts.mode().reads_in_place() {
+                    self.covered_tree_root(&root_str).map_or(root, PathBuf::from)
+                } else {
+                    root
+                };
+                let walk = self.begin_folder_walk(walk_root, opts, Asked::Explicitly);
+                Task::batch([persisted, walk])
             }
         }
     }
@@ -1003,6 +1153,150 @@ impl Mareader {
             async move { fs::check_paths(&addresses) },
             move |checks| Message::FilesChecked(task, checks),
         )
+    }
+
+    /// Open the import sheet for a picked or dropped folder, seeded from
+    /// the ground: a folder a tree governs opens with the tree's own
+    /// answers and the rung's watch, so the sheet asks nothing the tree
+    /// already answered. A ground no tree governs keeps the last answers,
+    /// the way the open floor does.
+    fn open_import_sheet(&mut self, dir: PathBuf) {
+        let ground = self.ground_tracking(&dir.to_string_lossy());
+        if let Some(watch) = &ground {
+            self.import_opts = FolderOpts { watch: watch.on, ..watch.opts.clone() };
+        }
+        self.sheet = Some(Sheet::Import { root: dir, ground });
+    }
+
+    /// Which tree governs a picked ground, and the rung the ground names
+    /// in it: the covering tree's own seat when a rung shelf stands, else
+    /// the family the directory's address belongs to — a rung whose shelf
+    /// was deleted or departed as a copy still seeds from its family's
+    /// answers. `None` for a ground no tree owns.
+    fn ground_tracking(&self, root: &str) -> Option<GroundWatch> {
+        let governance = Governance::new(&self.library.folders, &self.library.shelves);
+        let (tree_id, rung) = match governance.covering(root) {
+            Some(covered) => (covered.folder_id, covered.rel),
+            None => shelf::family_for(&self.library.folders, &self.library.shelves, root)?,
+        };
+        let row = folder_ops::find(&self.library.folders, &tree_id)?;
+        let mut opts = row.opts.clone();
+        // The structure answer is the rung's own, not the tree's root:
+        // per-rung shapes are the whole of what a subfolder import asks.
+        opts.groups = row.shape_at(&rung);
+        let on = row.tracks_rung(&rung);
+        Some(GroundWatch { tree_id, rung, on, opts })
+    }
+
+    /// The sheet's watch answer, written onto the rung it belongs to —
+    /// never onto the tree's root — and persisted when it moved.
+    fn write_rung_tracking(&mut self, watch: &GroundWatch) -> Task<Message> {
+        let moved = match folder_ops::find_mut(&mut self.library.folders, &watch.tree_id) {
+            Some(folder) if folder.tracks_rung(&watch.rung) != watch.on => {
+                folder.set_tracking(&watch.rung, watch.on);
+                true
+            }
+            _ => false,
+        };
+        if moved {
+            self.persist_library()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// The tree a covered ground belongs to, by root address: an import of
+    /// a rung walks the tree, so a rung cannot mint a second instance of
+    /// itself and removed books come back wherever in the tree they stood.
+    fn covered_tree_root(&self, root: &str) -> Option<String> {
+        let governance = Governance::new(&self.library.folders, &self.library.shelves);
+        let covered = governance.covering(root)?;
+        folder_ops::find(&self.library.folders, &covered.folder_id).map(|row| row.root.clone())
+    }
+
+    /// The watch seat a folder shelf answers for. `None` when the shelf is
+    /// not a folder's seat — the toggle row the folder context menu shows
+    /// only for one that is.
+    fn shelf_watch(&self, shelf_id: &str) -> Option<ShelfWatch> {
+        let seat =
+            Governance::new(&self.library.folders, &self.library.shelves).seat_of(shelf_id)?;
+        let folder = folder_ops::find(&self.library.folders, &seat.folder_id)?;
+        let rung_label = (!seat.rung.is_empty())
+            .then(|| paths::dir_label(&folder_ops::dir_of_rung(&folder.root, &seat.rung)));
+        Some(ShelfWatch {
+            on: folder.tracks_rung(&seat.rung),
+            label: paths::dir_label(&folder.root),
+            rung_label,
+            folder_id: seat.folder_id,
+            rung: seat.rung,
+        })
+    }
+
+    /// The folder context menu's watch row, in the seat's own words. A
+    /// deep seat answers for its rung alone; a root seat answers for the
+    /// whole tree — and the glyph flips with the answer, because "stop
+    /// watching" and "watch" are two different promises.
+    fn watch_facts(&self, shelf_id: &str) -> Option<menus::WatchFacts> {
+        let watch = self.shelf_watch(shelf_id)?;
+        let deep = watch.rung_label.is_some();
+        let (glyph, label) = match (watch.on, deep) {
+            (true, true) => (IconName::EyeOff, "Stop watching this subfolder"),
+            (true, false) => (IconName::EyeOff, "Stop watching for new books"),
+            (false, true) => (IconName::Eye, "Watch this subfolder for new books"),
+            (false, false) => (IconName::Eye, "Watch for new books"),
+        };
+        let sublabel = match &watch.rung_label {
+            Some(rung) => format!("Only “{rung}” and the folders inside it"),
+            None => format!("The whole “{}” folder", watch.label),
+        };
+        Some(menus::WatchFacts {
+            icon: glyph,
+            label: label.to_string(),
+            sublabel,
+            message: Message::ToggleWatch(shelf_id.to_string()),
+        })
+    }
+
+    /// The watch row's click: flip the seat's rung — a root seat flips the
+    /// whole tree — persist, tell the reader what the answer now is, and,
+    /// turning the watch on, walk the tree now rather than at the next
+    /// focus: a promise made is a promise kept from the moment it is made.
+    fn toggle_watch(&mut self, shelf_id: &str) -> Task<Message> {
+        let Some(watch) = self.shelf_watch(shelf_id) else {
+            return Task::none();
+        };
+        let on = !watch.on;
+        let Some((root, opts)) = folder_ops::find_mut(&mut self.library.folders, &watch.folder_id)
+            .map(|folder| {
+                if watch.rung.is_empty() {
+                    folder.set_tracking_whole(on);
+                } else {
+                    folder.set_tracking(&watch.rung, on);
+                }
+                (folder.root.clone(), folder.opts.clone())
+            })
+        else {
+            return Task::none();
+        };
+        let ground = match &watch.rung_label {
+            Some(rung) => format!("“{rung}” in {}", watch.label),
+            None => watch.label,
+        };
+        let persisted = self.persist_library();
+        let line = if on {
+            format!("Watching {ground} for new books.")
+        } else {
+            format!("{ground} is no longer watched for new books.")
+        };
+        self.toasts.show(Tone::Info, line, Instant::now());
+        if on {
+            Task::batch([
+                persisted,
+                self.begin_folder_walk(PathBuf::from(root), opts, Asked::OnFocus),
+            ])
+        } else {
+            persisted
+        }
     }
 
     /// Admit a document through the gate, remember it, and route to the
@@ -1144,7 +1438,10 @@ impl Mareader {
             let holds = match &run.stage {
                 Stage::Walking { root: held, .. } => held == root,
                 Stage::Storing { plan } => plan.folder.root == root,
-                Stage::Measuring { .. } | Stage::Copying { .. } => false,
+                Stage::Measuring { .. }
+                | Stage::Copying { .. }
+                | Stage::Restoring { .. }
+                | Stage::RestoreCopying { .. } => false,
             };
             if !holds {
                 continue;
@@ -1152,7 +1449,10 @@ impl Mareader {
             let focus_walk = match &run.stage {
                 Stage::Walking { asked, .. } => *asked == Asked::OnFocus,
                 Stage::Storing { plan } => plan.asked == Asked::OnFocus,
-                Stage::Measuring { .. } | Stage::Copying { .. } => false,
+                Stage::Measuring { .. }
+                | Stage::Copying { .. }
+                | Stage::Restoring { .. }
+                | Stage::RestoreCopying { .. } => false,
             };
             return if focus_walk { Claim::HeldByWalk } else { Claim::HeldByAsk };
         }
@@ -1750,6 +2050,319 @@ impl Mareader {
         Task::none()
     }
 
+    /// The folder the level on screen belongs to, when it is a watched
+    /// folder's shelf — the add menu's in-folder doors answer for it.
+    fn standing_folder_id(&self) -> Option<String> {
+        if self.shelf == ALL_SHELF {
+            return None;
+        }
+        shelf::find(&self.library.shelves, &self.shelf)
+            .and_then(|shelf| shelf.kind.folder_id().map(str::to_string))
+    }
+
+    /// What this folder could give the reader back: the ledger's
+    /// recoverables, pure and synchronous — the menu opens on a click and
+    /// answers from the last walk's log, not from a directory tree.
+    fn restore_candidates(&self) -> Vec<Recovered> {
+        let Some(folder_id) = self.standing_folder_id() else {
+            return Vec::new();
+        };
+        let Some(folder) = folder_ops::find(&self.library.folders, &folder_id) else {
+            return Vec::new();
+        };
+        let index = ledger::index_by_fp(&self.library.books);
+        ledger::recoverables(folder, &index, &self.library.shelves)
+    }
+
+    /// The gone check behind the add menu's Restore section: a removed
+    /// book's file may have left the disk since the walk logged it, and a
+    /// row that promises a file that is not there would land an error
+    /// where the menu could have shown the truth. Dispatched when the
+    /// panel opens; the rows answer disabled as the check arrives.
+    fn check_restore_paths(&mut self) -> Task<Message> {
+        self.restore_gone.clear();
+        let addresses: Vec<String> = self
+            .restore_candidates()
+            .into_iter()
+            .filter_map(|item| match item {
+                Recovered::Deleted(entry) => Some(entry.last_path),
+                Recovered::Moved { .. } => None,
+            })
+            .collect();
+        if addresses.is_empty() {
+            return Task::none();
+        }
+        Task::perform(async move { fs::check_paths(&addresses) }, Message::RestoreChecked)
+    }
+
+    /// The add menu's folder-side facts: the in-folder picker's door, the
+    /// Restore section's rows, and the confirm face when a Moved row was
+    /// asked. The labels are computed here — the menu lays out, the app
+    /// knows.
+    fn add_facts(&self) -> menus::AddFacts {
+        let confirm = self.menu_confirm.as_ref().map(|ask| self.confirm_face(ask));
+        let mut from_folder = None;
+        let mut restore = Vec::new();
+        if let Some(folder_id) = self.standing_folder_id()
+            && let Some(folder) = folder_ops::find(&self.library.folders, &folder_id)
+        {
+            from_folder = Some(menus::MenuLine {
+                icon: IconName::Drop,
+                label: "Choose files from this folder".to_string(),
+                sublabel: Some(paths::dir_label(&folder.root)),
+                message: Some(Message::PickFilesInFolder(folder.root.clone())),
+            });
+            let index = ledger::index_by_fp(&self.library.books);
+            let stamp = now_ms();
+            for item in ledger::recoverables(folder, &index, &self.library.shelves) {
+                restore.push(match &item {
+                    Recovered::Deleted(entry) => {
+                        let gone = self.restore_gone.contains(&entry.last_path);
+                        menus::MenuLine {
+                            icon: IconName::Undo,
+                            label: entry.label(),
+                            sublabel: Some(if gone {
+                                "not there any more".to_string()
+                            } else {
+                                removed_sublabel(entry, stamp)
+                            }),
+                            message: (!gone)
+                                .then(|| Message::RestoreDeleted(folder_id.clone(), entry.fp)),
+                        }
+                    }
+                    Recovered::Moved { book_id, title, path, home_shelf } => menus::MenuLine {
+                        icon: IconName::Next,
+                        label: lib_text::display_or_stem(title.as_deref(), path),
+                        sublabel: Some(match home_shelf {
+                            Some(name) => format!("now on “{name}”"),
+                            None => "in the library, on no shelf".to_string(),
+                        }),
+                        message: Some(Message::ConfirmMoved(MovedAsk {
+                            book_id: book_id.clone(),
+                            title: title.clone(),
+                            path: path.clone(),
+                            home_shelf: home_shelf.clone(),
+                        })),
+                    },
+                });
+            }
+        }
+        menus::AddFacts { from_folder, restore, confirm }
+    }
+
+    /// The two-choice face a Moved row swaps the panel into: show the book
+    /// here as well — one book, two shelves, nothing copied — or close the
+    /// menu and go look at where it went.
+    fn confirm_face(&self, ask: &MovedAsk) -> menus::ConfirmFace {
+        let label = lib_text::display_or_stem(ask.title.as_deref(), &ask.path);
+        let go_label = match &ask.home_shelf {
+            Some(name) => format!("Show it in “{name}”"),
+            None => "Show it in Home".to_string(),
+        };
+        menus::ConfirmFace {
+            back: menus::MenuLine {
+                icon: IconName::Prev,
+                label: "Back".to_string(),
+                sublabel: None,
+                message: Some(Message::MenuBack),
+            },
+            question: format!("“{label}” is on another shelf."),
+            also: menus::MenuLine {
+                icon: IconName::Plus,
+                label: "Also show it here".to_string(),
+                sublabel: Some("One book, two shelves — nothing is copied".to_string()),
+                // The offer is this level's: standing on the library's own
+                // floor, there is no "here" to also show the book in.
+                message: (self.shelf != ALL_SHELF)
+                    .then(|| Message::AlsoShow(ask.book_id.clone(), self.shelf.clone())),
+            },
+            go: menus::MenuLine {
+                icon: IconName::Next,
+                label: go_label,
+                sublabel: Some("Closes this menu and takes you to it".to_string()),
+                message: Some(Message::GoAndLook(ask.book_id.clone())),
+            },
+        }
+    }
+
+    /// The Restore section's removed row: measure the one file the log
+    /// remembered, then land it back the way the folder holds its books.
+    /// A restore re-measures before it promises — the file on disk, not
+    /// the log, has the last word.
+    fn restore_deleted(&mut self, folder_id: String, fp: Fingerprint) -> Task<Message> {
+        self.menu = None;
+        self.menu_confirm = None;
+        let Some((opts, stone)) = folder_ops::find(&self.library.folders, &folder_id).and_then(
+            |folder| {
+                ledger::find_tombstone(folder, &fp)
+                    .cloned()
+                    .map(|stone| (folder.opts.clone(), stone))
+            },
+        ) else {
+            return Task::none();
+        };
+        let address = stone.last_path.clone();
+        let (sink, rx) = progress::channel();
+        self.next_task += 1;
+        let task = self.next_task;
+        self.runs.push(FsRun {
+            task,
+            label: stone.label(),
+            sink,
+            rx,
+            latest: None,
+            stage: Stage::Restoring { folder_id, stone: Box::new(stone), opts },
+        });
+        Task::perform(
+            async move { fs::check_paths(std::slice::from_ref(&address)) },
+            move |checks| Message::RestoreMeasured(task, checks),
+        )
+    }
+
+    /// The restore's measurement answered: a file that is not there any
+    /// more is an error the reader hears; a file that is there lands
+    /// linked when the tree reads at place, and goes through the store
+    /// when it does not.
+    fn restore_measured(&mut self, task: u64, checks: Vec<PathCheck>) -> Task<Message> {
+        let Some(ix) = self.runs.iter().position(|run| run.task == task) else {
+            return Task::none();
+        };
+        let mut run = self.runs.remove(ix);
+        let Stage::Restoring { folder_id, stone, opts } = &run.stage else {
+            return Task::none();
+        };
+        let (folder_id, stone, opts) = (folder_id.clone(), (**stone).clone(), opts.clone());
+        let Some(found) = checks.first().and_then(found_from_check) else {
+            self.toasts.show(
+                Tone::Error,
+                format!("{} is not there any more.", stone.label()),
+                Instant::now(),
+            );
+            return Task::none();
+        };
+        let book_id = library_core::id::next_id(now_ms());
+        if opts.mode().reads_in_place() {
+            return self.land_restore(&folder_id, stone, &opts, found, book_id, None);
+        }
+        let requests = vec![BookFileRequest { from: found.path.clone(), id: book_id.clone() }];
+        let sink = Arc::clone(&run.sink);
+        let task_name = task.to_string();
+        run.stage = Stage::RestoreCopying {
+            folder_id,
+            stone: Box::new(stone),
+            opts,
+            found: Box::new(found),
+            book_id,
+        };
+        self.runs.push(run);
+        Task::perform(
+            async move { store::store_books(&task_name, &requests, &sink) },
+            move |results| Message::RestoreCopied(task, results),
+        )
+    }
+
+    /// The restore's copy answered: land the stored book with its own
+    /// measurement, or tell the reader the copy did not come home.
+    fn restore_copied(&mut self, task: u64, results: Vec<StoreResult>) -> Task<Message> {
+        let Some(ix) = self.runs.iter().position(|run| run.task == task) else {
+            return Task::none();
+        };
+        let run = self.runs.remove(ix);
+        let Stage::RestoreCopying { folder_id, stone, opts, found, book_id } = run.stage else {
+            return Task::none();
+        };
+        let (copies, failure) = partition_store_results(results);
+        let measured = copies.get(&book_id).cloned();
+        if let Some(error) =
+            failure.or_else(|| measured.is_none().then(|| "The copy did not land.".to_string()))
+        {
+            self.toasts.show(Tone::Error, error, Instant::now());
+            return Task::none();
+        }
+        self.land_restore(&folder_id, *stone, &opts, *found, book_id, measured)
+    }
+
+    /// The restore's landing: the book comes back wearing the name the log
+    /// remembered and the measurement its own bytes answered with, the log
+    /// is spent, the file is marked placed, and the book is filed on the
+    /// shelf the log remembered when that shelf still stands — else on the
+    /// folder's root rung, else nowhere. A file that changed since the
+    /// removal spends the changed address's log too, so the next walk does
+    /// not give the book back a second time.
+    fn land_restore(
+        &mut self,
+        folder_id: &str,
+        stone: Tombstone,
+        opts: &FolderOpts,
+        found: FoundFile,
+        book_id: String,
+        measured: Option<Stored>,
+    ) -> Task<Message> {
+        let stamp = now_ms();
+        let origin = match &measured {
+            Some((store_path, _)) => {
+                Origin::Stored { src: Some(found.path.clone()), store: store_path.clone() }
+            }
+            None => Origin::Linked { src: found.path.clone() },
+        };
+        let mut minted = Book::new(book_id, found.fp, found.admitted_format(), origin, stamp);
+        minted.title = stone.title.clone();
+        if opts.mode().copies_files() {
+            minted.adopt_measurement(measured.as_ref().and_then(|(_, measure)| *measure));
+        }
+        let label = stone.label();
+        let placed_id = book::add_book(&mut self.library.books, minted);
+        if let Some(folder) = folder_ops::find_mut(&mut self.library.folders, folder_id) {
+            ledger::restore_deleted(folder, &stone.fp);
+            folder.mark_placed(found.fp);
+            if found.fp != stone.fp {
+                folder.ignored.retain(|entry| entry.fp != found.fp);
+            }
+        }
+        let home = stone
+            .shelf_id
+            .clone()
+            .or_else(|| {
+                folder_ops::find(&self.library.folders, folder_id)
+                    .and_then(|folder| folder.shelf_map.get("").cloned())
+            })
+            .filter(|id| shelf::find(&self.library.shelves, id).is_some());
+        if let Some(home) = home
+            && let Some(shelf) = shelf::find_mut(&mut self.library.shelves, &home)
+        {
+            shelf::shelf_add(shelf, &placed_id);
+        }
+        self.toasts.show(Tone::Info, format!("“{label}” came back"), Instant::now());
+        self.persist_library()
+    }
+
+    /// One book, two memberships, nothing copied: the folder's ledger is
+    /// untouched — the book stays placed where it was placed, which keeps
+    /// the next rescan quiet about it.
+    fn also_show(&mut self, book_id: &str, shelf_id: &str) -> Task<Message> {
+        self.menu = None;
+        self.menu_confirm = None;
+        let Some(home) = shelf::find_mut(&mut self.library.shelves, shelf_id) else {
+            return Task::none();
+        };
+        shelf::shelf_add(home, book_id);
+        self.persist_library()
+    }
+
+    /// The confirm face's second answer: close the menu and take the
+    /// reader to the shelf the book is on — the first membership in shelf
+    /// order, or the library's own floor when it is on none.
+    fn go_and_look(&mut self, book_id: &str) -> Task<Message> {
+        self.menu = None;
+        self.menu_confirm = None;
+        self.context = None;
+        self.shelf = shelf::containing(&self.library.shelves, book_id)
+            .first()
+            .map(|shelf| shelf.id.clone())
+            .unwrap_or_else(|| ALL_SHELF.to_string());
+        Task::none()
+    }
+
     /// Tell the view what auto-fit measured, and persist it when it moved —
     /// the stepper's `+` starts from what the shelf shows.
     fn report_auto_fit(&mut self) {
@@ -1891,7 +2504,7 @@ impl Mareader {
     fn menu_layer(&self) -> Option<Element<'_, Message>> {
         let kind = self.menu?;
         let (panel, size) = match kind {
-            MenuKind::Add => menus::add_menu(self.tokens),
+            MenuKind::Add => menus::add_menu(self.tokens, &self.add_facts()),
             MenuKind::View => menus::view_menu(self.tokens, &self.library.view),
             MenuKind::Shelf => menus::shelf_menu(self.tokens),
         };
@@ -1924,7 +2537,7 @@ impl Mareader {
             }
             ContextTarget::Folder(id) => {
                 let shelf = shelf::find(&self.library.shelves, id)?;
-                menus::folder_menu(self.tokens, shelf)
+                menus::folder_menu(self.tokens, shelf, self.watch_facts(id))
             }
         };
         let at = popover::place(request.at, size, self.viewport);
@@ -1995,11 +2608,11 @@ impl Mareader {
                     ],
                 )
             }
-            Sheet::Import { root } => sheet::panel_sized(
+            Sheet::Import { root, ground } => sheet::panel_sized(
                 self.tokens,
                 sheet::IMPORT_W,
                 "Import books",
-                import_sheet(self.tokens, root, &self.import_opts),
+                import_sheet(self.tokens, root, &self.import_opts, ground.as_ref()),
                 vec![
                     sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel),
                     sheet::confirm_button(self.tokens, "Import", Message::SheetSave, false),
@@ -2089,6 +2702,16 @@ fn found_from_check(check: &PathCheck) -> Option<FoundFile> {
         size: check.size,
         fp,
     })
+}
+
+/// The removed row's second line: when the reader took the book out, and —
+/// when the log remembers the file's own bytes — how big the promise is.
+fn removed_sublabel(entry: &Tombstone, stamp: u64) -> String {
+    let age = lib_text::human_age(entry.removed_ms, stamp);
+    match entry.fp.mtime_ms {
+        0 => format!("removed {age}"),
+        _ => format!("removed {age} · {}", lib_text::human_size(entry.fp.size)),
+    }
 }
 
 /// One spelling for the shelf chain a folder walk mints through — the books
@@ -2221,7 +2844,10 @@ fn run_line(run: &FsRun) -> String {
         }
         _ => match run.stage {
             Stage::Measuring { .. } => format!("Measuring “{}”…", run.label),
-            Stage::Copying { .. } => format!("Copying “{}”…", run.label),
+            Stage::Restoring { .. } => format!("Restoring “{}”…", run.label),
+            Stage::Copying { .. } | Stage::RestoreCopying { .. } => {
+                format!("Copying “{}”…", run.label)
+            }
             Stage::Walking { .. } | Stage::Storing { .. } => {
                 format!("Scanning “{}”…", run.label)
             }
@@ -2231,9 +2857,16 @@ fn run_line(run: &FsRun) -> String {
 
 /// The import sheet's body: the folder, the formats, the size threshold,
 /// how the books are held and the structure answer — the walk's orders,
-/// written before it walks.
+/// written before it walks. `ground` is the tree the pick belongs to, when
+/// one governs it: the notes speak the rung's own promise then, not the
+/// whole import's.
 #[allow(clippy::too_many_lines)]
-fn import_sheet(tokens: Tokens, root: &Path, opts: &FolderOpts) -> Element<'static, Message> {
+fn import_sheet(
+    tokens: Tokens,
+    root: &Path,
+    opts: &FolderOpts,
+    ground: Option<&GroundWatch>,
+) -> Element<'static, Message> {
     let section = |label: &'static str| -> Element<'static, Message> {
         container(text(label).size(11).color(tokens.muted))
             .padding(Padding { top: 2.0, right: 0.0, bottom: 6.0, left: 0.0 })
@@ -2323,7 +2956,7 @@ fn import_sheet(tokens: Tokens, root: &Path, opts: &FolderOpts) -> Element<'stat
             Some(Message::SheetImportMode(FolderMode::LinkInPlaceWatched)),
         ))
         .spacing(6);
-    let books_note = text(mode_note(mode)).size(12).color(tokens.muted);
+    let books_note = text(mode_note(mode, ground.is_some())).size(12).color(tokens.muted);
 
     // The structure answer, and the promise it makes about the tree.
     let structure_rows = Column::new()
@@ -2340,9 +2973,14 @@ fn import_sheet(tokens: Tokens, root: &Path, opts: &FolderOpts) -> Element<'stat
             Some(Message::SheetImportGroups(false)),
         ))
         .spacing(6);
-    let structure_note = text(
-        "A shelf for each folder gives every subfolder its own shelf; one shelf keeps the whole import together.",
-    )
+    // A pick inside a governed tree answers for its rung alone: the note
+    // says so, because "the whole import" would over-promise.
+    let in_tree = ground.is_some_and(|watch| !watch.rung.is_empty());
+    let structure_note = text(if in_tree {
+        "This answer stands for this folder and the ones under it — the rest of the tree keeps its own."
+    } else {
+        "A shelf for each folder gives every subfolder its own shelf; one shelf keeps the whole import together."
+    })
     .size(12)
     .color(tokens.muted);
 
@@ -2366,14 +3004,19 @@ fn import_sheet(tokens: Tokens, root: &Path, opts: &FolderOpts) -> Element<'stat
 }
 
 /// The mode's own sentence under the sheet's control — one wording per
-/// mode, so a mode described two ways never reads as two modes.
-fn mode_note(mode: FolderMode) -> &'static str {
+/// mode, so a mode described two ways never reads as two modes. A watched
+/// pick inside a governed tree gets the rung's wording: the promise is the
+/// subfolder's, and the rest of the tree keeps its own answer.
+fn mode_note(mode: FolderMode, in_ground: bool) -> &'static str {
     match mode {
         FolderMode::Copy => {
             "Books are copied into the app's own files, so they keep working even if the folder moves or is deleted."
         }
         FolderMode::LinkInPlace => {
             "Books stay where they are — the library just remembers where they live. Books added to the folder later are not picked up."
+        }
+        FolderMode::LinkInPlaceWatched if in_ground => {
+            "Books stay where they are, and this subfolder is checked for new ones. The rest of the tree keeps its own answer."
         }
         FolderMode::LinkInPlaceWatched => {
             "Books stay where they are, and the folder is checked for new ones when the app opens or you come back to it."
