@@ -18,6 +18,7 @@ pub mod arrange;
 pub mod bar;
 pub mod card;
 pub mod drag;
+pub mod duplicate;
 pub mod facts;
 pub mod fold;
 pub mod list;

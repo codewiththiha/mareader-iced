@@ -52,6 +52,7 @@ use crate::library::drag::{
     drop_effect, fold_items, fold_preview, Band, DragPayload, DropEffect, DropQuery,
     DropTargetKind, FoldPreview,
 };
+use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
 use crate::platform::{dialogs, fs, progress, store};
 use crate::route::Route;
@@ -322,6 +323,17 @@ enum Stage {
         found: Box<FoundFile>,
         book_id: String,
     },
+    /// The store is copying a duplicate's bytes; the landing waits in the
+    /// work.
+    Duplicating { work: Box<DupWork> },
+}
+
+/// A duplicate's landing, waiting on its copies: one book filed beside the
+/// row the reader pointed at, or a whole fresh subtree spliced in behind the
+/// original.
+enum DupWork {
+    Book(Box<BookCopy>),
+    Tree(TreePlan),
 }
 
 /// The folder walk's answer, planned against the ledger and waiting for its
@@ -431,6 +443,12 @@ pub struct Mareader {
     /// bar's layers queue the panel's enter BEFORE the ellipsis's exit, so
     /// the geometry, not the message order, decides who is right.
     ellipsis_close_at: Option<Instant>,
+    /// The duplicate queue's remaining entries: one at a time, because each
+    /// counter name counts against the level as the last landing left it.
+    dup_queue: Vec<String>,
+    /// What the running batch has landed so far, for the report it ends
+    /// with.
+    dup_landed: Vec<Duplicated>,
     /// The tap a hold swallowed: the release after a hold still belongs to
     /// the cell's button, and this flag tells that one tap to stay quiet.
     /// Cleared at the START of the next press rather than at the release,
@@ -575,6 +593,16 @@ pub enum Message {
     EllipsisPressed,
     /// A crumb inside the fold's panel was pressed: the way back.
     PanelCrumb(String),
+    /// The context menu's "Select": the choosing set begins at this row.
+    SelectRow(String),
+    /// A row's "Duplicate": a second copy of the book, the library's own,
+    /// filed beside the row the reader pointed at.
+    DuplicateRow(String),
+    /// A shelf's "Duplicate": a second tree holding fresh copies of its
+    /// books — asked from the breadcrumb's menu or a folder card's.
+    DuplicateShelf(String),
+    /// The set's "Duplicate": every chosen entry, in turn.
+    DuplicateSelection,
     /// A cell was tapped. One message for every cell: the app decides what
     /// a tap means — a membership while choosing, an open otherwise.
     CardTap(String),
@@ -685,6 +713,8 @@ impl Mareader {
             hovered_crumb: None,
             ellipsis_open: false,
             ellipsis_close_at: None,
+            dup_queue: Vec::new(),
+            dup_landed: Vec::new(),
             tap_swallow: None,
             select_pop: false,
             renaming: false,
@@ -863,6 +893,24 @@ impl Mareader {
             Message::RemoveShelf => {
                 let id = self.shelf.clone();
                 self.remove_shelf_with(&id)
+            }
+            Message::SelectRow(id) => {
+                self.context = None;
+                self.enter_selection(&id);
+                Task::none()
+            }
+            Message::DuplicateRow(id) | Message::DuplicateShelf(id) => {
+                // The menus close with the ask, the web's own order: the
+                // run's card is what the reader watches next.
+                self.menu = None;
+                self.context = None;
+                self.dup_queue.push(id);
+                self.pump_dup()
+            }
+            Message::DuplicateSelection => {
+                self.context = None;
+                self.dup_queue.extend(self.selected.iter().cloned());
+                self.pump_dup()
             }
             Message::ContextMenu(target) => {
                 // A drag in flight owns the pointer; a right-click during
@@ -2419,7 +2467,8 @@ impl Mareader {
                 Stage::Measuring { .. }
                 | Stage::Copying { .. }
                 | Stage::Restoring { .. }
-                | Stage::RestoreCopying { .. } => false,
+                | Stage::RestoreCopying { .. }
+                | Stage::Duplicating { .. } => false,
             };
             if !holds {
                 continue;
@@ -2430,7 +2479,8 @@ impl Mareader {
                 Stage::Measuring { .. }
                 | Stage::Copying { .. }
                 | Stage::Restoring { .. }
-                | Stage::RestoreCopying { .. } => false,
+                | Stage::RestoreCopying { .. }
+                | Stage::Duplicating { .. } => false,
             };
             return if focus_walk { Claim::HeldByWalk } else { Claim::HeldByAsk };
         }
@@ -2620,17 +2670,155 @@ impl Mareader {
             return Task::none();
         };
         let run = self.runs.remove(ix);
-        let Stage::Storing { plan } = run.stage else {
-            return Task::none();
-        };
-        let root = plan.folder.root.clone();
+        match run.stage {
+            Stage::Storing { plan } => {
+                let root = plan.folder.root.clone();
+                let (copies, failure) = partition_store_results(results);
+                let outcome = self.land_folder_walk(*plan, Some(copies));
+                if let Some(error) = failure {
+                    self.toasts.show(Tone::Error, error, Instant::now());
+                }
+                let release = self.release_root(&root);
+                Task::batch([outcome, release])
+            }
+            Stage::Duplicating { work } => self.duplicates_done(*work, results),
+            _ => Task::none(),
+        }
+    }
+
+    /// The store's answer for one duplicate run: land what came home, count
+    /// it for the report, toast what the store refused, and let the queue
+    /// walk on.
+    fn duplicates_done(&mut self, work: DupWork, results: Vec<StoreResult>) -> Task<Message> {
         let (copies, failure) = partition_store_results(results);
-        let outcome = self.land_folder_walk(*plan, Some(copies));
+        let now = now_ms();
+        let recorded = match work {
+            DupWork::Book(copy) => copies.get(&copy.new_id).map(|(store, measured)| {
+                let title = duplicate::land_book(
+                    &mut self.library.books,
+                    &mut self.library.shelves,
+                    &self.shelf,
+                    *copy,
+                    store.clone(),
+                    *measured,
+                    now,
+                );
+                Duplicated { name: title, shelf: false }
+            }),
+            DupWork::Tree(plan) => {
+                let name = duplicate::land_tree(
+                    &mut self.library.books,
+                    &mut self.library.shelves,
+                    plan,
+                    &copies,
+                    now,
+                );
+                Some(Duplicated { name, shelf: true })
+            }
+        };
+        if let Some(one) = recorded {
+            self.dup_landed.push(one);
+        }
         if let Some(error) = failure {
             self.toasts.show(Tone::Error, error, Instant::now());
         }
-        let release = self.release_root(&root);
-        Task::batch([outcome, release])
+        self.pump_dup()
+    }
+
+    /// The duplicate queue's step: one entry at a time, because each counter
+    /// name counts against the level as the last landing left it — the web's
+    /// own sequential loop, walked by messages instead of an async fn. The
+    /// entries that owe no bytes land on the spot and the walk continues;
+    /// the ones that do ride a run, and the queue resumes when its copies
+    /// come home.
+    fn pump_dup(&mut self) -> Task<Message> {
+        while let Some(entry) = self.dup_queue.first().cloned() {
+            self.dup_queue.remove(0);
+            let now = now_ms();
+            let plan =
+                duplicate::plan_one(&self.library.books, &self.library.shelves, &entry, now);
+            match plan {
+                DupPlan::Skip => {}
+                DupPlan::Dead(note) => {
+                    self.toasts.show(Tone::Error, note, Instant::now());
+                }
+                DupPlan::ShelfLink { row_id, name, target } => {
+                    let title = duplicate::land_shelf_link(
+                        &mut self.library.books,
+                        &mut self.library.shelves,
+                        &self.shelf,
+                        &row_id,
+                        &name,
+                        &target,
+                        now,
+                    );
+                    self.dup_landed.push(Duplicated { name: title, shelf: false });
+                }
+                DupPlan::Book(copy) => {
+                    let label = copy.shown.clone();
+                    let requests = vec![BookFileRequest {
+                        from: copy.book.path().to_string(),
+                        id: copy.new_id.clone(),
+                    }];
+                    return self.begin_dup(label, requests, DupWork::Book(copy));
+                }
+                DupPlan::Tree(plan) => {
+                    let requests = duplicate::tree_requests(&plan);
+                    if requests.is_empty() {
+                        // A tree of links and dead rows copies nothing: no
+                        // card, and the landing is the whole run.
+                        let name = duplicate::land_tree(
+                            &mut self.library.books,
+                            &mut self.library.shelves,
+                            plan,
+                            &HashMap::new(),
+                            now,
+                        );
+                        self.dup_landed.push(Duplicated { name, shelf: true });
+                        continue;
+                    }
+                    let label = plan.label.clone();
+                    return self.begin_dup(label, requests, DupWork::Tree(plan));
+                }
+            }
+        }
+        // The queue ran out: the report the whole batch ends with, and the
+        // one persist that covers it — a link-only batch, which never met a
+        // run, lands here too.
+        if self.dup_landed.is_empty() {
+            return Task::none();
+        }
+        let report = duplicate::report(&self.dup_landed);
+        self.dup_landed.clear();
+        self.toasts.show(Tone::Info, report, Instant::now());
+        self.persist_library()
+    }
+
+    /// A duplicate's store run: the card wears the name of what is being
+    /// duplicated, the way a folder run wears its folder.
+    fn begin_dup(
+        &mut self,
+        label: String,
+        requests: Vec<BookFileRequest>,
+        work: DupWork,
+    ) -> Task<Message> {
+        let (sink, rx) = progress::channel();
+        self.next_task += 1;
+        let task = self.next_task;
+        self.runs.push(FsRun {
+            task,
+            label,
+            sink,
+            rx,
+            latest: None,
+            stage: Stage::Duplicating { work: Box::new(work) },
+        });
+        let emit = Arc::clone(&self.runs[self.runs.len() - 1].sink);
+        let task_name = task.to_string();
+        Task::perform(
+            async move { store::store_books(&task_name, &requests, &emit) },
+            move |results| Message::CopiesDone(task, results),
+        )
     }
 
     /// The diff's answer, written to the live lists: relinks first, then
@@ -3601,7 +3789,7 @@ impl Mareader {
         let (panel, size) = match kind {
             MenuKind::Add => menus::add_menu(self.tokens, &self.add_facts()),
             MenuKind::View => menus::view_menu(self.tokens, &self.library.view),
-            MenuKind::Shelf => menus::shelf_menu(self.tokens),
+            MenuKind::Shelf => menus::shelf_menu(self.tokens, &self.shelf),
         };
         let anchor = Point::new(self.cursor.x, platform::TITLE_BAR_H + 2.0);
         let at = popover::place(anchor, size, self.viewport);
@@ -4137,7 +4325,9 @@ fn run_line(run: &FsRun) -> String {
         _ => match run.stage {
             Stage::Measuring { .. } => format!("Measuring “{}”…", run.label),
             Stage::Restoring { .. } => format!("Restoring “{}”…", run.label),
-            Stage::Copying { .. } | Stage::RestoreCopying { .. } => {
+            Stage::Copying { .. }
+            | Stage::RestoreCopying { .. }
+            | Stage::Duplicating { .. } => {
                 format!("Copying “{}”…", run.label)
             }
             Stage::Walking { .. } | Stage::Storing { .. } => {

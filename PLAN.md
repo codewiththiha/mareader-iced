@@ -394,6 +394,25 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   the library, the crumb under the hold wears the accent under it rather than around
   it, and a 420ms rest sinks the ghost to a third of its size on the crumb, because
   the crumb is the one target smaller than the ghost and the shrink is what keeps the
-  name being aimed at readable. Next: the breadcrumb's fold (the ellipsis and its
-  panel, which a drag opens by hover), duplicates, the departure and conflict gates
-  around the moves.
+  name being aimed at readable. The breadcrumb now folds: one pure module
+  (library/fold.rs — the web fold's own arithmetic, carried over with its tests)
+  decides the split against the bar's estimated budget; the web bar measured its
+  crumbs with a hidden probe, and the native bar estimates the same boxes from the
+  face's glyph step, the crumb's cap and the chevron — the one deviation, documented
+  where the arithmetic lives. The ellipsis stands for the hidden levels: a hover
+  opens its panel one beat behind the pointer and a 220ms grace closes it — a leave
+  that lands inside the panel's own box arms nothing, because the layers queue the
+  panel's enter before the ellipsis's exit, and the geometry, not the message order,
+  decides who is right. The panel packs the elided chain into the rows the window's
+  width decides, every crumb in it a way back and a filing target, and a drag opens
+  the panel by hover alone: the ellipsis is a hover target and never a drop, the
+  effect table's own refusal. Duplicates have landed with it: the pure half of the
+  web service (library/duplicate.rs, with its tests) plans one entry at a time — a
+  book, or a link at one, asks the store for a copy that lands beside the row the
+  reader pointed at; a shelf asks for a whole fresh subtree of copies spliced in
+  behind the original; a link at a shelf stays a pointer and lands on the spot —
+  and the menus grew the web's own rows (Select, Duplicate) in the web's own order,
+  the set's disabled Duplicate row waking up with the queue that walks it. The
+  highlights' half of a duplicate waits on the reader's marks store, documented
+  where the landing lives. Next: the departure and conflict gates around the moves
+  — the copy modal, the conflict modal and the already-imported note.

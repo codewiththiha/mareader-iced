@@ -194,9 +194,9 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
 /// The shelf's own menu, hung off the last crumb: rename it, or take it
 /// apart. Taking a shelf apart is not a question the web app asked twice —
 /// a shelf the reader made holds no copies, so its books simply come up a
-/// level and the shelf goes. (The duplicate that copies bytes lands with
-/// the store.)
-pub fn shelf_menu(tokens: Tokens) -> (Element<'static, Message>, Size) {
+/// level and the shelf goes. Its duplicate is the reader's own second tree
+/// over fresh copies of the books — the store batch rides a run of its own.
+pub fn shelf_menu(tokens: Tokens, shelf: &str) -> (Element<'static, Message>, Size) {
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(SHELF_W);
 
@@ -207,6 +207,16 @@ pub fn shelf_menu(tokens: Tokens) -> (Element<'static, Message>, Size) {
         None,
         false,
         Some(Message::StartRename),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Copy),
+        "Duplicate",
+        None,
+        false,
+        Some(Message::DuplicateShelf(shelf.to_string())),
     ));
     size = size.row(menu::ROW_H);
 
@@ -226,9 +236,9 @@ pub fn shelf_menu(tokens: Tokens) -> (Element<'static, Message>, Size) {
 /// A context menu's panel width.
 const CONTEXT_W: f32 = 232.0;
 
-/// The right-click on a book or a link: open it, rename it, reveal it,
-/// take it out of the library. (Select and Duplicate land with the
-/// selection model and the store; the menu keeps its order when they do.)
+/// The right-click on a book or a link: open it, choose it, rename it,
+/// duplicate it, reveal it, take it out of the library — the web entry
+/// menu's own order, which one list keeps for every kind of row.
 pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) {
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(CONTEXT_W);
@@ -247,11 +257,34 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
 
             rows.push(menu::item(
                 tokens,
+                Some(IconName::Check),
+                "Select",
+                None,
+                false,
+                Some(Message::SelectRow(book.id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+
+            rows.push(menu::item(
+                tokens,
                 Some(IconName::Pencil),
                 "Rename…",
                 None,
                 false,
                 Some(Message::AskRenameRow(book.id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+
+            // The duplicate of a book whose address died is a duplicate of
+            // nothing: the row stands disabled, the web's own off-when-dead
+            // rule.
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Copy),
+                "Duplicate",
+                None,
+                false,
+                (!book.missing).then(|| Message::DuplicateRow(book.id.clone())),
             ));
             size = size.row(menu::ROW_H);
 
@@ -282,11 +315,34 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
 
             rows.push(menu::item(
                 tokens,
+                Some(IconName::Check),
+                "Select",
+                None,
+                false,
+                Some(Message::SelectRow(id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+
+            rows.push(menu::item(
+                tokens,
                 Some(IconName::Pencil),
                 "Rename…",
                 None,
                 false,
                 Some(Message::AskRenameRow(id.clone())),
+            ));
+            size = size.row(menu::ROW_H);
+
+            // A link at a book duplicates into the library's own copy of
+            // what it opens; a link at a shelf stays a pointer, filed
+            // beside the first.
+            rows.push(menu::item(
+                tokens,
+                Some(IconName::Copy),
+                "Duplicate",
+                None,
+                false,
+                Some(Message::DuplicateRow(id.clone())),
             ));
             size = size.row(menu::ROW_H);
         }
@@ -312,10 +368,11 @@ fn row_id_of(row: &Row) -> String {
     }
 }
 
-/// The right-click on a folder shelf: stand on it, rename it, answer for
-/// its watch, mint a shelf inside it, take it apart. `watch` is the
-/// folder's watch seat — the toggle row a folder shelf has and nothing
-/// else does, because nothing else has a rung to answer for.
+/// The right-click on a folder shelf: stand on it, choose it, rename it,
+/// duplicate it, answer for its watch, mint a shelf inside it, take it
+/// apart. `watch` is the folder's watch seat — the toggle row a folder
+/// shelf has and nothing else does, because nothing else has a rung to
+/// answer for.
 pub fn folder_menu(
     tokens: Tokens,
     shelf: &Shelf,
@@ -336,11 +393,34 @@ pub fn folder_menu(
 
     rows.push(menu::item(
         tokens,
+        Some(IconName::Check),
+        "Select",
+        None,
+        false,
+        Some(Message::SelectRow(shelf.id.clone())),
+    ));
+    size = size.row(menu::ROW_H);
+
+    rows.push(menu::item(
+        tokens,
         Some(IconName::Pencil),
         "Rename…",
         None,
         false,
         Some(Message::AskRenameShelf(shelf.id.clone())),
+    ));
+    size = size.row(menu::ROW_H);
+
+    // A second tree of the reader's own, holding fresh copies of the books:
+    // never a second door onto the same rows, and never a second shelf of
+    // one directory — the copy of a folder shelf is virtual like any other.
+    rows.push(menu::item(
+        tokens,
+        Some(IconName::Copy),
+        "Duplicate",
+        None,
+        false,
+        Some(Message::DuplicateShelf(shelf.id.clone())),
     ));
     size = size.row(menu::ROW_H);
 
@@ -549,9 +629,7 @@ fn direction_row(tokens: Tokens, ascending: bool) -> Element<'static, Message> {
 }
 
 /// Right-click on an item that is in the set, while choosing: the menu
-/// answers about the whole set, not the item under the cursor. Duplicate is
-/// listed disabled until the copy work it belongs to lands — a row the
-/// reader can see and not click beats a row that is quietly missing.
+/// answers about the whole set, not the item under the cursor.
 pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message>, Size) {
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(CONTEXT_W);
@@ -575,7 +653,7 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
         format!("Duplicate ({count})"),
         None,
         false,
-        None,
+        Some(Message::DuplicateSelection),
     ));
     size = size.row(menu::ROW_H);
 
