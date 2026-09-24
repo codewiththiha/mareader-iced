@@ -210,7 +210,7 @@ pub fn view(
             None
         };
 
-        let inner_width = (width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN);
+        let inner_width = content_width(width);
         let layout: Element<'static, Message> = if library.view.is_list() {
             list::view(tokens, library, rows, folders, hovered, selection, drag)
         } else {
@@ -287,7 +287,19 @@ fn framed<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
 /// width says — one spelling so the reveal's offset and the scaled cells
 /// come out of the same numbers.
 pub fn content_metrics(display_width: f32, pinned: Option<u8>) -> (usize, f32) {
-    let inner_width = (display_width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN);
+    grid_metrics(content_width(display_width), pinned)
+}
+
+/// The content column's width for a window: the level's air on both sides,
+/// shared by the grid and the reveal's offsets.
+fn content_width(display_width: f32) -> f32 {
+    (display_width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN)
+}
+
+/// The track count and cell width for a column, by the same arithmetic at
+/// every caller: the grid paints with these, and `content_metrics` hands the
+/// identical pair to the reveal.
+fn grid_metrics(inner_width: f32, pinned: Option<u8>) -> (usize, f32) {
     let tracks = match pinned {
         Some(count) => usize::from(count).max(1),
         None => auto_columns(inner_width),
@@ -313,11 +325,7 @@ fn grid(
     selection: SelectionFacts<'_>,
     drag: DragFacts<'_>,
 ) -> Element<'static, Message> {
-    let tracks = match pinned {
-        Some(count) => usize::from(count).max(1),
-        None => auto_columns(width),
-    };
-    let cell = (width - COL_GAP * (tracks as f32 - 1.0)) / tracks as f32;
+    let (tracks, cell) = grid_metrics(width, pinned);
 
     let mut cells: Vec<Element<'static, Message>> = Vec::new();
     for shelf in folders {
@@ -408,8 +416,7 @@ pub fn report_fit(view: &mut LibraryView, window_width: f32) -> bool {
     if view.columns.is_some() {
         return false;
     }
-    let inner = window_width.min(CONTENT_MAX) - CONTENT_PAD * 2.0;
-    let raw = (auto_columns(inner) as i64).clamp(1, 255) as u8;
+    let raw = (auto_columns(content_width(window_width)) as i64).clamp(1, 255) as u8;
     let fit = LibraryView::clamped_fit(raw);
     if view.auto_fit == fit {
         return false;
