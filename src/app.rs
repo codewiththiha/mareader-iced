@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::time::{Duration, Instant};
 use iced::widget::{
@@ -60,7 +59,7 @@ use crate::library::departure::{
 use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
 use crate::library::reveal::{self, Reveal};
-use crate::platform::{dialogs, fs, progress, store};
+use crate::platform::{dialogs, fs, now_ms, progress, store};
 use crate::reader;
 use crate::route::Route;
 use crate::storage;
@@ -332,10 +331,6 @@ struct Covered {
     tree_root: String,
     shelf_id: String,
     shelf_name: String,
-    /// `""` when the ground IS the tree's root, which makes the sheet's
-    /// switch a decision about every rung rather than one.
-    #[allow(dead_code)]
-    rel: String,
 }
 
 /// The already-imported answer, kept with its close: where the light
@@ -2735,7 +2730,9 @@ impl Mareader {
                 .map(|folder| folder.id.clone());
             let home = placed_by
                 .as_deref()
-                .and_then(|folder_id| folder_shelf_of(&self.library.shelves, folder_id, &book.id));
+                .and_then(|folder_id| {
+                    departure::folder_shelf_of(&self.library.shelves, folder_id, &book.id)
+                });
             let entry = Tombstone::of(book, home, now_ms());
             ledger::tombstone(&mut self.library.folders, &entry);
         }
@@ -2848,7 +2845,6 @@ impl Mareader {
             tree_root,
             shelf_id: covered.shelf_id,
             shelf_name,
-            rel: covered.rel,
         })
     }
 
@@ -6981,15 +6977,6 @@ fn flatten_rungs(shelves: &mut Vec<Shelf>, from: &str, seat: &str) {
     shelves.retain(|one| !going.contains(&one.id));
 }
 
-/// The first shelf a folder's tree holds a book on — the home a tombstone
-/// remembers, so a restore puts the book back where the shelf showed it.
-fn folder_shelf_of(shelves: &[shelf::Shelf], folder_id: &str, book_id: &str) -> Option<String> {
-    shelf::containing(shelves, book_id)
-        .into_iter()
-        .find(|shelf| shelf.kind.folder_id() == Some(folder_id))
-        .map(|shelf| shelf.id.clone())
-}
-
 /// Put the folder row back, by id. One place, because the ledger is the
 /// part of the library that must never be written half-updated: a `placed`
 /// set that lost an entry re-adds a book the reader already filed.
@@ -7515,15 +7502,6 @@ fn appearance_glyph(base: BaseMode) -> IconName {
         BaseMode::Dark => IconName::Moon,
         BaseMode::Dim => IconName::Dim,
     }
-}
-
-/// Milliseconds since the epoch — the stamp the library's ids and rows are
-/// minted with.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// The window the app opens in: the original's 1200×800 with its 640×480

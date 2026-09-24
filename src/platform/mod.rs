@@ -37,6 +37,18 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("com.codewiththiha.mareader"))
 }
 
+/// Milliseconds since the epoch — the stamp the library's ids, rows and
+/// tombstones are minted with. A wall clock on purpose: these stamps are
+/// persisted and read back on another run, so a monotonic counter would not
+/// do, and a clock that steps backwards is clamped by every consumer's own
+/// `saturating_sub`.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// The persisted settings blob.
 pub fn settings_path() -> PathBuf {
     data_dir().join("settings.json")

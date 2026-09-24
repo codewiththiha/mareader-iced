@@ -16,12 +16,12 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::Task;
 use library_core::id::Cooldown;
 
 use super::fs::DOCUMENT_EXTENSIONS;
+use super::now_ms;
 
 /// How long after a picker closes its focus still counts as the app's own.
 const PICKER_GRACE_MS: u64 = 1_000;
@@ -31,13 +31,6 @@ static PICKER_OPEN: AtomicBool = AtomicBool::new(false);
 fn picker_closed() -> &'static Mutex<Cooldown> {
     static CELL: OnceLock<Mutex<Cooldown>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(Cooldown::new(PICKER_GRACE_MS)))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Whether the focus the window just regained is the app's own picker
