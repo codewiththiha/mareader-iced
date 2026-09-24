@@ -25,7 +25,7 @@ pub use add::add_card;
 pub use badge::badge_chip;
 pub use book::book_card;
 pub use folder::folder_card;
-pub use kit::{dim_layer, held_layer, sensors, COVER_RATIO};
+pub use kit::{drag_bands, right_target, sensed, stack_layers, state_fade, COVER_RATIO};
 pub use link::link_card;
 pub use row::{elide_line, format_chip, list_thumb, row_button_style};
 

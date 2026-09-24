@@ -1,7 +1,7 @@
 //! The folder cell: the same frame with the shelves inside it stacked as a plate
 //! on the face.
 
-use iced::widget::{button, column, container, mouse_area, text, Column, Row, Space, Stack};
+use iced::widget::{button, column, container, text, Column, Row, Space, Stack};
 use iced::{Alignment, Background, Border, Color, Element, Length};
 use library_core::blob::LibraryBlob;
 use library_core::book;
@@ -13,10 +13,9 @@ use crate::library::{DragFacts, SelectionFacts};
 use crate::theme::{mix, wash, Elevation, Tokens};
 use super::kit::{
     PLATE_DEPTH, THUMB_CAP, card_button_style, chars_per_line, check_corner, cover_gradient,
-    dim_layer, elide, held_layer, nest_ring, sensors,
+    drag_bands, elide, nest_ring, right_target, sensed, stack_layers, state_fade,
 };
 use super::badge::badge_row;
-
 
 /// One folder's plate: a 3:4 window previewing what is inside — folders
 /// first, then books, four cells and no more — with the name and the
@@ -60,11 +59,7 @@ pub fn folder_card(
     let summary_line = facts::summary(facts.books, facts.inside);
     let tap_id = shelf.id.clone();
     let hover_id = shelf.id.clone();
-    let right = if selection.selecting && selected {
-        ContextTarget::Selection
-    } else {
-        ContextTarget::Folder(shelf.id)
-    };
+    let right = right_target(selection, selected, ContextTarget::Folder(shelf.id));
     let click = button(
         column![
             container(framed).padding(8.0),
@@ -81,11 +76,7 @@ pub fn folder_card(
     .padding(0)
     .style(move |_, status| card_button_style(tokens, status))
     .on_press(Message::CardTap(tap_id));
-    let cell: Element<'static, Message> = mouse_area(click)
-        .on_enter(Message::CardHover(Some(hover_id)))
-        .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(right))
-        .into();
+    let cell = sensed(click, &hover_id, right);
     // A folder's membership is its whole cell: the accent's tint and inset
     // ring (folder.css), not a ring on the plate alone.
     let cell: Element<'static, Message> = if selected || lit {
@@ -100,22 +91,16 @@ pub fn folder_card(
         cell
     };
     let mut dressed: Vec<Element<'static, Message>> = vec![cell];
-    if held {
-        dressed.push(held_layer(tokens));
-    } else if selection.selecting && !selected {
-        dressed.push(dim_layer(tokens, hovered));
+    if let Some(fade) = state_fade(tokens, held, selection.selecting, selected, hovered) {
+        dressed.push(fade);
     }
     if nest {
         dressed.push(nest_ring(tokens));
     }
-    if drag.live() {
-        dressed.push(sensors(&sensor_id, true));
+    if let Some(bands) = drag_bands(drag, &sensor_id, true) {
+        dressed.push(bands);
     }
-    if dressed.len() == 1 {
-        dressed.pop().unwrap_or_else(|| Space::new().into())
-    } else {
-        Stack::with_children(dressed).into()
-    }
+    stack_layers(dressed)
 }
 
 /// What fills one cell of a plate: a folder, previewed as a plate of its

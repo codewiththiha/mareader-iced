@@ -7,7 +7,7 @@
 //! shape — the 41.6px cover thumbnail, the title and its second line, the
 //! format chip that only the non-PDF formats wear.
 
-use iced::widget::{button, column, container, mouse_area, row, text, Column, Space, Stack};
+use iced::widget::{button, column, container, row, text, Column, Space};
 use iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use library_core::blob::LibraryBlob;
@@ -105,10 +105,8 @@ fn dressed(
     if selection.selecting && selected {
         layers.push(rule_layer(tokens));
     }
-    if drag.holds(id) {
-        layers.push(card::held_layer(tokens));
-    } else if selection.selecting && !selected {
-        layers.push(card::dim_layer(tokens, hovered));
+    if let Some(fade) = card::state_fade(tokens, drag.holds(id), selection.selecting, selected, hovered) {
+        layers.push(fade);
     }
     if folder {
         if drag.nests_into(id) {
@@ -131,14 +129,10 @@ fn dressed(
             layers.push(inset_ring(tokens, false));
         }
     }
-    if drag.live() {
-        layers.push(card::sensors(id, folder));
+    if let Some(bands) = card::drag_bands(drag, id, folder) {
+        layers.push(bands);
     }
-    if layers.len() == 1 {
-        layers.pop().unwrap_or_else(|| Space::new().into())
-    } else {
-        Stack::with_children(layers).into()
-    }
+    card::stack_layers(layers)
 }
 
 /// The row's seam of a coming drop: two pixels of the accent along the top
@@ -200,11 +194,7 @@ fn shelf_row(
     let tap_id = shelf.id.clone();
     let dressed_id = shelf.id.clone();
     let hover_id = shelf.id.clone();
-    let right = if selection.selecting && selected {
-        ContextTarget::Selection
-    } else {
-        ContextTarget::Folder(shelf.id)
-    };
+    let right = card::right_target(selection, selected, ContextTarget::Folder(shelf.id));
     let mut face = row![
         icon(IconName::Next, 12, tokens.muted),
         icon(IconName::Folder, 15, tokens.muted),
@@ -220,11 +210,7 @@ fn shelf_row(
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
         .style(move |_, status| card::row_button_style(tokens, status, selected || lit))
         .on_press(Message::CardTap(tap_id));
-    let cell: Element<'static, Message> = mouse_area(line)
-        .on_enter(Message::CardHover(Some(hover_id)))
-        .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(right))
-        .into();
+    let cell = card::sensed(line, &hover_id, right);
     dressed(tokens, cell, hovered, selection, selected, drag, &dressed_id, true)
 }
 
@@ -261,21 +247,13 @@ fn book_row(
     let tap_id = book.id.clone();
     let dressed_id = book.id.clone();
     let hover_id = book.id.clone();
-    let right = if selection.selecting && selected {
-        ContextTarget::Selection
-    } else {
-        ContextTarget::Row(book.id)
-    };
+    let right = card::right_target(selection, selected, ContextTarget::Row(book.id));
     let row_el = button(line)
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
         .style(move |_, status| card::row_button_style(tokens, status, selected || lit))
         .on_press(Message::CardTap(tap_id));
-    let cell: Element<'static, Message> = mouse_area(row_el)
-        .on_enter(Message::CardHover(Some(hover_id)))
-        .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(right))
-        .into();
+    let cell = card::sensed(row_el, &hover_id, right);
     dressed(tokens, cell, hovered, selection, selected, drag, &dressed_id, false)
 }
 
@@ -310,11 +288,7 @@ fn link_row(
 
     let hover_id = id.clone();
     let tap_id = id.clone();
-    let right = if selection.selecting && selected {
-        ContextTarget::Selection
-    } else {
-        ContextTarget::Row(id.clone())
-    };
+    let right = card::right_target(selection, selected, ContextTarget::Row(id.clone()));
     let action = button(face)
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
@@ -324,11 +298,7 @@ fn link_row(
     } else {
         action
     };
-    let cell: Element<'static, Message> = mouse_area(action)
-        .on_enter(Message::CardHover(Some(hover_id)))
-        .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(right))
-        .into();
+    let cell = card::sensed(action, &hover_id, right);
     dressed(tokens, cell, hovered, selection, selected, drag, &tap_id, false)
 }
 

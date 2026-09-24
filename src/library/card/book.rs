@@ -1,6 +1,6 @@
 //! The book cell: a cover frame, the info block under it, and the progress hairline.
 
-use iced::widget::{button, column, container, mouse_area, text, Space, Stack};
+use iced::widget::{button, column, container, text, Space, Stack};
 use iced::{Alignment, Background, Border, Color, Element, Length};
 use library_core::book::Book;
 use library_core::text as lib_text;
@@ -9,10 +9,9 @@ use crate::chrome::icons::{icon, IconName};
 use crate::library::{DragFacts, SelectionFacts};
 use crate::theme::{wash, Tokens};
 use super::kit::{
-    COVER_RATIO, card_button_style, chars_per_line, check_corner, cover_style, dim_layer, elide,
-    fold_ring, held_layer, seam_corner, sensors,
+    COVER_RATIO, card_button_style, chars_per_line, check_corner, cover_style, drag_bands, elide,
+    fold_ring, right_target, seam_corner, sensed, stack_layers, state_fade,
 };
-
 
 /// One book's card in the grid: cover, info, and the progress hairline.
 /// The card OWNS its book — the level's rows are computed fresh on every
@@ -121,28 +120,18 @@ pub fn book_card(
     // that started on this card swallowed.
     let tap_id = book.id.clone();
     let hover_id = book.id.clone();
-    let right = if selection.selecting && selected {
-        ContextTarget::Selection
-    } else {
-        ContextTarget::Row(book.id)
-    };
+    let right = right_target(selection, selected, ContextTarget::Row(book.id));
     let click = button(card)
         .padding(0)
         .style(move |_, status| card_button_style(tokens, status))
         .on_press(Message::CardTap(tap_id));
-    let cell: Element<'static, Message> = mouse_area(click)
-        .on_enter(Message::CardHover(Some(hover_id)))
-        .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(right))
-        .into();
+    let cell = sensed(click, &hover_id, right);
     // The cell's overlays by depth: the step back or the hold's fade, then
     // the seam, then the fold's ring — each a non-interactive wash, so the
     // button underneath still owns every press.
     let mut dressed: Vec<Element<'static, Message>> = vec![cell];
-    if held {
-        dressed.push(held_layer(tokens));
-    } else if selection.selecting && !selected {
-        dressed.push(dim_layer(tokens, hovered));
+    if let Some(fade) = state_fade(tokens, held, selection.selecting, selected, hovered) {
+        dressed.push(fade);
     }
     if seam {
         dressed.push(seam_corner(tokens, cover_h));
@@ -150,14 +139,10 @@ pub fn book_card(
     if fold {
         dressed.push(fold_ring(tokens, cover_h));
     }
-    if drag.live() {
-        dressed.push(sensors(&sensor_id, false));
+    if let Some(bands) = drag_bands(drag, &sensor_id, false) {
+        dressed.push(bands);
     }
-    if dressed.len() == 1 {
-        dressed.pop().unwrap_or_else(|| Space::new().into())
-    } else {
-        Stack::with_children(dressed).into()
-    }
+    stack_layers(dressed)
 }
 
 /// The 3px progress hairline: the line at 60% as the track, the accent as

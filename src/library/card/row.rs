@@ -9,7 +9,6 @@ use crate::chrome::icons::{icon, IconName};
 use crate::theme::{wash, Elevation, Tokens};
 use super::kit::{COVER_RATIO, cover_gradient, elide};
 
-
 /// The list's book thumbnail: the cover's gradient in the row's footprint.
 pub fn list_thumb(tokens: Tokens, check: Option<bool>) -> Element<'static, Message> {
     let width = 41.6;

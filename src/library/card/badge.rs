@@ -7,7 +7,6 @@ use crate::app::Message;
 use crate::library::facts::{Badge, FolderFacts};
 use crate::theme::{mix, wash, Tokens};
 
-
 /// The plate's corner badges: where the books live, and — when the tree
 /// tracks this rung — the dot that says so. `None` when a shelf wears
 /// neither, and then the corner stays clean.

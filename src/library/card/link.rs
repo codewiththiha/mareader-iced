@@ -1,16 +1,15 @@
 //! The link cell: a tile for a linked file the library already holds a book for.
 
-use iced::widget::{button, column, container, mouse_area, text, Space, Stack};
+use iced::widget::{button, column, container, text, Stack};
 use iced::{Background, Border, Element, Length};
 use crate::app::{ContextTarget, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::{DragFacts, SelectionFacts};
 use crate::theme::{wash, Tokens};
 use super::kit::{
-    COVER_RATIO, card_button_style, chars_per_line, check_corner, dim_layer, elide, fold_ring,
-    held_layer, seam_corner, sensors,
+    COVER_RATIO, card_button_style, chars_per_line, check_corner, drag_bands, elide, fold_ring,
+    right_target, seam_corner, sensed, stack_layers, state_fade,
 };
-
 
 /// A row that points at a shelf rather than being a book: the link glyph on
 /// the cover's tile. A link whose target is not a shelf is listed but
@@ -64,11 +63,7 @@ pub fn link_card(
     .width(width);
 
     let hover_id = id.clone();
-    let right = if selection.selecting && selected {
-        ContextTarget::Selection
-    } else {
-        ContextTarget::Row(id.clone())
-    };
+    let right = right_target(selection, selected, ContextTarget::Row(id.clone()));
     let action = button(body)
         .padding(0)
         .style(move |_, status| card_button_style(tokens, status));
@@ -78,16 +73,10 @@ pub fn link_card(
         // Listed but dead: no press, nothing to open.
         action
     };
-    let cell: Element<'static, Message> = mouse_area(action)
-        .on_enter(Message::CardHover(Some(hover_id)))
-        .on_exit(Message::CardHover(None))
-        .on_right_press(Message::ContextMenu(right))
-        .into();
+    let cell = sensed(action, &hover_id, right);
     let mut dressed: Vec<Element<'static, Message>> = vec![cell];
-    if held {
-        dressed.push(held_layer(tokens));
-    } else if selection.selecting && !selected {
-        dressed.push(dim_layer(tokens, hovered));
+    if let Some(fade) = state_fade(tokens, held, selection.selecting, selected, hovered) {
+        dressed.push(fade);
     }
     if seam {
         dressed.push(seam_corner(tokens, cover_h));
@@ -95,12 +84,8 @@ pub fn link_card(
     if fold {
         dressed.push(fold_ring(tokens, cover_h));
     }
-    if drag.live() {
-        dressed.push(sensors(&sensor_id, false));
+    if let Some(bands) = drag_bands(drag, &sensor_id, false) {
+        dressed.push(bands);
     }
-    if dressed.len() == 1 {
-        dressed.pop().unwrap_or_else(|| Space::new().into())
-    } else {
-        Stack::with_children(dressed).into()
-    }
+    stack_layers(dressed)
 }

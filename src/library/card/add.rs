@@ -7,7 +7,6 @@ use crate::chrome::icons::{icon, IconName};
 use crate::theme::{wash, Tokens};
 use super::kit::COVER_RATIO;
 
-
 /// The grid's last cell: the add door. A cover-shaped tile with the plus,
 /// quiet until the pointer asks for it.
 pub fn add_card(tokens: Tokens, width: f32) -> Element<'static, Message> {

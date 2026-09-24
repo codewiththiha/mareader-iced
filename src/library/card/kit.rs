@@ -1,16 +1,15 @@
-//! The cell kit: the shapes and styles every shelf cell is built from.
-//!
-//! Private to the cells that draw with it, except where a sibling needs a
-//! piece — `pub(super)` is exactly that list.
+//! The cell kit: the shapes every shelf cell is built from, and the rules a
+//! cell and a list row both follow — what a cell wears for the shelf's
+//! state, the bands a live drag reads, and the senses it answers with.
 
 use iced::gradient::Linear;
-use iced::widget::{button, container, mouse_area, Column, Space};
+use iced::widget::{button, container, mouse_area, Column, Space, Stack};
 use iced::{Alignment, Background, Border, Color, Element, Gradient, Length, Radians, Shadow};
-use crate::app::Message;
+use crate::app::{ContextTarget, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::library::drag::Band;
+use crate::library::{DragFacts, SelectionFacts};
 use crate::theme::{mix, wash, Elevation, Tokens};
-
 
 /// The cover's aspect, A4 portrait: height = width × 297/210.
 pub const COVER_RATIO: f32 = 297.0 / 210.0;
@@ -139,7 +138,7 @@ pub(super) fn check_corner(tokens: Tokens, selected: bool) -> Element<'static, M
 /// cannot fade its own ink, so the wash carries the step back. The add door
 /// never wears it: dimming a door would advertise a choice it does not
 /// offer.
-pub fn dim_layer(tokens: Tokens, hovered: bool) -> Element<'static, Message> {
+fn dim_layer(tokens: Tokens, hovered: bool) -> Element<'static, Message> {
     container(Space::new().width(Length::Fill).height(Length::Fill))
         .style(move |_| container::Style {
             background: Some(Background::Color(wash(
@@ -158,7 +157,7 @@ pub fn dim_layer(tokens: Tokens, hovered: bool) -> Element<'static, Message> {
 /// a sensor that captured a press would steal the release the drop is
 /// answered by. The list rows and the grid cards wear the same zones, so
 /// one gesture reads the same in both layouts.
-pub fn sensors(id: &str, folder: bool) -> Element<'static, Message> {
+fn sensors(id: &str, folder: bool) -> Element<'static, Message> {
     let zones: [(Band, u16); 3] = if folder {
         [(Band::Top, 1), (Band::Middle, 2), (Band::Bottom, 1)]
     } else {
@@ -179,12 +178,69 @@ pub fn sensors(id: &str, folder: bool) -> Element<'static, Message> {
     column.into()
 }
 
+/// The fade a cell wears for the shelf's state: a held cell fades first, and
+/// a set's own members are left out of the dim. `None` when it wears none.
+pub fn state_fade(
+    tokens: Tokens,
+    held: bool,
+    selecting: bool,
+    selected: bool,
+    hovered: bool,
+) -> Option<Element<'static, Message>> {
+    if held {
+        Some(held_layer(tokens))
+    } else if selecting && !selected {
+        Some(dim_layer(tokens, hovered))
+    } else {
+        None
+    }
+}
+
+/// The bands a live drag reads on a cell, and nothing once it has ended.
+pub fn drag_bands(drag: DragFacts, id: &str, folder: bool) -> Option<Element<'static, Message>> {
+    drag.live().then(|| sensors(id, folder))
+}
+
+/// A cell and the layers it wears: the bare cell when it wears nothing, the
+/// stack when it does.
+pub fn stack_layers(mut layers: Vec<Element<'static, Message>>) -> Element<'static, Message> {
+    if layers.len() == 1 {
+        layers.pop().expect("the cell is the only layer")
+    } else {
+        Stack::with_children(layers).into()
+    }
+}
+
+/// A cell's own senses: hover in and out, and the right-click that opens its
+/// menu. The id goes into the hover message, so the cell knows itself.
+pub fn sensed(
+    cell: impl Into<Element<'static, Message>>,
+    id: &str,
+    right: ContextTarget,
+) -> Element<'static, Message> {
+    mouse_area(cell)
+        .on_enter(Message::CardHover(Some(id.to_string())))
+        .on_exit(Message::CardHover(None))
+        .on_right_press(Message::ContextMenu(right))
+        .into()
+}
+
+/// Who a right-click answers for: the set, when the cell is one of its
+/// members, the cell's own target otherwise.
+pub fn right_target(selection: SelectionFacts, selected: bool, own: ContextTarget) -> ContextTarget {
+    if selection.selecting && selected {
+        ContextTarget::Selection
+    } else {
+        own
+    }
+}
+
 /// What a drag is holding: every cell in the payload fades — not only the
 /// one the press began on — because the set the reader picked up has to
 /// stay readable as a set. The web cells drop to 0.45 opacity; a layout
 /// cell cannot fade its own ink, so the wash carries it, the same answer
 /// the choosing step-back wears.
-pub fn held_layer(tokens: Tokens) -> Element<'static, Message> {
+fn held_layer(tokens: Tokens) -> Element<'static, Message> {
     container(Space::new().width(Length::Fill).height(Length::Fill))
         .style(move |_| container::Style {
             background: Some(Background::Color(wash(tokens.paper, 0.55))),
