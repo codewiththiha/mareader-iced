@@ -38,7 +38,7 @@ pub enum RowMove {
     /// One row's own move, the form the conflict sheet rides as well as a
     /// drag of a single book. The single-row door arrives with the conflict
     /// sheet; the gesture's resume already answers it.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // ported ahead: the conflict sheet raises it
     Row { to: String, index: Option<usize> },
     /// Out of every shelf the row was on, to the library's own top level.
     Unfile { shelf: String },
@@ -69,9 +69,9 @@ pub enum CopyAnswer {
     /// door answers it by taking its read-at-place books home, the removal's
     /// by removing. The move's door has one way through, so these wait on
     /// the systems that own them — the sheet's handler already reads them.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // ported ahead: the move's door reads it
     WithoutCopies,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // ported ahead: the web's third door
     Cancel,
 }
 
@@ -197,7 +197,7 @@ pub fn ask_of_rows(
     hand: RowMove,
 ) -> Option<CopyAsk> {
     let books = ids.len();
-    let folder = ground_of(rows, folders, ids)?;
+    let folder = ground_label_of(rows, folders, ids)?;
     Some(CopyAsk {
         action: "Move books".to_string(),
         subject: format!("{} from “{folder}”", plural(books, "book", "books")),
@@ -216,7 +216,7 @@ pub fn ask_of_rows(
 
 /// The folder whose ground these books leave: the first that placed one of
 /// them, and the one the sheet names.
-fn ground_of(rows: &[Row], folders: &[WatchedFolder], ids: &[String]) -> Option<String> {
+fn ground_label_of(rows: &[Row], folders: &[WatchedFolder], ids: &[String]) -> Option<String> {
     ids.iter().find_map(|id| {
         let fp = find_row(rows, id).and_then(|row| row.book()).map(|b| b.fp)?;
         let folder =
@@ -603,7 +603,7 @@ pub fn ask_of_rung(
     if books.is_empty() {
         return None;
     }
-    let folder = ground_of(rows, folders, &books)?;
+    let folder = ground_label_of(rows, folders, &books)?;
     let rung = shelf::find(shelves, shelf_id)?;
     let home = match rung
         .kind
@@ -646,7 +646,7 @@ pub fn ask_of_removal(
     if taking.is_empty() {
         return None;
     }
-    let folder = ground_of(rows, folders, &taking)?;
+    let folder = ground_label_of(rows, folders, &taking)?;
     let names: Vec<String> =
         going.iter().filter_map(|id| shelf::find(shelves, id).map(|s| s.name.clone())).collect();
     let one = names.len() == 1;

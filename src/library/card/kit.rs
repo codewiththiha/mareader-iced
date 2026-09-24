@@ -13,6 +13,11 @@ use crate::theme::{mix, wash, Elevation, Tokens};
 
 /// The cover's aspect, A4 portrait: height = width × 297/210.
 pub const COVER_RATIO: f32 = 297.0 / 210.0;
+/// The pitch a grid row keeps under its cover: the caption's two lines, the
+/// air below the cover, and the room the progress hairline takes. A row is
+/// as tall as its tallest cell, so this is the number the reveal's scroll
+/// and the grid must agree on.
+pub const META_H: f32 = 44.0;
 /// The most member covers a folder plate shows, in its 2×2 window. The
 /// drag's fold preview borrows the same cap: a preview of more cells would
 /// promise a plate the library does not draw.

@@ -9,9 +9,17 @@ use crate::chrome::icons::{icon, IconName};
 use crate::theme::{wash, Elevation, Tokens};
 use super::kit::{COVER_RATIO, cover_gradient, elide};
 
+/// The list row's own numbers: the thumbnail's box, the air a row keeps
+/// around its content, and the pitch it takes — the padding twice, the
+/// thumbnail, and the hairline between rows. The reveal's scroll reads the
+/// pitch too.
+pub const THUMB_W: f32 = 41.6;
+pub const ROW_PAD: f32 = 8.0;
+pub const ROW_H: f32 = ROW_PAD * 2.0 + 1.0 + THUMB_W * COVER_RATIO;
+
 /// The list's book thumbnail: the cover's gradient in the row's footprint.
 pub fn list_thumb(tokens: Tokens, check: Option<bool>) -> Element<'static, Message> {
-    let width = 41.6;
+    let width = THUMB_W;
     let base: Element<'static, Message> =
         container(Space::new().width(width).height(width * COVER_RATIO))
             .style(move |_| container::Style {

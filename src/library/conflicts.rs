@@ -42,7 +42,7 @@ pub enum AskKind {
     /// A per-file question out of a folder import merging into a shelf the
     /// level already held. The walk's screen raises it when that screen
     /// lands; its words and answers already ride the sheet.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // ported ahead: the walk mints it
     FolderMerge {
         /// A folder that reads in place lands a linked answer now, a
         /// copying one lands it after its copy.
@@ -120,7 +120,7 @@ impl ConflictAsk {
 
     /// Raised by the walk's own screen when that screen lands; the two
     /// tests below mint it directly today.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // ported ahead: the walk's screen raises it
     pub fn folder_merge(
         arrival: Arrival,
         existing_id: String,
@@ -888,7 +888,7 @@ pub enum NoteKind {
     /// A re-picked folder that had left its family folds back onto the rung
     /// its directory names: raised by the walk's own fold, which has not
     /// landed in the native app yet.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // ported ahead: the fold raises it
     Returned,
 }
 

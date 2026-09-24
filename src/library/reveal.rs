@@ -10,7 +10,7 @@
 
 use library_core::shelf::{self, Shelf, ALL_SHELF};
 
-use super::card::COVER_RATIO;
+use super::card::{COVER_RATIO, META_H, ROW_H};
 use super::{CONTENT_TOP, ROW_GAP};
 
 /// The one write a reveal is: what to light, and the nonce that makes a
@@ -41,20 +41,17 @@ pub fn level_of_shelf(shelves: &[Shelf], shelf_id: &str) -> String {
         .unwrap_or_else(|| ALL_SHELF.to_string())
 }
 
-// What the view's own arithmetic leaves this module to estimate: the
-// caption under a cover, and the list's row. The gap between runs and the
-// air above the first one are the shelf's own constants, read from
-// `super` — a cell they misjudge is a cell the light sits a row beside,
-// the kind of wrong a reader sees at once.
-const GRID_META_H: f32 = 44.0;
-const LIST_ROW_H: f32 = 76.0;
+// Nothing this module owns: the cover's ratio, the pitch under it and the
+// list row's pitch are the cells' own, the gap between runs and the air
+// above the first one are the shelf's. A cell any of them misjudged would
+// be a cell the light sits a row beside — the kind of wrong a reader sees
+// at once, which is why none of the numbers live here.
 
-/// The grid's own one-cell height: the 3:4 cover plus the caption's pair
-/// of lines and their padding. The caption's exact cut comes from the
-/// card itself; the constant stands where the arithmetic lives so both
-/// stay beside each other.
+
+/// The grid's own one-cell height: the 3:4 cover plus the caption the row
+/// keeps under it, both read from the cell that draws them.
 pub fn grid_cell_h(cell_w: f32) -> f32 {
-    cell_w * COVER_RATIO + GRID_META_H
+    cell_w * COVER_RATIO + META_H
 }
 
 /// The offset the reveal owes for an item standing `index` items into the
@@ -75,8 +72,8 @@ pub fn grid_offset(index: usize, tracks: usize, cell_w: f32, viewport_h: f32) ->
 /// The list's own answer to the same question: rows at the thumbnail's
 /// own height, one hairline between.
 pub fn list_offset(index: usize, viewport_h: f32) -> f32 {
-    let top = CONTENT_TOP + index as f32 * LIST_ROW_H;
-    offset_for(top, LIST_ROW_H, viewport_h)
+    let top = CONTENT_TOP + index as f32 * ROW_H;
+    offset_for(top, ROW_H, viewport_h)
 }
 
 /// Centre the cell in the viewport, clamped so the scroll never owes the
@@ -146,6 +143,6 @@ mod tests {
     #[test]
     fn the_list_offset_counts_rows_at_their_own_height() {
         let at = list_offset(3, 0.0);
-        assert_eq!(at, CONTENT_TOP + 3.0 * LIST_ROW_H + LIST_ROW_H / 2.0);
+        assert_eq!(at, CONTENT_TOP + 3.0 * ROW_H + ROW_H / 2.0);
     }
 }
