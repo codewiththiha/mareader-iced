@@ -1,33 +1,23 @@
 //! The name question: a level already holds a book of the name that is
 //! arriving, and the sheet asks which of three things the reader meant.
 //!
-//! The RULE is not here — it is `library_core::conflict`, pure and
-//! host-tested: what collides, what the next free name is, which answers a
-//! shape of question offers. This module is the wiring between that rule and
-//! the things a reader can do about it: the screen every placing surface
-//! hands its arrivals through, the queue that holds the questions a busy
-//! sheet cannot take yet, and the sheet's own words.
-//!
-//! The move side and the loose import's side are live today: the covered
-//! ground, the library's own copy elsewhere, and a merged folder's per-file
-//! question are all screened, described and answered here, and a folder's
-//! own name collision rides the same screen with a `Scope::Shelf` ask when
-//! that screen lands.
-//!
-//! Two spellings the native app does not carry yet, both where the web has
-//! them: the replace note counts highlights the reader has no store for
-//! until the engines land, and the "already imported" answer navigates
-//! without the web's scroll-and-flash, which waits on the grid's scroll-to.
+//! The rule itself is `library_core::conflict`, pure and host-tested; this is
+//! the wiring between it and the things a reader can do about it — the ask
+//! every placing surface hands its arrivals through, the small readers the
+//! app answers them with, and the answers themselves.
 
-use std::collections::HashSet;
+pub mod naming;
+pub mod planned;
+pub mod words;
 
-use library_core::book::{book_rows, find_by_id, find_row, Book, Row};
-use library_core::conflict::{collide, next_name, next_shelf_name, Arrival, Placement};
-use library_core::folder::{FolderMode, FolderOpts, WatchedFolder};
-use library_core::ledger::{self, Registry};
-use library_core::paths::dir_label;
-use library_core::scan::FoundFile;
-use library_core::shelf::{self, Shelf, ALL_SHELF};
+pub use naming::{describe_shelf, shelf_offers, ShelfConflictAsk};
+pub use planned::screen_planned;
+pub use words::describe;
+
+use library_core::book::{find_by_id, find_row, Book, Row};
+use library_core::conflict::{collide, next_name, Arrival, Placement};
+use library_core::folder::{FolderMode, WatchedFolder};
+use library_core::shelf::{self, Shelf};
 
 use super::departure;
 
@@ -66,6 +56,7 @@ pub enum AskKind {
     AlreadyHave,
 }
 
+
 impl AskKind {
     /// The folder whose ledger an answered ask settles, when the ask is one
     /// a folder raised.
@@ -100,6 +91,7 @@ impl AskKind {
     }
 }
 
+
 /// The question on screen: the arrival kept whole, because an answer places
 /// it and a placement needs the row and the level it was going to, and the
 /// name of the thing already there — read once, because the sheet prints it
@@ -112,6 +104,7 @@ pub struct ConflictAsk {
     pub existing_name: String,
     pub kind: AskKind,
 }
+
 
 impl ConflictAsk {
     pub fn name_collision(arrival: Arrival, existing_id: String, existing_name: String) -> Self {
@@ -145,6 +138,7 @@ impl ConflictAsk {
     }
 }
 
+
 /// Every placing surface hands its placements through here before writing
 /// anything, and applies the clean half at once: what collides waits on the
 /// sheet, what does not lands now.
@@ -167,6 +161,7 @@ pub fn screen(
     (clean, asks)
 }
 
+
 /// One spelling, because the sheet prints this name in its heading and in
 /// every button's sentence: a site that derived its own would eventually
 /// disagree with the others about which book the question is about.
@@ -175,6 +170,7 @@ pub fn existing_name_of(rows: &[Row], existing_id: &str, arrival: &Arrival) -> S
         .map(|row| row.display_name())
         .unwrap_or_else(|| arrival.name.clone())
 }
+
 
 /// A drag of four books is four arrivals, and a row that went between the
 /// lift and the drop is not one of them. The name is read here rather than
@@ -199,11 +195,13 @@ pub fn moved_arrivals(
         .collect()
 }
 
+
 /// The import half of a screen is the import's own landing; nothing a move
 /// raises carries a file, so the clean half of a move's screen is ids.
 pub fn clean_move_ids(clean: Vec<Arrival>) -> Vec<String> {
     clean.into_iter().filter_map(|a| a.moving).collect()
 }
+
 
 /// The row being dragged is a read-at-place book an in-place folder placed,
 /// and the row already on the level is one of the library's own stored
@@ -219,6 +217,7 @@ pub fn link_shape(rows: &[Row], folders: &[WatchedFolder], ask: &ConflictAsk) ->
     existing_is_a_copy
         && departure::converts_on_move(rows, folders, moved_id, &ask.arrival.shelf_id)
 }
+
 
 /// One function rather than a branch in the sheet and a second in the
 /// answer, so the two cannot drift about which buttons a given arrival gets.
@@ -241,17 +240,20 @@ pub fn offers_for(rows: &[Row], folders: &[WatchedFolder], ask: &ConflictAsk) ->
     }
 }
 
+
 /// Read at the click rather than at the raise, in one place: the two answers
 /// that mint a name must mint the same one for the same arrival.
 pub fn minted_name(rows: &[Row], shelves: &[Shelf], ask: &ConflictAsk) -> String {
     next_name(rows, shelves, &ask.arrival.shelf_id, &ask.arrival.name)
 }
 
+
 /// The slot the displaced row holds on the level the arrival is landing on:
 /// a replace seats the arrival where the reader pointed at, not at the end.
 pub fn member_slot(shelves: &[Shelf], shelf_id: &str, row_id: &str) -> Option<usize> {
     shelf::find(shelves, shelf_id).and_then(|s| s.books.iter().position(|m| m == row_id))
 }
+
 
 /// The shelves a row is filed on, in shelf order: the memberships a merge's
 /// survivor takes over and a replace's arrival inherits.
@@ -262,6 +264,7 @@ pub fn memberships(shelves: &[Shelf], book_id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+
 /// Whether the row that survives is the library's own copy OF the row that
 /// dissolves. One question in one place, because the two answers that
 /// dissolve a row — a merge into the copy and a link at it — both write the
@@ -269,6 +272,7 @@ pub fn memberships(shelves: &[Shelf], book_id: &str) -> Vec<(String, String)> {
 pub fn survivor_is_the_copy_of(rows: &[Row], survivor: &str, gone: &Book) -> bool {
     find_by_id(rows, survivor).is_some_and(|keep| keep.origin.is_store_copy_of(gone.path()))
 }
+
 
 /// File a row onto every shelf named, in one write: the shelves a dissolved
 /// row held are the shelves its survivor takes over.
@@ -279,6 +283,7 @@ pub fn file_on_all(shelves: &mut [Shelf], row_id: &str, shelves_named: &[String]
         }
     }
 }
+
 
 /// The name a rename gives a row, whichever shape the row is: a book wears
 /// it as the reader's own title, a link as the name it was minted with.
@@ -296,587 +301,6 @@ pub fn rename_row(rows: &mut [Row], row_id: &str, name: &str) -> bool {
     true
 }
 
-/// The question and the placements a planned tree — *as new* or *merge* —
-/// owes the files the library already holds. A rename or a merge re-seats
-/// rows rather than minting them, so the file whose row is already here must
-/// follow its rung onto the planned tree (or be asked about, when the
-/// destination already wears its name); and the files the library did not
-/// hold at all must be screened against the destination's own names.
-///
-/// The ledger's rule for what a walk admits is pure and lives in
-/// `library_core::ledger`; this is the half that needs the shelf map the
-/// merge is landing into.
-pub struct PlannedScreen {
-    /// The rows that move onto the planned tree: the row's id, and the file
-    /// whose rung decides where it lands.
-    pub replacements: Vec<(String, FoundFile)>,
-    pub asks: Vec<ConflictAsk>,
-}
-
-/// `renames` and `into` are the run's own plan: an *as new* answer has no
-/// destination shelf to screen against (every rung mints fresh), and a plain
-/// walk screens nothing at all — the ledger's table is the whole of what it
-/// admits.
-#[allow(clippy::too_many_arguments)]
-pub fn screen_planned(
-    folder: &WatchedFolder,
-    rows: &[Row],
-    shelves: &[Shelf],
-    registry: &Registry,
-    found: &[FoundFile],
-    plan: (bool, Option<&str>),
-    adds: &mut Vec<FoundFile>,
-    copy_paths: &HashSet<String>,
-) -> PlannedScreen {
-    let (renames, into) = plan;
-    if !renames && into.is_none() {
-        return PlannedScreen { replacements: Vec::new(), asks: Vec::new() };
-    }
-    let mut asks = Vec::new();
-    // The merge's new arrivals land on a rung that may already wear their
-    // name, and a collision there is the compact sheet's question too.
-    if let Some(into) = into {
-        adds.retain(|file| match merge_collision(folder, rows, shelves, into, file) {
-            Some(ask) => {
-                asks.push(ask);
-                false
-            }
-            None => true,
-        });
-    }
-    // And the files the library already holds are re-seated rather than
-    // minted: a plan that renames or merges moves rows, and the row whose file
-    // this is must follow its rung onto the planned tree.
-    let mut replacements = Vec::new();
-    for file in found {
-        // A file the run owes a COPY of is the library's second instance,
-        // never a row to move.
-        if copy_paths.contains(&file.path) {
-            continue;
-        }
-        let Some(row_id) = known_row(rows, registry, file) else {
-            continue;
-        };
-        if let Some(into) = into
-            && let Some(ask) = merge_collision(folder, rows, shelves, into, file)
-        {
-            asks.push(ask);
-            continue;
-        }
-        replacements.push((row_id, file.clone()));
-    }
-    // A file the plan re-seats is not also an addition: one content is one
-    // row, and the row is already here.
-    adds.retain(|file| !replacements.iter().any(|(_, each)| each.path == file.path));
-    PlannedScreen { replacements, asks }
-}
-
-/// The row that answers for a found file: by content identity first, which is
-/// the ledger's answer, and by address second for a migrated row whose
-/// placeholder identity no measurement ever matched.
-fn known_row(rows: &[Row], registry: &Registry, file: &FoundFile) -> Option<String> {
-    registry
-        .get(&file.fp)
-        .map(|known| known.id.clone())
-        .or_else(|| {
-            book_rows(rows)
-                .find(|b| b.path() == file.path)
-                .map(|b| b.id.clone())
-        })
-}
-
-/// The merge's question about one file: the rung the merge files it onto, and
-/// whether that rung already holds its name. `None` when the merge has no seat
-/// for the file's rung, or when the seat is free.
-fn merge_collision(
-    folder: &WatchedFolder,
-    rows: &[Row],
-    shelves: &[Shelf],
-    into: &str,
-    file: &FoundFile,
-) -> Option<ConflictAsk> {
-    let key = folder.shelf_key(file);
-    let target = if key.is_empty() {
-        into.to_string()
-    } else {
-        folder.shelf_map.get(&key).cloned()?
-    };
-    let arrival = Arrival::import(file.clone(), target, None);
-    let existing_id = collide(rows, shelves, &arrival)?;
-    let existing_name = existing_name_of(rows, &existing_id, &arrival);
-    Some(ConflictAsk::folder_merge(
-        arrival,
-        existing_id,
-        existing_name,
-        folder.mode(),
-        folder.id.clone(),
-    ))
-}
-
-/// One answer row on the sheet: its name, the line that promises what
-/// choosing it does, and the answer it carries.
-#[derive(Clone, PartialEq, Debug)]
-pub struct ChoiceSpec {
-    pub label: &'static str,
-    pub note: String,
-    pub placement: Placement,
-}
-
-/// The question described rather than drawn: every sentence built off one
-/// snapshot of the library, because a row that counted one way and answered
-/// another is a receipt for something else.
-pub struct SheetSpec {
-    pub heading: String,
-    pub subtitle: String,
-    pub question: String,
-    /// Whether the sheet shows the apply-to-all switch: the two-answer and
-    /// the folder-merge sheets batch, the name question does not — its
-    /// answers mint names and dissolve rows, and batching that is a promise
-    /// no one question can keep for another.
-    pub apply_all: bool,
-    /// How many MORE questions of this sheet's own kind wait behind the one
-    /// on screen — the switch's count and the subtitle's tail read the same
-    /// number.
-    pub waiting: usize,
-    pub choices: Vec<ChoiceSpec>,
-}
-
-/// One spelling for every question that names the level: two sheets wording
-/// the same shelf differently would read as two places. An empty name means
-/// the shelf went while the sheet was up.
-fn where_line(shelves: &[Shelf], shelf_id: &str) -> String {
-    if shelf_id == ALL_SHELF {
-        "in your library".to_string()
-    } else {
-        match shelf::find(shelves, shelf_id).map(|s| s.name.as_str()).unwrap_or("") {
-            name if !name.is_empty() => format!("on “{name}”"),
-            _ => "on this shelf".to_string(),
-        }
-    }
-}
-
-fn more_waiting(subtitle: String, waiting: usize) -> String {
-    if waiting > 0 {
-        format!("{subtitle} · {waiting} more waiting")
-    } else {
-        subtitle
-    }
-}
-
-/// The one entry the sheet reads: the kind decides which question's words
-/// describe the ask, and every describer counts only the questions of its
-/// own kind in the queue — a count that included another shape would
-/// promise an apply-all these answers cannot consume.
-pub fn describe(
-    rows: &[Row],
-    shelves: &[Shelf],
-    folders: &[WatchedFolder],
-    ask: &ConflictAsk,
-    waiting: &[ConflictAsk],
-) -> SheetSpec {
-    if ask.kind.is_folder_merge() {
-        describe_folder_merge(rows, shelves, ask, waiting)
-    } else if ask.kind.is_two_answer() {
-        describe_covered(shelves, folders, ask, waiting)
-    } else {
-        describe_name(rows, shelves, folders, ask, waiting)
-    }
-}
-
-/// The name question's own words. `waiting` is the queue behind this one,
-/// counted to the questions this sheet answers.
-///
-/// The replace note's highlight count is the one clause the native app
-/// cannot keep yet: the reader has no marks store until the engines land, so
-/// the count is always zero and the note wears its zero-mark spelling.
-fn describe_name(
-    rows: &[Row],
-    shelves: &[Shelf],
-    folders: &[WatchedFolder],
-    ask: &ConflictAsk,
-    waiting: &[ConflictAsk],
-) -> SheetSpec {
-    let waiting = waiting.iter().filter(|each| each.kind.is_name_question()).count();
-    let where_line = where_line(shelves, &ask.arrival.shelf_id);
-    let import = ask.arrival.is_import();
-    // The apply's own list rather than a re-derived condition, so a row the
-    // sheet renders is a row the answer will take.
-    let offers = offers_for(rows, folders, ask);
-    let existing_name = ask.existing_name.clone();
-    let new_name = next_name(rows, shelves, &ask.arrival.shelf_id, &ask.arrival.name);
-
-    let question = if import {
-        format!(
-            "“{}” is already {where_line}. Add a second book of its own, put a link here \
-             instead, or go to the one you have.",
-            ask.arrival.name
-        )
-    } else if offers.contains(&Placement::LinkOnly) {
-        format!(
-            "A book called “{existing_name}” is already {where_line}, and it is one of the \
-             library's own copies. Keep one book, reach the copy from here, or keep both under \
-             a new name."
-        )
-    } else {
-        format!(
-            "A book called “{existing_name}” is already {where_line}. Keep one book, keep this \
-             one instead, or keep both under a new name."
-        )
-    };
-    let go_to_note = format!("Add nothing — go to “{existing_name}” where it already is");
-    let new_note = format!("Keeps both, under the next free name — “{new_name}”");
-    const LINK_NOTE: &str = "A pointer row, not a copy: tapping it goes to the book where it lives";
-    let merge_note = format!(
-        "One book — “{existing_name}” stays, and takes this one's shelves, its highlights, \
-         and the further place in it"
-    );
-    let replace_note = format!(
-        "“{existing_name}” leaves the library — this one takes its place on every shelf it \
-         was on"
-    );
-    let move_new_note = format!("Keeps both — this one becomes “{new_name}”");
-    let link_note = format!(
-        "The book you dragged becomes a pointer here — “{existing_name}” stays, the file on \
-         disk stays, and nothing is destroyed"
-    );
-
-    let choices = offers
-        .iter()
-        .map(|choice| match choice {
-            Placement::Open => ChoiceSpec {
-                label: "Already imported",
-                note: go_to_note.clone(),
-                placement: Placement::Open,
-            },
-            Placement::KeepBoth if import => ChoiceSpec {
-                label: "Add as new",
-                note: new_note.clone(),
-                placement: Placement::KeepBoth,
-            },
-            Placement::KeepBoth => ChoiceSpec {
-                label: "As new",
-                note: move_new_note.clone(),
-                placement: Placement::KeepBoth,
-            },
-            Placement::LinkOnly if import => ChoiceSpec {
-                label: "Make link",
-                note: LINK_NOTE.to_string(),
-                placement: Placement::LinkOnly,
-            },
-            Placement::LinkOnly => ChoiceSpec {
-                label: "Make link",
-                note: link_note.clone(),
-                placement: Placement::LinkOnly,
-            },
-            Placement::Merge => ChoiceSpec {
-                label: "Merge",
-                note: merge_note.clone(),
-                placement: Placement::Merge,
-            },
-            Placement::Replace => ChoiceSpec {
-                label: "Replace",
-                note: replace_note.clone(),
-                placement: Placement::Replace,
-            },
-        })
-        .collect();
-
-    SheetSpec {
-        heading: ask.arrival.name.clone(),
-        subtitle: more_waiting(format!("Already {where_line}"), waiting),
-        question,
-        apply_all: false,
-        waiting,
-        choices,
-    }
-}
-
-/// The two-answer question, and the two facts that raise it: a loose import
-/// of a file inside a folder the library reads in place whose book is
-/// alive, or of a file whose content the library already holds. Two answers
-/// rather than three: a pointer at a row on this level is not an option a
-/// covered file has.
-fn describe_covered(
-    shelves: &[Shelf],
-    folders: &[WatchedFolder],
-    ask: &ConflictAsk,
-    waiting: &[ConflictAsk],
-) -> SheetSpec {
-    let waiting = waiting.iter().filter(|each| each.kind.is_two_answer()).count();
-    let incoming = ask.arrival.name.clone();
-    // Which fact the library noticed decides the sentence: same two
-    // answers, different reason.
-    let folder_name = ask
-        .kind
-        .folder_id()
-        .and_then(|folder_id| folders.iter().find(|each| each.id == folder_id))
-        .map(|folder| dir_label(&folder.root));
-    let book_name = ask.existing_name.clone();
-    let subtitle = more_waiting(
-        match &folder_name {
-            Some(name) => format!("Inside “{name}”"),
-            None => "Already in your library".to_string(),
-        },
-        waiting,
-    );
-    let where_line = where_line(shelves, &ask.arrival.shelf_id);
-    let question = match &folder_name {
-        Some(name) => format!(
-            "“{incoming}” is inside “{name}”, which the library reads in place — one book \
-             per file, never a second link. Import your own copy {where_line}, or go to the \
-             book the folder holds."
-        ),
-        None => format!(
-            "The library already holds this book as “{book_name}”. Import your own copy \
-             {where_line}, or go to the one you have."
-        ),
-    };
-    let import_note = format!(
-        "The library's own copy — its own book {where_line}, its own highlights, its own \
-         place in it"
-    );
-    let show_note = match &folder_name {
-        Some(name) => format!("Add nothing — go to “{book_name}” inside “{name}” and light it up"),
-        None => format!("Add nothing — go to “{book_name}” and light it up"),
-    };
-    SheetSpec {
-        heading: incoming,
-        subtitle,
-        question,
-        apply_all: true,
-        waiting,
-        choices: vec![
-            ChoiceSpec {
-                label: "Import a copy here",
-                note: import_note,
-                placement: Placement::KeepBoth,
-            },
-            ChoiceSpec {
-                label: "Show the imported one",
-                note: show_note,
-                placement: Placement::Open,
-            },
-        ],
-    }
-}
-
-/// The compact per-file question a folder merge asks: two names, three
-/// answers, and the switch that answers every waiting question at once.
-fn describe_folder_merge(
-    rows: &[Row],
-    shelves: &[Shelf],
-    ask: &ConflictAsk,
-    waiting: &[ConflictAsk],
-) -> SheetSpec {
-    let waiting = waiting.iter().filter(|each| each.kind.is_folder_merge()).count();
-    let incoming = ask.arrival.name.clone();
-    let existing = ask.existing_name.clone();
-    let subtitle = more_waiting(format!("Into “{existing}”"), waiting);
-    // *As new* of the very file the row reads would be a second row of one
-    // linked file, which the library does not make. A different file wearing
-    // the same name keeps all three, and so does a stored folder.
-    let twin = ask.kind.reads_in_place()
-        && ask.arrival.file.as_ref().is_some_and(|file| {
-            find_row(rows, &ask.existing_id)
-                .and_then(|row| row.book())
-                .is_some_and(|book| book.path() == file.path)
-        });
-    let question = if twin {
-        format!(
-            "“{incoming}” is arriving, and “{existing}” on this shelf reads this very file. \
-             Keep the one that is here, or seat this file in its place."
-        )
-    } else {
-        format!(
-            "“{incoming}” is arriving, and “{existing}” is already on this shelf. Keep the \
-             one that is here, seat this file in its place, or keep both under a name of its \
-             own."
-        )
-    };
-    let merge_note = format!("One book — “{existing}” stays, and takes this file's measurement");
-    const REPLACE_NOTE: &str = "The row on the shelf leaves the library; this file takes its slot";
-    let new_name = next_name(rows, shelves, &ask.arrival.shelf_id, &incoming);
-    let new_note = format!("Keep both — this file becomes “{new_name}”");
-    let mut choices = vec![
-        ChoiceSpec {
-            label: "Merge",
-            note: merge_note,
-            placement: Placement::Merge,
-        },
-        ChoiceSpec {
-            label: "Replace",
-            note: REPLACE_NOTE.to_string(),
-            placement: Placement::Replace,
-        },
-    ];
-    if !twin {
-        choices.push(ChoiceSpec {
-            label: "As new",
-            note: new_note,
-            placement: Placement::KeepBoth,
-        });
-    }
-    SheetSpec {
-        heading: incoming,
-        subtitle,
-        question,
-        apply_all: true,
-        waiting,
-        choices,
-    }
-}
-
-// ── The folder's own question ───────────────────────────────────────────
-
-/// A separate ask rather than a variant of [`ConflictAsk`], because its
-/// answers are about a whole import run rather than about one placement:
-/// the ones that import start the run again with a plan. Raised before the
-/// walk, because the answer decides what the walk is for.
-#[derive(Clone, PartialEq, Debug)]
-pub struct ShelfConflictAsk {
-    /// The last segment of the arriving folder's path, the name the reader
-    /// picked it by.
-    pub incoming_name: String,
-    pub existing_id: String,
-    pub existing_name: String,
-    /// The picked ground: every answer that imports starts its walk on it.
-    pub root: String,
-    /// The sheet's own answers, so the run the answer starts walks them.
-    pub opts: FolderOpts,
-    /// Whether the shelf that holds the name is the arriving folder's OWN —
-    /// the one its previous run minted — because a re-import of one folder
-    /// is a continuation rather than an arrival, and the sheet words it as
-    /// one.
-    pub own: bool,
-}
-
-/// The arrival's MODE decides. A read-at-place arrival gets the pointer and
-/// the merge, its *keep both* withheld as the second instance of one ground
-/// the family gate exists to prevent, and *replace* with it — neither side
-/// a read-at-place collision is the level's to empty.
-pub fn shelf_offers(ask: &ShelfConflictAsk) -> &'static [Placement] {
-    if ask.opts.mode().reads_in_place() {
-        Placement::SHELF_READ_IN_PLACE
-    } else {
-        Placement::SHELF_STORED
-    }
-}
-
-/// A pointer row's promise, spelled once because the two sheets naming a
-/// link's cost must agree. A link at a folder is not a copy: it lights the
-/// folder where it is.
-const LINK_NOTE: &str = "A pointer row, not a second shelf: nothing is imported, and tapping it lights the folder where it is";
-
-/// The folder question's own words: the arrival's mode picks the offers,
-/// the shelf it collides with picks the counts, and which folder last
-/// walked the ground decides whether the question is a continuation.
-pub fn describe_shelf(
-    rows: &[Row],
-    shelves: &[Shelf],
-    folders: &[WatchedFolder],
-    ask: &ShelfConflictAsk,
-) -> SheetSpec {
-    let own = ask.own;
-    let arrival_reads_in_place = ask.opts.mode().reads_in_place();
-    let reads_in_place =
-        folders.iter().any(|f| f.root == ask.root && f.mode().reads_in_place());
-    // The row promises the counter rather than asking the reader to take
-    // "the next free name" on faith.
-    let new_name = next_shelf_name(shelves, None, &ask.incoming_name);
-    let replace_rows = if own && reads_in_place {
-        // The tree's own linked rows are what the replace sweeps first, so
-        // the copies that land come back in the names the shelves showed.
-        let placed = folders
-            .iter()
-            .find(|f| f.root == ask.root && f.mode().reads_in_place())
-            .map(|f| f.placed.clone())
-            .unwrap_or_default();
-        ledger::linked_rows_of(rows, &placed).len()
-    } else {
-        shelf::members_of(rows, shelves, &ask.existing_id).len()
-    };
-    let subtitle = if own {
-        format!("Already in the library as “{}”", ask.existing_name)
-    } else {
-        format!("A shelf called “{}” is already here", ask.existing_name)
-    };
-    let question = if arrival_reads_in_place {
-        "A folder read in place cannot mint a second shelf of itself. Leave a \
-         pointer to the shelf that is here, or file this folder's books into it."
-            .to_string()
-    } else if own {
-        format!(
-            "“{}” is the shelf this folder's last import made. Look at it, \
-             replace its books with these copies, or give the copies a shelf of \
-             the next free name.",
-            ask.existing_name
-        )
-    } else {
-        "The arriving copies are the library's own, so all three answers are \
-         open: look at the shelf that is here, replace its books, or shelve the \
-         copies under the next free name."
-            .to_string()
-    };
-    let show_note =
-        format!("Import nothing — go to “{}” and light it up where it stands", ask.existing_name);
-    let new_note = if reads_in_place {
-        format!("Import as “{new_name}” — the library's own copies; the tree here keeps reading the folder")
-    } else {
-        format!("Import as “{new_name}” — its own shelf, its own tree")
-    };
-    let merge_note = format!(
-        "The folder's books join “{}” — a name it already holds asks one by one",
-        ask.existing_name
-    );
-    let replace_note = match replace_rows {
-        0 => format!("Nothing to remove — the copies simply take “{}”", ask.existing_name),
-        1 => format!(
-            "One book leaves, highlights and all — a copy takes its place on “{}”",
-            ask.existing_name
-        ),
-        n => format!("{n} books leave, highlights and all — copies take “{}”", ask.existing_name),
-    };
-    let choices = shelf_offers(ask)
-        .iter()
-        .map(|choice| match choice {
-            Placement::LinkOnly => ChoiceSpec {
-                label: "Make link",
-                note: LINK_NOTE.to_string(),
-                placement: Placement::LinkOnly,
-            },
-            Placement::Merge => ChoiceSpec {
-                label: "Merge into it",
-                note: merge_note.clone(),
-                placement: Placement::Merge,
-            },
-            Placement::Open => ChoiceSpec {
-                label: "Show it",
-                note: show_note.clone(),
-                placement: Placement::Open,
-            },
-            Placement::Replace => ChoiceSpec {
-                label: "Replace",
-                note: replace_note.clone(),
-                placement: Placement::Replace,
-            },
-            Placement::KeepBoth => ChoiceSpec {
-                label: "Add as new",
-                note: new_note.clone(),
-                placement: Placement::KeepBoth,
-            },
-        })
-        .collect();
-    SheetSpec {
-        heading: ask.incoming_name.clone(),
-        subtitle,
-        question,
-        apply_all: false,
-        waiting: 0,
-        choices,
-    }
-}
-
-// ── The already-imported note ───────────────────────────────────────────
 
 /// What the note says happened: nothing the import looked for was new, or
 /// the folder walked back inside its own tree. The fold's own sentence is
@@ -892,6 +316,7 @@ pub enum NoteKind {
     Returned,
 }
 
+
 impl NoteKind {
     /// The line under the shelf's name, in the web sheet's own words.
     pub fn sublabel(self) -> &'static str {
@@ -901,6 +326,7 @@ impl NoteKind {
         }
     }
 }
+
 
 /// The note's full sentence, off the web's own sheet: the closing is part
 /// of the promise — the shelf lights up as the note comes down.
@@ -923,12 +349,16 @@ pub fn note_sentence(kind: NoteKind, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
     use library_core::book::Origin;
+    use library_core::folder::FolderOpts;
+    use library_core::ledger;
     use library_core::paths;
     use library_core::scan::FoundFile;
+    use library_core::shelf::ALL_SHELF;
     use library_core::testkit;
     use reader_core::format::Format;
-
     fn linked_row(id: &str, name: &str, path: &str, n: u32) -> Row {
         let mut book = Book::new(
             id.to_string(),
