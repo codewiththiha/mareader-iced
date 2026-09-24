@@ -1,6 +1,8 @@
 //! The book schema: [`Fingerprint`], [`Origin`], [`Book`] and the [`Row`] a
-//! library list holds. The rules that act on rows live one module per question:
-//! [`read`], [`merge`], [`check`], [`sanitize`], [`naming`] and [`query`].
+//! library list holds. The rules that act on rows live one module per question —
+//! [`read`], [`merge`], [`check`], [`sanitize`], [`naming`], [`query`] — with the
+//! cases for all of it in `tests.rs`.
+
 pub mod check;
 pub mod merge;
 pub mod naming;
@@ -360,3 +362,6 @@ impl Book {
         self.missing = false;
     }
 }
+
+#[cfg(test)]
+mod tests;
