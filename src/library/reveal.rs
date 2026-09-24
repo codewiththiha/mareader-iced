@@ -11,6 +11,7 @@
 use library_core::shelf::{self, Shelf, ALL_SHELF};
 
 use super::card::COVER_RATIO;
+use super::{CONTENT_TOP, ROW_GAP};
 
 /// The one write a reveal is: what to light, and the nonce that makes a
 /// second reveal of the SAME thing a second reveal — a reader who opens
@@ -40,17 +41,13 @@ pub fn level_of_shelf(shelves: &[Shelf], shelf_id: &str) -> String {
         .unwrap_or_else(|| ALL_SHELF.to_string())
 }
 
-// The layout's own constants, mirrored from the shelf's own view: the
-// grid's cell is one cover plus its caption, with a 32px gap between runs,
-// the list's row is the thumbnail's own row with a hairline between rows,
-// and the frame keeps 32px of air above the first run. Scrolling to a
-// cell is asking these to stay true; the view lives by them, and a cell
-// they misjudge is a cell the light sits a row beside — the kind of wrong
-// a reader sees at once.
-const GRID_GAP_Y: f32 = 32.0;
+// What the view's own arithmetic leaves this module to estimate: the
+// caption under a cover, and the list's row. The gap between runs and the
+// air above the first one are the shelf's own constants, read from
+// `super` — a cell they misjudge is a cell the light sits a row beside,
+// the kind of wrong a reader sees at once.
 const GRID_META_H: f32 = 44.0;
 const LIST_ROW_H: f32 = 76.0;
-const CONTENT_TOP: f32 = 32.0;
 
 /// The grid's own one-cell height: the 3:4 cover plus the caption's pair
 /// of lines and their padding. The caption's exact cut comes from the
@@ -72,7 +69,7 @@ pub fn grid_offset(index: usize, tracks: usize, cell_w: f32, viewport_h: f32) ->
     }
     let cell_h = grid_cell_h(cell_w);
     let run = (index / tracks) as f32;
-    offset_for(CONTENT_TOP + run * (cell_h + GRID_GAP_Y), cell_h, viewport_h)
+    offset_for(CONTENT_TOP + run * (cell_h + ROW_GAP), cell_h, viewport_h)
 }
 
 /// The list's own answer to the same question: rows at the thumbnail's
@@ -135,7 +132,7 @@ mod tests {
         assert_eq!(at, (CONTENT_TOP + cell_h / 2.0 - 400.0).max(0.0));
         // The second run carries one cell's height and one gap more.
         let run_two = grid_offset(4, 2, 180.0, 0.0);
-        let expected = CONTENT_TOP + 2.0 * (cell_h + GRID_GAP_Y) + cell_h / 2.0;
+        let expected = CONTENT_TOP + 2.0 * (cell_h + ROW_GAP) + cell_h / 2.0;
         assert_eq!(run_two, expected, "the fourth item of two tracks is the third run's first cell");
     }
 

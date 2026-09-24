@@ -119,9 +119,13 @@ impl DragFacts<'_> {
 /// side.
 const TRACK_MIN: f32 = 152.0;
 const COL_GAP: f32 = 24.0;
-const ROW_GAP: f32 = 32.0;
 const CONTENT_MAX: f32 = 1152.0;
 const CONTENT_PAD: f32 = 24.0;
+
+// The level's vertical rhythm, and the reveal's too: a scroll to a cell is
+// asking these to hold, so both read the one copy.
+pub(crate) const ROW_GAP: f32 = 32.0;
+pub(crate) const CONTENT_TOP: f32 = 32.0;
 
 /// The order the level paints, in the four steps the web app ran them:
 /// membership first (a shelf reads its own list; the library's root reads
@@ -267,9 +271,9 @@ fn framed<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
                 .width(Length::Fill)
                 .max_width(CONTENT_MAX)
                 .padding(Padding {
-                    top: 32.0,
+                    top: CONTENT_TOP,
                     right: CONTENT_PAD,
-                    bottom: 32.0,
+                    bottom: CONTENT_TOP,
                     left: CONTENT_PAD,
                 }),
         )
