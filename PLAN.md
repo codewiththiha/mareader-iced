@@ -343,7 +343,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
 * **P1 — shipped.** Data dir, settings + library blob load/save (atomic writes, JSON),
   the folder walk with throttled progress beats, rfd pickers, toasts, the popover
   vocabulary on ui-geom, theme mix/wash.
-* **P2 — in flight.** The shelf surface has landed: the library bar (breadcrumb, search
+* **P2 — shipped.** The shelf surface has landed: the library bar (breadcrumb, search
   pill, view menu, appearance button), grid + list layouts with book/folder/link cards
   and the add door, the empty state, shelf navigation, live query filtering, shelf
   creation, view persistence (layout/columns/cover/sort) and reload-from-disk. The
@@ -440,8 +440,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   of replace, dissolves the dragged row and writes the folder's moved-out log
   bound to the survivor. The import's own questions (a merged folder's per-file
   ask, a covered file, the folder-name collision, the already-imported note) and
-  the reveal's scroll-and-flash wait on their systems, documented where they
-  would land. The rung's and the removal's copy doors have arrived on the same
+  the reveal's own light arrived with the walk and the gate, further down. The rung's and the removal's copy doors have arrived on the same
   sheet: taking a shelf apart now asks first whenever the level reads books in
   place — the question names the cost, the ground, and the way up (the nearest
   rung of the folder still standing, or the library's top level) — and "Copy and
@@ -494,7 +493,8 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   a twin of one linked file withholding "as new" on both the sheet and
   the write, the merge healing the measurement only when the arriving
   file IS the row's file, the replace seating the copy in the purged
-  row's slot — and waits on the walk's own screen to raise it. The batch
+  row's slot — and the walk's own screen raises it, from the shelf map the
+  merge is landing into. The batch
   has its switch: the apply-to-all row, shown only while questions of the
   sheet's own kind wait, sends one answer down the queue to every twin
   question and stops at the first different shape. The import's walk now
@@ -521,9 +521,47 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   bound walk would under the shelf the run mints for them. The replaced
   shelf's books leave through the same sweep, the answered ground never
   races a run that already holds it, and the queued ask behind a root now
-  remembers the whole intent rather than only the ground. "Already
-  imported" and the reveal's scroll-and-flash light land with them —
-  today the web's reveal is the native app says which way, not how the
-  way was lit. Next: the walk's already-imported note and the reveal's
-  own light, then the loose-run relinks (the restored books' returns)
-  and the copy-link answer's preserve-the-tree lane.
+  remembers the whole intent rather than only the ground. The covered
+  re-import's own note has landed: not a question — an answer — naming
+  the shelf its pick meant, its subline and sentence the web's own
+  ("Nothing new to import" — the import walked the folder again and
+  found nothing new — every book is already on the shelf), and every way
+  out of it — the button, the close, the scrim, the Escape — ends on the
+  same light. Under it the reveal itself: one write says what to light
+  and a nonce to answer a second reveal of the same thing, and the light
+  is the whole of the web's scroll-into-view and flash rendered on the
+  native floor — `library/reveal.rs` reads the level and the offset off
+  the library and the layout's own constants (the web measured its
+  hidden probe; the native arithmetic stands where arithmetic lives,
+  next to the constants it trusts), the shelf's scroll wears the
+  reveal's identity and reports its own bounds so the offset is the
+  viewport's own geometry, and the cell wears the membership's own ring
+  for the flash's own sixteen-hundred millisecond beat. The covered
+  walk's quiet answer fires as well: the covered continuation lit a
+  landing that found nothing new asks the patch of no work at all, and
+  a landing that found something answers by lighting where it
+  stands — a run that found its pick answers the reader with their
+  pick. The last three answers the import owed have landed with
+  them. A found file whose folder's moved-out log is bound to a LIVING
+  row is a book the reader already has: the walk and the loose drop
+  both lift those files out of their findings before the ledger ever
+  sees them, count them with the run's own report, and light the first
+  — the log remembered that row, so the reader is taken to it rather
+  than handed a second book beside it. A copies import of ground a
+  read-at-place tree still reads now lands BESIDE the tree even in a
+  bound run: the copy list is the ledger's own pure table
+  (`copy_over_paths`), every address on it owes a book of its own, the
+  heal-by-address pass skips it — a second instance is never a heal —
+  and the mint pushes the row outright with its own adopted
+  measurement, because `add_book`'s one-row-per-fingerprint rule is
+  right for a walk and wrong for the instance the reader just asked
+  for. And a plan that renames or merges now RE-SEATS what is already
+  here: the walk's screen collects the rows the destination does not
+  already wear a name for, the landing walks each one's rung onto the
+  planned tree — the same `chain_for` the mints ride — so *merge into
+  it* moves the folder's books instead of copying them again, and the
+  rung a file lands on decides its seat, not the tree's root. What P3
+  opens on is the engine the shelf has been promising all along: the
+  PDFium service and bind strategy, the open pipeline, and the first
+  reading surface the marks, covers and kept reading data all wait
+  on.

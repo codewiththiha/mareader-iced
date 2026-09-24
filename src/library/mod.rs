@@ -25,6 +25,7 @@ pub mod facts;
 pub mod fold;
 pub mod list;
 pub mod menus;
+pub mod reveal;
 
 use std::collections::HashSet;
 
@@ -39,7 +40,7 @@ use library_core::sort;
 use library_core::sort::SortKey;
 use library_core::view::LibraryView;
 
-use crate::app::{ContextTarget, MenuKind, Message};
+use crate::app::{ContextTarget, LIBRARY_SCROLL, MenuKind, Message};
 use crate::library::drag::{DragPayload, DropEffect};
 
 use crate::chrome::icons::{icon, IconName};
@@ -55,6 +56,10 @@ use crate::theme::{mix, Tokens};
 pub struct SelectionFacts<'a> {
     pub selecting: bool,
     pub selected: &'a HashSet<String>,
+    /// What the reveal lit: the cell wears the membership's own ring on the
+    /// level the reader just arrived at, so the answer flashes where the
+    /// eye was taken. The reveal's own light, in the sheet's own promise.
+    pub lit: Option<&'a str>,
 }
 
 /// What the level's cells read about a drag in flight: the payload, so
@@ -271,9 +276,24 @@ fn framed<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
         .width(Length::Fill)
         .center_x(Length::Fill),
     )
+    .id(LIBRARY_SCROLL)
+    .on_scroll(Message::ShelfViewport)
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+/// The grid's own pair of layout facts: the track count and the cell the
+/// width says — one spelling so the reveal's offset and the scaled cells
+/// come out of the same numbers.
+pub fn content_metrics(display_width: f32, pinned: Option<u8>) -> (usize, f32) {
+    let inner_width = (display_width.min(CONTENT_MAX) - CONTENT_PAD * 2.0).max(TRACK_MIN);
+    let tracks = match pinned {
+        Some(count) => usize::from(count).max(1),
+        None => auto_columns(inner_width),
+    };
+    let cell = (inner_width - COL_GAP * (tracks as f32 - 1.0)) / tracks as f32;
+    (tracks, cell)
 }
 
 /// The grid: the folders at this level, then the books, then the add card —

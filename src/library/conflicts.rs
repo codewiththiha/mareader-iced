@@ -19,11 +19,14 @@
 //! until the engines land, and the "already imported" answer navigates
 //! without the web's scroll-and-flash, which waits on the grid's scroll-to.
 
-use library_core::book::{find_by_id, find_row, Book, Row};
+use std::collections::HashSet;
+
+use library_core::book::{book_rows, find_by_id, find_row, Book, Row};
 use library_core::conflict::{collide, next_name, next_shelf_name, Arrival, Placement};
 use library_core::folder::{FolderMode, FolderOpts, WatchedFolder};
-use library_core::ledger;
+use library_core::ledger::{self, Registry};
 use library_core::paths::dir_label;
+use library_core::scan::FoundFile;
 use library_core::shelf::{self, Shelf, ALL_SHELF};
 
 use super::departure;
@@ -291,6 +294,123 @@ pub fn rename_row(rows: &mut [Row], row_id: &str, name: &str) -> bool {
         Row::Link { name: own, .. } => *own = name.to_string(),
     }
     true
+}
+
+/// The question and the placements a planned tree — *as new* or *merge* —
+/// owes the files the library already holds. A rename or a merge re-seats
+/// rows rather than minting them, so the file whose row is already here must
+/// follow its rung onto the planned tree (or be asked about, when the
+/// destination already wears its name); and the files the library did not
+/// hold at all must be screened against the destination's own names.
+///
+/// The ledger's rule for what a walk admits is pure and lives in
+/// `library_core::ledger`; this is the half that needs the shelf map the
+/// merge is landing into.
+pub struct PlannedScreen {
+    /// The rows that move onto the planned tree: the row's id, and the file
+    /// whose rung decides where it lands.
+    pub replacements: Vec<(String, FoundFile)>,
+    pub asks: Vec<ConflictAsk>,
+}
+
+/// `renames` and `into` are the run's own plan: an *as new* answer has no
+/// destination shelf to screen against (every rung mints fresh), and a plain
+/// walk screens nothing at all — the ledger's table is the whole of what it
+/// admits.
+#[allow(clippy::too_many_arguments)]
+pub fn screen_planned(
+    folder: &WatchedFolder,
+    rows: &[Row],
+    shelves: &[Shelf],
+    registry: &Registry,
+    found: &[FoundFile],
+    plan: (bool, Option<&str>),
+    adds: &mut Vec<FoundFile>,
+    copy_paths: &HashSet<String>,
+) -> PlannedScreen {
+    let (renames, into) = plan;
+    if !renames && into.is_none() {
+        return PlannedScreen { replacements: Vec::new(), asks: Vec::new() };
+    }
+    let mut asks = Vec::new();
+    // The merge's new arrivals land on a rung that may already wear their
+    // name, and a collision there is the compact sheet's question too.
+    if let Some(into) = into {
+        adds.retain(|file| match merge_collision(folder, rows, shelves, into, file) {
+            Some(ask) => {
+                asks.push(ask);
+                false
+            }
+            None => true,
+        });
+    }
+    // And the files the library already holds are re-seated rather than
+    // minted: a plan that renames or merges moves rows, and the row whose file
+    // this is must follow its rung onto the planned tree.
+    let mut replacements = Vec::new();
+    for file in found {
+        // A file the run owes a COPY of is the library's second instance,
+        // never a row to move.
+        if copy_paths.contains(&file.path) {
+            continue;
+        }
+        let Some(row_id) = known_row(rows, registry, file) else {
+            continue;
+        };
+        if let Some(into) = into
+            && let Some(ask) = merge_collision(folder, rows, shelves, into, file)
+        {
+            asks.push(ask);
+            continue;
+        }
+        replacements.push((row_id, file.clone()));
+    }
+    // A file the plan re-seats is not also an addition: one content is one
+    // row, and the row is already here.
+    adds.retain(|file| !replacements.iter().any(|(_, each)| each.path == file.path));
+    PlannedScreen { replacements, asks }
+}
+
+/// The row that answers for a found file: by content identity first, which is
+/// the ledger's answer, and by address second for a migrated row whose
+/// placeholder identity no measurement ever matched.
+fn known_row(rows: &[Row], registry: &Registry, file: &FoundFile) -> Option<String> {
+    registry
+        .get(&file.fp)
+        .map(|known| known.id.clone())
+        .or_else(|| {
+            book_rows(rows)
+                .find(|b| b.path() == file.path)
+                .map(|b| b.id.clone())
+        })
+}
+
+/// The merge's question about one file: the rung the merge files it onto, and
+/// whether that rung already holds its name. `None` when the merge has no seat
+/// for the file's rung, or when the seat is free.
+fn merge_collision(
+    folder: &WatchedFolder,
+    rows: &[Row],
+    shelves: &[Shelf],
+    into: &str,
+    file: &FoundFile,
+) -> Option<ConflictAsk> {
+    let key = folder.shelf_key(file);
+    let target = if key.is_empty() {
+        into.to_string()
+    } else {
+        folder.shelf_map.get(&key).cloned()?
+    };
+    let arrival = Arrival::import(file.clone(), target, None);
+    let existing_id = collide(rows, shelves, &arrival)?;
+    let existing_name = existing_name_of(rows, &existing_id, &arrival);
+    Some(ConflictAsk::folder_merge(
+        arrival,
+        existing_id,
+        existing_name,
+        folder.mode(),
+        folder.id.clone(),
+    ))
 }
 
 /// One answer row on the sheet: its name, the line that promises what
@@ -681,15 +801,20 @@ pub fn describe_shelf(
         format!("A shelf called “{}” is already here", ask.existing_name)
     };
     let question = if arrival_reads_in_place {
-        "A folder read in place cannot mint a second shelf of itself. Leave a pointer to          the shelf that is here, or file this folder's books into it."
+        "A folder read in place cannot mint a second shelf of itself. Leave a \
+         pointer to the shelf that is here, or file this folder's books into it."
             .to_string()
     } else if own {
         format!(
-            "“{}” is the shelf this folder's last import made. Look at it, replace its              books with these copies, or give the copies a shelf of the next free name.",
+            "“{}” is the shelf this folder's last import made. Look at it, \
+             replace its books with these copies, or give the copies a shelf of \
+             the next free name.",
             ask.existing_name
         )
     } else {
-        "The arriving copies are the library's own, so all three answers are open: look          at the shelf that is here, replace its books, or shelve the copies under the next          free name."
+        "The arriving copies are the library's own, so all three answers are \
+         open: look at the shelf that is here, replace its books, or shelve the \
+         copies under the next free name."
             .to_string()
     };
     let show_note =
@@ -751,6 +876,50 @@ pub fn describe_shelf(
     }
 }
 
+// ── The already-imported note ───────────────────────────────────────────
+
+/// What the note says happened: nothing the import looked for was new, or
+/// the folder walked back inside its own tree. The fold's own sentence is
+/// the family's business — its raising waits on the fold landing, and the
+/// variant stands where the web's words already are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NoteKind {
+    NothingNew,
+    /// A re-picked folder that had left its family folds back onto the rung
+    /// its directory names: raised by the walk's own fold, which has not
+    /// landed in the native app yet.
+    #[allow(dead_code)]
+    Returned,
+}
+
+impl NoteKind {
+    /// The line under the shelf's name, in the web sheet's own words.
+    pub fn sublabel(self) -> &'static str {
+        match self {
+            NoteKind::NothingNew => "Nothing new to import",
+            NoteKind::Returned => "Back where its folder names",
+        }
+    }
+}
+
+/// The note's full sentence, off the web's own sheet: the closing is part
+/// of the promise — the shelf lights up as the note comes down.
+pub fn note_sentence(kind: NoteKind, name: &str) -> String {
+    match kind {
+        NoteKind::NothingNew => {
+            "The import walked the folder again and found nothing new — every \
+             book is already on the shelf. The shelf lights up when you close \
+             this."
+                .to_string()
+        }
+        NoteKind::Returned => format!(
+            "“{name}” went back inside the folder it belongs to, onto the \
+             shelf its directory names. Nothing was copied, and nothing on disk \
+             moved. It lights up where it stands now when you close this."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,6 +953,12 @@ mod tests {
         book.title = Some(name.to_string());
         book.title_locked = true;
         Row::Book(book)
+    }
+
+    /// A shelf of its own name, which is what every collision is about: the
+    /// arriving folder's name is a name the level already holds.
+    fn named_shelf(id: &str, name: &str, books: &[&str]) -> Shelf {
+        Shelf { name: name.to_string(), ..plain_shelf(id, books) }
     }
 
     fn plain_shelf(id: &str, books: &[&str]) -> Shelf {
@@ -1194,6 +1369,18 @@ mod tests {
     }
 
     #[test]
+    fn the_note_words_name_the_close_s_promise() {
+        assert_eq!(NoteKind::NothingNew.sublabel(), "Nothing new to import");
+        assert_eq!(NoteKind::Returned.sublabel(), "Back where its folder names");
+        let quiet = note_sentence(NoteKind::NothingNew, "Books");
+        assert!(quiet.contains("found nothing new"), "the nothing-new sentence: {quiet}");
+        assert!(quiet.contains("lights up when you close this"), "the close is part of the promise");
+        let back = note_sentence(NoteKind::Returned, "Books");
+        assert!(back.contains("“Books” went back inside"), "the returned sentence: {back}");
+        assert!(back.contains("lights up where it stands now"), "the light stands where it did");
+    }
+
+    #[test]
     fn the_shelf_question_s_offer_follows_the_arrival_s_mode() {
         let stored = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
         assert_eq!(shelf_offers(&stored), Placement::SHELF_STORED);
@@ -1209,7 +1396,7 @@ mod tests {
             stored_row("e1", "Dune", "/mine/dune.md", "/store/e1.md", 9),
             stored_row("e2", "Other", "/elsewhere/x.md", "/store/e2.md", 11),
         ];
-        let shelves = vec![plain_shelf("s1", &["e1", "e2"])];
+        let shelves = vec![named_shelf("s1", "Books", &["e1", "e2"])];
         let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
         let spec = describe_shelf(&rows, &shelves, &[], &ask);
         assert_eq!(spec.heading, "Books");
@@ -1240,7 +1427,7 @@ mod tests {
             linked_row("e1", "Dune", "/mine/Books/dune.md", 7),
             stored_row("e2", "Copy", "/mine/Books/copy.md", "/store/e2.md", 12),
         ];
-        let shelves = vec![plain_shelf("s1", &["e1", "e2"])];
+        let shelves = vec![named_shelf("s1", "Books", &["e1", "e2"])];
         let folders = vec![in_place_folder("/mine/Books", &[7])];
         let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), true);
         let spec = describe_shelf(&rows, &shelves, &folders, &ask);
@@ -1287,5 +1474,65 @@ mod tests {
         let spec = describe_shelf(&[], &shelves, &[], &ask);
         let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
         assert_eq!(replace.note, "Nothing to remove — the copies simply take “Books”");
+    }
+
+    #[test]
+    fn a_planned_walk_re_seats_the_rows_it_holds_and_asks_about_the_names() {
+        let mut folder = testkit::watched_folder("f1", "/books");
+        folder.shelf_map.insert(String::new(), "s-into".to_string());
+        let rows = vec![
+            linked_row("e1", "Known", "/books/known.md", 7),
+            linked_row("e2", "Kept", "/books/kept.md", 8),
+        ];
+        let shelves = vec![plain_shelf("s-into", &["e2"])];
+        let registry = ledger::registry_of(&rows);
+        let files = vec![
+            found("/books/known.md", 7),
+            found("/books/kept.md", 8),
+            found("/books/fresh.md", 9),
+        ];
+        let mut adds = vec![files[2].clone()];
+        let screened = screen_planned(
+            &folder,
+            &rows,
+            &shelves,
+            &registry,
+            &files,
+            (false, Some("s-into")),
+            &mut adds,
+            &HashSet::new(),
+        );
+        // “Kept” already sits on the destination under its name: a question,
+        // not a second row.
+        assert_eq!(screened.asks.len(), 1);
+        assert!(screened.asks[0].kind.is_folder_merge());
+        assert_eq!(screened.asks[0].existing_id, "e2");
+        // The row the library holds and the destination does not is re-seated.
+        assert_eq!(screened.replacements.len(), 1);
+        assert_eq!(screened.replacements[0].0, "e1");
+        // And a fresh file stays an addition.
+        assert_eq!(adds.len(), 1);
+        assert_eq!(adds[0].path, "/books/fresh.md");
+    }
+
+    #[test]
+    fn a_plain_walk_screens_nothing_at_all() {
+        let folder = testkit::watched_folder("f1", "/books");
+        let rows = vec![linked_row("e1", "Known", "/books/known.md", 7)];
+        let registry = ledger::registry_of(&rows);
+        let files = vec![found("/books/known.md", 7)];
+        let mut adds = files.clone();
+        let screened = screen_planned(
+            &folder,
+            &rows,
+            &[],
+            &registry,
+            &files,
+            (false, None),
+            &mut adds,
+            &HashSet::new(),
+        );
+        assert!(screened.asks.is_empty() && screened.replacements.is_empty());
+        assert_eq!(adds.len(), 1, "no plan, no re-seating: the ledger's own diff decides");
     }
 }

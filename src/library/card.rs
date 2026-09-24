@@ -308,6 +308,9 @@ pub fn book_card(
     let progress = book.progress();
     let missing = book.missing;
     let selected = selection.selected.contains(book.id.as_str());
+    // The reveal's own light: the cell the sheet's answer named wears the
+    // membership ring, from the ground the light already paints.
+    let lit = selection.lit == Some(book.id.as_str());
     // The drag's three facts about this card, read before the id moves
     // into the right-click's answer.
     let held = drag.holds(book.id.as_str());
@@ -370,7 +373,7 @@ pub fn book_card(
     let cover = container(Stack::with_children(layers).width(Length::Fill).height(Length::Fill))
         .width(width)
         .height(cover_h)
-        .style(move |_| cover_style(tokens, hovered, selected));
+        .style(move |_| cover_style(tokens, hovered, selected || lit));
 
     let info: Element<'static, Message> = column![
         text(elide(&title, chars_per_line(width, 13.6) * 2)).size(13.6).color(tokens.ink),
@@ -474,6 +477,7 @@ pub fn folder_card(
     let plate_h = plate_w * 4.0 / 3.0;
     let selected = selection.selected.contains(shelf.id.as_str());
     let held = drag.holds(shelf.id.as_str());
+    let lit = selection.lit == Some(shelf.id.as_str());
     let nest = drag.nests_into(shelf.id.as_str());
     let sensor_id = shelf.id.clone();
 
@@ -521,7 +525,7 @@ pub fn folder_card(
         .into();
     // A folder's membership is its whole cell: the accent's tint and inset
     // ring (folder.css), not a ring on the plate alone.
-    let cell: Element<'static, Message> = if selected {
+    let cell: Element<'static, Message> = if selected || lit {
         container(cell)
             .style(move |_| container::Style {
                 background: Some(Background::Color(wash(tokens.accent, 0.10))),
@@ -769,6 +773,7 @@ pub fn link_card(
     let cover_h = width * COVER_RATIO;
     let selected = selection.selected.contains(id.as_str());
     let held = drag.holds(id.as_str());
+    let lit = selection.lit == Some(id.as_str());
     let seam = drag.inserts_before(id.as_str());
     let fold = drag.folds_with(id.as_str());
     let sensor_id = id.clone();
@@ -788,7 +793,7 @@ pub fn link_card(
         .height(cover_h)
         .style(move |_| container::Style {
             background: Some(Background::Color(wash(tokens.surface, 0.60))),
-            border: if selected {
+            border: if selected || lit {
                 Border { color: tokens.accent, width: 2.0, radius: 6.0.into() }
             } else {
                 Border { color: wash(tokens.line, 0.80), width: 1.0, radius: 6.0.into() }

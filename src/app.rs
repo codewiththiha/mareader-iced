@@ -15,8 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::time::{Duration, Instant};
 use iced::widget::{
-    button, column, container, mouse_area, operation, row, stack, text, text_input, Column, Id,
-    Row, Space, Stack,
+    button, column, container, mouse_area, operation, row, scrollable, stack, text, text_input,
+    Column, Id, Row, Space, Stack,
 };
 use iced::border::Radius;
 use iced::{
@@ -59,6 +59,7 @@ use crate::library::departure::{
 };
 use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
+use crate::library::reveal::{self, Reveal};
 use crate::platform::{dialogs, fs, progress, store};
 use crate::route::Route;
 use crate::storage;
@@ -70,6 +71,13 @@ use crate::ui::toast::{ToastHost, Tone};
 /// The sheet's rename field's identity — focus lands on it the moment the
 /// sheet appears.
 const SHEET_INPUT: Id = Id::new("sheet-input");
+
+/// The shelf grid's scroll, for the reveal's own way to a cell.
+pub const LIBRARY_SCROLL: &str = "library-shelf";
+
+/// The light's own clock: a reveal's ring stands for this long on the
+/// level the answer walked the reader to.
+const FLASH_DWELL: Duration = Duration::from_millis(1600);
 
 /// Runs the reader.
 pub fn run() -> iced::Result {
@@ -251,6 +259,10 @@ enum Sheet {
     /// A folder whose name the root level already holds: asked before the
     /// walk, because the answer decides what the walk is for.
     ShelfConflict { ask: ShelfConflictAsk },
+    /// Not a question — an answer: a folder the library already reads in
+    /// place is named, and closing the note is every way out's promise: the
+    /// shelf lights up.
+    AlreadyImported { note: LitNote },
 }
 
 /// Which question a folder run answers; a boolean at the signature could
@@ -260,6 +272,29 @@ enum Sheet {
 enum Asked {
     Explicitly,
     OnFocus,
+}
+
+/// The covered walk's own seat: the rung shelf the ground named, and the
+/// tree that walks it.
+struct Covered {
+    tree_root: String,
+    shelf_id: String,
+    shelf_name: String,
+    /// `""` when the ground IS the tree's root, which makes the sheet's
+    /// switch a decision about every rung rather than one.
+    #[allow(dead_code)]
+    rel: String,
+}
+
+/// The already-imported answer, kept with its close: where the light
+/// stands, which shelf the sheet names, and what the import found.
+/// The already-imported answer kept with its close: it is the modal's own
+/// modal, because the sheet's panel and the handler both read it whole.
+#[derive(Clone, Debug)]
+struct LitNote {
+    shelf_id: String,
+    name: String,
+    kind: conflicts::NoteKind,
 }
 
 /// What a picked ground belongs to: the tree that governs it, the rung the
@@ -393,6 +428,9 @@ struct WalkPlan {
     /// as the landing runs, and it goes back whole at the end.
     folder: WatchedFolder,
     asked: Asked,
+    /// The covered walk's light — the shelf its own pick names, kept with
+    /// the plan until the landing answers for it.
+    continuation: Option<Continuation>,
     /// The folder's display name, for the toasts.
     root_name: String,
     /// The deduped name a fresh root rung wears; `None` when the map already
@@ -405,6 +443,15 @@ struct WalkPlan {
     /// The per-file questions a merge owes, asked only once the landing is
     /// done — a file asked about must not stand among the landed rows.
     asks: Vec<ConflictAsk>,
+    /// The rows a planned tree re-seats: the row, and the file whose rung
+    /// decides where it lands.
+    replacements: Vec<(String, FoundFile)>,
+    /// The addresses whose file the library already reads in place, where
+    /// this run lands its own copy beside the linked row that reads it.
+    copy_paths: HashSet<String>,
+    /// The rows a moved-out log already answers for: the reader has these
+    /// books, so the walk lights them up rather than landing neighbours.
+    represented: Vec<String>,
 }
 
 /// The walk's own root answer: *as new* names the tree something else and
@@ -414,6 +461,18 @@ struct WalkPlan {
 struct RootPlan {
     rename: Option<String>,
     into: Option<String>,
+    /// The covered walk's light: the shelf its pick stood on, and the name
+    /// its ledger row wears — the re-import's own run answers to them both.
+    continuation: Option<Continuation>,
+}
+
+/// What the covered walk's own light knows: where the pick's own shelf
+/// stands, and which name the session opened with. The landing owes it an
+/// answer even when nothing new was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Continuation {
+    shelf_id: String,
+    name: String,
 }
 
 /// The unbound copy run's seat: the run ground the tree's family reads, but
@@ -469,6 +528,9 @@ struct FilesPlan {
     /// only once the copies have landed: a sheet answered while its own
     /// copy is still in flight would land beside a ghost.
     asks: Vec<ConflictAsk>,
+    /// The books the drop found the reader already had, by a folder's own
+    /// moved-out log: the light lands on the first of them.
+    represented: Vec<String>,
     /// The folder ledger an answered file settles when its copy comes
     /// home — the answer's own placement record, absent for a pick's run.
     settle: Option<(String, Fingerprint)>,
@@ -545,6 +607,13 @@ pub struct Mareader {
     /// bar's layers queue the panel's enter BEFORE the ellipsis's exit, so
     /// the geometry, not the message order, decides who is right.
     ellipsis_close_at: Option<Instant>,
+    /// The reveal in flight: what the answer lit, and when its flash
+    /// began — a second reveal of the same thing is a second reveal, by
+    /// the nonce the answer bumps.
+    reveal: Option<(Reveal, Instant)>,
+    /// The grid's viewport height, read off the scroll's own report so the
+    /// reveal's offset is the viewport's own geometry.
+    shelf_viewport_h: f32,
     /// The duplicate queue's remaining entries: one at a time, because each
     /// counter name counts against the level as the last landing left it.
     dup_queue: Vec<String>,
@@ -725,9 +794,15 @@ pub enum Message {
     AnswerShelf(Placement),
     /// The apply-to-all switch's own click.
     ToggleApplyAll,
+    /// The ask a read-at-place re-import leaves behind: closing the note
+    /// is the answer, because the light stands where the sheet said it
+    /// would.
+    CloseAlreadyImported,
     /// A cell was tapped. One message for every cell: the app decides what
     /// a tap means — a membership while choosing, an open otherwise.
     CardTap(String),
+    /// The shelf scroll's own report: the viewport the reveal centres on.
+    ShelfViewport(scrollable::Viewport),
     /// The left button went down somewhere in the window: the hold
     /// machine's starting gun. It decides for itself whether the press
     /// landed on a cell it may hold.
@@ -837,6 +912,8 @@ impl Mareader {
             hovered_crumb: None,
             ellipsis_open: false,
             ellipsis_close_at: None,
+            reveal: None,
+            shelf_viewport_h: 800.0,
             dup_queue: Vec::new(),
             dup_landed: Vec::new(),
             tap_swallow: None,
@@ -902,6 +979,15 @@ impl Mareader {
                 self.toasts.on_tick(at);
                 self.on_hold_tick(at);
                 self.on_drag_tick(at);
+                // The reveal's light stands for a beat on the level the
+                // answer opened on, then it wears off on its own clock.
+                let reveal_expired = matches!(
+                    &self.reveal,
+                    Some((_, started)) if at.duration_since(*started) >= FLASH_DWELL
+                );
+                if reveal_expired {
+                    self.reveal = None;
+                }
                 // The fold panel's close waits out its grace; a pointer
                 // that came back cancelled it by clearing the deadline.
                 if let Some(due) = self.ellipsis_close_at
@@ -910,6 +996,10 @@ impl Mareader {
                     self.ellipsis_close_at = None;
                     self.ellipsis_open = false;
                 }
+                Task::none()
+            }
+            Message::ShelfViewport(viewport) => {
+                self.shelf_viewport_h = viewport.bounds().height;
                 Task::none()
             }
             Message::Chrome(titlebar::Message::TogglePin) => {
@@ -1097,9 +1187,20 @@ impl Mareader {
                 Task::none()
             }
             Message::SheetCancel => {
+                if let Some(Sheet::AlreadyImported { note }) = self.sheet.take() {
+                    self.advance_conflict();
+                    return self.reveal_shelf(&note.shelf_id);
+                }
                 self.dismiss_sheet();
                 self.advance_conflict();
                 Task::none()
+            }
+            Message::CloseAlreadyImported => {
+                let Some(Sheet::AlreadyImported { note }) = self.sheet.take() else {
+                    return Task::none();
+                };
+                self.advance_conflict();
+                self.reveal_shelf(&note.shelf_id)
             }
             Message::AnswerCopy(answer) => {
                 let Some(Sheet::Copy { ask }) = self.sheet.take() else {
@@ -1193,21 +1294,13 @@ impl Mareader {
                     return Task::none();
                 }
                 match placement {
-                    Placement::Open => {
-                        // The web's light — the scroll-to and the flash —
-                        // waits on the grid's scroll-to; navigation is the
-                        // reveal's load-bearing half.
-                        self.shelf = shelf::find(&self.library.shelves, &ask.existing_id)
-                            .and_then(|each| each.parent.clone())
-                            .unwrap_or_else(|| ALL_SHELF.to_string());
-                        Task::none()
-                    }
+                    Placement::Open => self.reveal_shelf(&ask.existing_id),
                     Placement::LinkOnly => self.link_to_existing(&ask),
                     Placement::Merge => self.begin_folder_walk(
                         PathBuf::from(&ask.root),
                         ask.opts.clone(),
                         Asked::Explicitly,
-                        RootPlan { rename: None, into: Some(ask.existing_id.clone()) },
+                        RootPlan { rename: None, into: Some(ask.existing_id.clone()), ..RootPlan::default() },
                     ),
                     Placement::KeepBoth => self.copies_beside_tree_run(ask),
                     Placement::Replace => self.replace_with_tree(ask),
@@ -2260,6 +2353,7 @@ impl Mareader {
                 Task::none()
             }
             Sheet::ShelfConflict { .. } => Task::none(),
+            Sheet::AlreadyImported { note } => self.reveal_shelf(&note.shelf_id),
             Sheet::Import { root, ground } => {
                 let opts = self.import_opts.clone();
                 let root_str = root.to_string_lossy().into_owned();
@@ -2276,15 +2370,22 @@ impl Mareader {
                 // A covered ground walks the covering tree: a rung cannot
                 // mint a second instance of itself, and removed books come
                 // back wherever in the tree they stood. The walk's own
-                // shelf map seats the pick on the shelf it named.
+                // shelf map seats the pick on the shelf it named, and the
+                // continuation keeps the rung's own light for the landing.
                 if opts.mode().reads_in_place()
-                    && let Some(tree_root) = self.covered_tree_root(&root_str)
+                    && let Some(covered) = self.covered_shelf(&root_str)
                 {
                     let walk = self.begin_folder_walk(
-                        PathBuf::from(tree_root),
+                        PathBuf::from(covered.tree_root),
                         opts,
                         Asked::Explicitly,
-                        RootPlan::default(),
+                        RootPlan {
+                            continuation: Some(Continuation {
+                                shelf_id: covered.shelf_id,
+                                name: covered.shelf_name,
+                            }),
+                            ..RootPlan::default()
+                        },
                     );
                     return Task::batch([persisted, walk]);
                 }
@@ -2539,13 +2640,23 @@ impl Mareader {
         }
     }
 
-    /// The tree a covered ground belongs to, by root address: an import of
-    /// a rung walks the tree, so a rung cannot mint a second instance of
-    /// itself and removed books come back wherever in the tree they stood.
-    fn covered_tree_root(&self, root: &str) -> Option<String> {
+    /// The covered walk's seat: the rung shelf the ground names, its own
+    /// name, and the tree's root — everything the landing needs to answer
+    /// the pick back to the shelf it meant.
+    fn covered_shelf(&self, root: &str) -> Option<Covered> {
         let governance = Governance::new(&self.library.folders, &self.library.shelves);
         let covered = governance.covering(root)?;
-        folder_ops::find(&self.library.folders, &covered.folder_id).map(|row| row.root.clone())
+        let tree_root =
+            folder_ops::find(&self.library.folders, &covered.folder_id)?.root.clone();
+        let shelf_name = shelf::find(&self.library.shelves, &covered.shelf_id)
+            .map(|each| each.name.clone())
+            .unwrap_or_else(|| paths::dir_label(&tree_root));
+        Some(Covered {
+            tree_root,
+            shelf_id: covered.shelf_id,
+            shelf_name,
+            rel: covered.rel,
+        })
     }
 
     /// The watch seat a folder shelf answers for. `None` when the shelf is
@@ -3133,8 +3244,8 @@ impl Mareader {
         root: &str,
         opts: FolderOpts,
         asked: Asked,
-        plan: RootPlan,
-        found: Vec<FoundFile>,
+        mut plan: RootPlan,
+        mut found: Vec<FoundFile>,
     ) -> Task<Message> {
         let stamp = now_ms();
         // Importing a folder the library already holds continues that row's
@@ -3178,11 +3289,30 @@ impl Mareader {
         }
 
         let registry = ledger::registry_of(&self.library.books);
+        // The addresses whose file the library already reads in place, where
+        // this run lands its own copy beside the linked row: a copies import
+        // is the library's second instance, unrelated to the tree reading the
+        // ground, and the tree keeps the rows it has.
+        let copy_paths: HashSet<String> =
+            if folder.mode().copies_files() && asked == Asked::Explicitly {
+                ledger::copy_over_paths(&found, &registry, &self.library.books)
+            } else {
+                HashSet::new()
+            };
         ledger::prune_tombstones(&mut folder, &registry);
         // Written on every scan, including one that changes nothing: the
         // restore menu's "moved out of this folder" answer is only as fresh
         // as the last walk.
         folder.record_seen(&found);
+        // A file a moved-out log binds to a LIVING row is a book the reader
+        // already has: the walk lights that row up rather than landing a
+        // second book beside it. A quiet walk asks nothing — its light would
+        // be a light the reader did not ask for.
+        let represented = if asked == Asked::OnFocus {
+            Vec::new()
+        } else {
+            self.take_represented(Some(folder.id.as_str()), &mut found)
+        };
 
         let actions = match asked {
             Asked::OnFocus => ledger::diff_folder(&folder, &registry, &found),
@@ -3203,45 +3333,33 @@ impl Mareader {
         // nothing can remove.
         let mut seen: HashSet<Fingerprint> = HashSet::new();
         adds.retain(|file| seen.insert(file.fp));
-
-        // A merge's new arrivals land on a rung the level already held: the
-        // per-file question rides the arrival itself, asked once.
-        let mut asks: Vec<ConflictAsk> = Vec::new();
-        if let Some(into) = plan.into.clone() {
-            adds.retain(|file| {
-                let key = folder.shelf_key(file);
-                let target = match if key.is_empty() {
-                    Some(into.clone())
-                } else {
-                    folder.shelf_map.get(&key).cloned()
-                } {
-                    Some(target) => target,
-                    None => return true,
-                };
-                let arrival = Arrival::import(file.clone(), target, None);
-                match conflict::collide(&self.library.books, &self.library.shelves, &arrival) {
-                    Some(existing) => {
-                        let existing_name = conflicts::existing_name_of(
-                            &self.library.books,
-                            &existing,
-                            &arrival,
-                        );
-                        asks.push(ConflictAsk::folder_merge(
-                            arrival,
-                            existing,
-                            existing_name,
-                            folder.mode(),
-                            folder.id.clone(),
-                        ));
-                        false
-                    }
-                    None => true,
-                }
-            });
+        // The ledger answered Skip for the copy run's own files — their
+        // content is known — but the reader asked for a second instance of
+        // each, so the run owes every one of them a book.
+        for file in found.iter().filter(|file| copy_paths.contains(&file.path)) {
+            if !adds.iter().any(|each| each.path == file.path) {
+                adds.push(file.clone());
+            }
         }
 
+        // A merge's new arrivals land on a rung the level already held, and
+        // the rows a rename or a merge re-seats follow their own rungs onto
+        // the planned tree: one screen answers both, and a question rides the
+        // arrival itself rather than a second pass.
+        let screened = conflicts::screen_planned(
+            &folder,
+            &self.library.books,
+            &self.library.shelves,
+            &registry,
+            &found,
+            (plan.rename.is_some(), plan.into.as_deref()),
+            &mut adds,
+            &copy_paths,
+        );
+        let asks = screened.asks;
+
         let root_name = paths::dir_label(root);
-        if adds.is_empty() && relinks.is_empty() && asks.is_empty() {
+        if adds.is_empty() && relinks.is_empty() && asks.is_empty() && represented.is_empty() {
             // Nothing to do. A quiet walk leaves no trace beyond the row's
             // stamp; an ask still owes the reader the news.
             folder.scanned_ms = stamp;
@@ -3254,12 +3372,25 @@ impl Mareader {
             };
             self.runs.remove(ix);
             if asked == Asked::Explicitly {
-                let line = if found.is_empty() {
-                    format!("No documents found in “{root_name}”")
+                if let Some(continuation) = plan.continuation.take() {
+                    // The covered walk's empty answer is the note, and the
+                    // note's close answers it back to the shelf the pick
+                    // meant.
+                    self.sheet = Some(Sheet::AlreadyImported {
+                        note: LitNote {
+                            shelf_id: continuation.shelf_id,
+                            name: continuation.name,
+                            kind: conflicts::NoteKind::NothingNew,
+                        },
+                    });
                 } else {
-                    format!("Everything in “{root_name}” is already in the library")
-                };
-                self.toasts.show(Tone::Info, line, Instant::now());
+                    let line = if found.is_empty() {
+                        format!("No documents found in “{root_name}”")
+                    } else {
+                        format!("Everything in “{root_name}” is already in the library")
+                    };
+                    self.toasts.show(Tone::Info, line, Instant::now());
+                }
             }
             return Task::batch([persist, self.release_root(root)]);
         }
@@ -3283,9 +3414,23 @@ impl Mareader {
             .into_iter()
             .map(|file| (library_core::id::next_id(stamp), file))
             .collect();
-        let plan = WalkPlan { folder, asked, root_name, planned_root, adds, relinks, asks };
+        let plan = WalkPlan {
+            folder,
+            asked,
+            continuation: plan.continuation.take(),
+            root_name,
+            planned_root,
+            adds,
+            relinks,
+            asks,
+            replacements: screened.replacements,
+            copy_paths,
+            represented,
+        };
 
-        if plan.folder.mode().copies_files() {
+        // A run with nothing to copy skips the store altogether: its only
+        // remaining work is the light and the rows a log already answered for.
+        if plan.folder.mode().copies_files() && !plan.adds.is_empty() {
             // The store batch rides the run's own channel: the pill the
             // scan lit keeps counting, in its copy phase.
             let requests: Vec<BookFileRequest> = plan
@@ -4226,10 +4371,7 @@ impl Mareader {
             return Task::none();
         }
         match choice {
-            Placement::Open => {
-                self.reveal_existing(&ask.existing_id);
-                Task::none()
-            }
+            Placement::Open => self.reveal_existing(&ask.existing_id),
             Placement::KeepBoth => self.as_new(ask),
             Placement::LinkOnly => self.link_to_row(ask),
             Placement::Merge => self.merge_into_row(ask),
@@ -4237,16 +4379,64 @@ impl Mareader {
         }
     }
 
-    /// "Already imported": add nothing and take the reader to the one they
-    /// have — the first shelf in shelf order, or the library's own floor
-    /// when it is on none. The web's light — the scroll-to and the flash —
-    /// waits on the grid's scroll-to; navigation is the reveal's
-    /// load-bearing half.
-    fn reveal_existing(&mut self, book_id: &str) {
-        self.shelf = shelf::containing(&self.library.shelves, book_id)
-            .first()
-            .map(|shelf| shelf.id.clone())
-            .unwrap_or_else(|| ALL_SHELF.to_string());
+    /// The one write a reveal is: what to light, and a new beat of its own
+    /// — a second reveal of the same thing is a second reveal, so the
+    /// clock the flash dies on starts over.
+    fn light(&mut self, id: &str) {
+        let nonce = match &self.reveal {
+            Some((revealed, _)) => revealed.nonce + 1,
+            None => 1,
+        };
+        self.reveal = Some((Reveal { id: id.to_string(), nonce }, Instant::now()));
+    }
+
+    /// The flash's own offset: where the grid or the list owes a card a
+    /// light, off the same facts the views read.
+    fn reveal_scroll(&self, id: &str) -> Task<Message> {
+        let rows = library::level_rows(&self.library, &self.shelf, &self.query);
+        let folders = library::level_folders(&self.library, &self.shelf, &self.query);
+        let folders_len = folders.len();
+        let index = folders
+            .iter()
+            .position(|each| each.id == id)
+            .or_else(|| rows.iter().position(|row| row.id() == id).map(|ix| ix + folders_len));
+        let Some(index) = index else {
+            return Task::none();
+        };
+        let y = if self.library.view.is_list() {
+            reveal::list_offset(index, self.shelf_viewport_h)
+        } else {
+            let (tracks, cell) =
+                library::content_metrics(self.viewport.width, self.library.view.columns);
+            reveal::grid_offset(index, tracks, cell, self.shelf_viewport_h)
+        };
+        operation::scroll_to(LIBRARY_SCROLL, scrollable::AbsoluteOffset { x: None, y: Some(y) })
+    }
+
+    /// The web's full reveal: navigate, scroll to the card, and light the
+    /// answer where the landing put it — the web page called it the
+    /// scroll-into-view and the flash, and the native floor pays both from
+    /// one write.
+    fn reveal_shelf(&mut self, shelf_id: &str) -> Task<Message> {
+        self.shelf = reveal::level_of_shelf(&self.library.shelves, shelf_id);
+        self.light(shelf_id);
+        self.reveal_scroll(shelf_id)
+    }
+
+    /// The row half of the same light: the level the card lives on, then
+    /// the scroll and the ring — in that order, because the reveal's whole
+    /// story is that the way and the light never disagree.
+    fn reveal_book(&mut self, book_id: &str) -> Task<Message> {
+        self.shelf = reveal::level_of_row(&self.library.shelves, book_id);
+        self.light(book_id);
+        self.reveal_scroll(book_id)
+    }
+
+    /// "Already imported": the whole of the reveal — no row, and the
+    /// reader lands where the answer is. From 3g's own answers onward
+    /// every way out of that question ends on the same light.
+    fn reveal_existing(&mut self, book_id: &str) -> Task<Message> {
+        self.reveal_book(book_id)
     }
 
     /// "As new": a moved row is renamed and then moved — the rename is
@@ -4294,6 +4484,9 @@ impl Mareader {
             pending: vec![PendingCopy { book_id, file, title: name }],
             restored: 0,
             asks: Vec::new(),
+            // An answer's own landing represents nothing: the question was
+            // about this one file.
+            represented: Vec::new(),
             settle,
             index,
         };
@@ -4389,7 +4582,7 @@ impl Mareader {
                 PathBuf::from(&ask.root),
                 ask.opts.clone(),
                 Asked::Explicitly,
-                RootPlan { rename: Some(name), into: None },
+                RootPlan { rename: Some(name), into: None, ..RootPlan::default() },
             );
         }
         self.begin_copies_run(
@@ -4468,7 +4661,7 @@ impl Mareader {
             PathBuf::from(&root_str),
             ask.opts.clone(),
             Asked::Explicitly,
-            RootPlan { rename: None, into: Some(ask.existing_id.clone()) },
+            RootPlan { rename: None, into: Some(ask.existing_id.clone()), ..RootPlan::default() },
         )
     }
 
@@ -4804,8 +4997,19 @@ impl Mareader {
         plan: WalkPlan,
         copies: Option<CopyMap>,
     ) -> Task<Message> {
-        let WalkPlan { mut folder, asked, root_name, planned_root, adds, relinks, asks, .. } =
-            plan;
+        let WalkPlan {
+            mut folder,
+            asked,
+            continuation,
+            root_name,
+            planned_root,
+            adds,
+            relinks,
+            asks,
+            replacements,
+            copy_paths,
+            represented,
+        } = plan;
         let stamp = now_ms();
         let mut placed = 0usize;
         let mut relinked = 0usize;
@@ -4824,10 +5028,13 @@ impl Mareader {
         let folder_id = folder.id.clone();
 
         for (book_id, file) in adds {
+            // A file this run owes a copy of is the library's second instance
+            // beside the row that already reads the address: never a heal.
+            let own_copy = copy_paths.contains(&file.path);
             // A file at an address the library already reads is that book,
             // whatever the two fingerprints say: a migrated row's
             // placeholder identity is healed by the ground it stands on.
-            if copies.is_none()
+            if !own_copy
                 && let Some(existing) =
                     book::book_rows_mut(&mut self.library.books).find(|b| b.path() == file.path)
             {
@@ -4863,7 +5070,25 @@ impl Mareader {
                 // reads it.
                 minted.adopt_measurement(map.get(&book_id).and_then(|(_, m)| *m));
             }
-            let placed_id = book::add_book(&mut self.library.books, minted);
+            // A copy-list file becomes a book of its own beside the linked
+            // book the tree keeps, and so does an in-place file whose address
+            // another row already reads as a STORED copy: `add_book`'s
+            // one-row-per-fingerprint rule is right for a walk and wrong for
+            // the second instance the library just asked for.
+            if own_copy {
+                minted.independent = true;
+            }
+            let beside_its_own_copy = copies.is_none()
+                && book::book_rows(&self.library.books).any(|b| {
+                    !b.independent && b.fp == file.fp && b.origin.is_store_copy_of(&file.path)
+                });
+            let placed_id = if own_copy || beside_its_own_copy {
+                let id = minted.id.clone();
+                self.library.books.push(library_core::book::Row::Book(minted));
+                id
+            } else {
+                book::add_book(&mut self.library.books, minted)
+            };
             // The whole chain, not the leaf: importing "1" containing "2"
             // and four books has to produce "1" at the root with them
             // inside.
@@ -4875,6 +5100,22 @@ impl Mareader {
             // The landing spends the removal that was holding the file out.
             ledger::restore_deleted(&mut folder, &file.fp);
             placed += 1;
+        }
+
+        // The rows a planned tree re-seats: the row follows its rung onto the
+        // tree the answer named, which is what makes *merge into it* a move
+        // rather than a second copy of every book the folder already had.
+        for (row_id, file) in replacements {
+            let key = folder.shelf_key(&file);
+            let shelf_id = chain_for(
+                &mut folder,
+                &key,
+                stamp,
+                planned_root.as_deref(),
+                &root,
+                &mut new_shelves,
+            );
+            placements.push((row_id, shelf_id));
         }
 
         // The shelves the mints reported, added unless already standing: a
@@ -4902,7 +5143,9 @@ impl Mareader {
         write_folder_row(&mut self.library.folders, folder);
         let persist = self.persist_library();
 
-        let total = placed + relinked + healed;
+        // The represented rows are books the reader got back without a copy:
+        // they belong in the count the import reports.
+        let total = placed + relinked + healed + represented.len();
         match asked {
             Asked::Explicitly if total > 0 => self.toasts.show(
                 Tone::Info,
@@ -4927,9 +5170,29 @@ impl Mareader {
             );
         }
         // The merge's questions are raised over the landed tree, never
-        // beside ghosts.
+        // beside ghosts. A covered walk's nothing-new note waits on them:
+        // a question on screen is answered before the note its ground saw.
+        let asks_empty = asks.is_empty();
         if !asks.is_empty() {
             self.raise_conflict(asks);
+        }
+        // The covered walk's answer to its own pick: nothing new is the
+        // note, its close the shelf's light; something new goes to where it
+        // stands, beside it.
+        if asked == Asked::Explicitly
+            && let Some(continuation) = continuation
+        {
+            if total == 0 && asks_empty {
+                self.sheet = Some(Sheet::AlreadyImported {
+                    note: LitNote {
+                        shelf_id: continuation.shelf_id.clone(),
+                        name: continuation.name.clone(),
+                        kind: conflicts::NoteKind::NothingNew,
+                    },
+                });
+            } else if total > 0 {
+                return Task::batch([persist, self.reveal_shelf(&continuation.shelf_id)]);
+            }
         }
         persist
     }
@@ -4968,6 +5231,10 @@ impl Mareader {
             );
             return if changed { self.persist_library() } else { Task::none() };
         }
+        // The files a folder's own log already answers for: the reader has
+        // these books, so the drop lights them up rather than landing copies
+        // beside them.
+        let represented = self.take_represented(None, &mut found);
 
         let stamp = now_ms();
         let shelf_id = target.clone().unwrap_or_else(|| ALL_SHELF.to_string());
@@ -5077,7 +5344,18 @@ impl Mareader {
                 );
             }
             self.raise_conflict(asks);
-            return if changed { self.persist_library() } else { Task::none() };
+            // A drop the library already had in every file it named is a light
+            // on the first book a log answered for: the copy's own landing
+            // never runs, so the light rides this door instead.
+            let light = match represented.first() {
+                Some(book_id) => self.reveal_book(book_id),
+                None => Task::none(),
+            };
+            return if changed {
+                Task::batch([self.persist_library(), light])
+            } else {
+                light
+            };
         }
 
         let requests: Vec<BookFileRequest> = pending
@@ -5092,6 +5370,7 @@ impl Mareader {
                 pending,
                 restored,
                 asks,
+                represented,
                 settle: None,
                 index: None,
             }),
@@ -5142,6 +5421,38 @@ impl Mareader {
         }
     }
 
+    /// The files a folder's moved-out log already answers for: a log bound to
+    /// a LIVING row says the file's book is still here — the row a shelf move
+    /// or a link-making answer left standing for it — so an import of that
+    /// file succeeds by lighting the row up rather than landing a second book
+    /// beside it. `scope` narrows the search to one folder's own log; the
+    /// loose run asks every folder at once.
+    fn take_represented(&self, scope: Option<&str>, found: &mut Vec<FoundFile>) -> Vec<String> {
+        let mut represented = Vec::new();
+        found.retain(|file| {
+            let row_id = self
+                .library
+                .folders
+                .iter()
+                .filter(|folder| scope.is_none_or(|id| folder.id == id))
+                .find_map(|folder| {
+                    ledger::find_tombstone(folder, &file.fp)
+                        .and_then(|entry| entry.returned_row.clone())
+                });
+            let Some(row_id) = row_id else {
+                return true;
+            };
+            // A log bound to a row that went is a log whose file is free to
+            // land again.
+            if book::find_row(&self.library.books, &row_id).is_none() {
+                return true;
+            }
+            represented.push(row_id);
+            false
+        });
+        represented
+    }
+
     /// Spend the removal that was holding this content out of any folder's
     /// walk, and answer with the name it remembered. The match is the
     /// fingerprint, not the address: a file removed from a folder, moved
@@ -5168,7 +5479,7 @@ impl Mareader {
         let Stage::Copying { plan } = run.stage else {
             return Task::none();
         };
-        let FilesPlan { target, pending, restored, asks, settle, index } = *plan;
+        let FilesPlan { target, pending, restored, asks, represented, settle, index } = *plan;
         let (copies, failure) = partition_store_results(results);
         let stamp = now_ms();
 
@@ -5226,13 +5537,24 @@ impl Mareader {
                 self.toasts.show(Tone::Info, line, Instant::now());
             }
             self.raise_conflict(asks);
-            return persist;
+            let light = match represented.first() {
+                Some(book_id) => self.reveal_book(book_id),
+                None => Task::none(),
+            };
+            return Task::batch([persist, light]);
         }
         if let Some(error) = failure {
             self.toasts.show(Tone::Error, error, Instant::now());
         }
+        // A drop that landed nothing new but answered for a book the reader
+        // already had is a light on that book rather than a receipt of zero:
+        // the log remembered it, so the reader is taken to it.
+        let light = match represented.first() {
+            Some(book_id) => self.reveal_book(book_id),
+            None => Task::none(),
+        };
         self.raise_conflict(asks);
-        Task::none()
+        light
     }
 
     /// The folder the level on screen belongs to, when it is a watched
@@ -5601,7 +5923,11 @@ impl Mareader {
                 &self.query,
                 self.hovered_card.as_deref(),
                 self.viewport.width,
-                library::SelectionFacts { selecting: self.selecting, selected: &self.selected },
+                library::SelectionFacts {
+                    selecting: self.selecting,
+                    selected: &self.selected,
+                    lit: self.reveal.as_ref().map(|(revealed, _)| revealed.id.as_str()),
+                },
                 library::DragFacts {
                     payload: self.drag.as_ref().map(|drag| &drag.payload),
                     effect: answer.as_ref().map(|(effect, _)| effect),
@@ -6062,6 +6388,28 @@ impl Mareader {
                     vec![sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel)],
                 )
             }
+            Sheet::AlreadyImported { note } => {
+                // Not a question — an answer: the shelf is named why, and
+                // closing is the label on the button.
+                let sentence = conflicts::note_sentence(note.kind, &note.name);
+                let mut body = Column::new().spacing(10);
+                body = body.push(
+                    text(note.kind.sublabel().to_string()).size(12).color(self.tokens.muted),
+                );
+                body = body.push(text(sentence).size(12).color(self.tokens.muted));
+                sheet::panel_owned(
+                    self.tokens,
+                    sheet::CONFLICT_W,
+                    note.name.clone(),
+                    body.into(),
+                    vec![sheet::confirm_button(
+                        self.tokens,
+                        "Show the shelf",
+                        Message::CloseAlreadyImported,
+                        false,
+                    )],
+                )
+            }
         };
         Some(sheet::overlay(panel, Message::SheetCancel))
     }
@@ -6158,6 +6506,7 @@ impl Mareader {
             || self.press.is_some()
             || self.drag.is_some()
             || self.ellipsis_close_at.is_some()
+            || self.reveal.is_some()
         {
             subscriptions.push(window::frames().map(Message::Tick));
         }

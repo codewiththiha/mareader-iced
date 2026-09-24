@@ -196,6 +196,7 @@ fn shelf_row(
     let summary = facts::summary(facts.books, facts.inside);
     let name = elide_line(&shelf.name);
     let selected = selection.selected.contains(shelf.id.as_str());
+    let lit = selection.lit == Some(shelf.id.as_str());
     let tap_id = shelf.id.clone();
     let dressed_id = shelf.id.clone();
     let hover_id = shelf.id.clone();
@@ -217,7 +218,7 @@ fn shelf_row(
     let line = button(face.push(text(summary).size(12).color(tokens.muted)))
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
-        .style(move |_, status| card::row_button_style(tokens, status, selected))
+        .style(move |_, status| card::row_button_style(tokens, status, selected || lit))
         .on_press(Message::CardTap(tap_id));
     let cell: Element<'static, Message> = mouse_area(line)
         .on_enter(Message::CardHover(Some(hover_id)))
@@ -242,6 +243,7 @@ fn book_row(
             .unwrap_or_else(|| lib_text::page_line(book.page, book.num_pages)),
     );
     let selected = selection.selected.contains(book.id.as_str());
+    let lit = selection.lit == Some(book.id.as_str());
     let mut line = row![
         card::list_thumb(tokens, selection.selecting.then_some(selected)),
         column![
@@ -267,7 +269,7 @@ fn book_row(
     let row_el = button(line)
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
-        .style(move |_, status| card::row_button_style(tokens, status, selected))
+        .style(move |_, status| card::row_button_style(tokens, status, selected || lit))
         .on_press(Message::CardTap(tap_id));
     let cell: Element<'static, Message> = mouse_area(row_el)
         .on_enter(Message::CardHover(Some(hover_id)))
@@ -290,6 +292,7 @@ fn link_row(
 ) -> Element<'static, Message> {
     let label = elide_line(&name);
     let selected = selection.selected.contains(id.as_str());
+    let lit = selection.lit == Some(id.as_str());
     let face = row![
         container(icon(IconName::Link, 14, tokens.muted))
             .width(41.6)
@@ -315,7 +318,7 @@ fn link_row(
     let action = button(face)
         .width(Length::Fill)
         .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
-        .style(move |_, status| card::row_button_style(tokens, status, selected));
+        .style(move |_, status| card::row_button_style(tokens, status, selected || lit));
     let action = if library_core::id::is_shelf(&target) {
         action.on_press(Message::CardTap(id))
     } else {
