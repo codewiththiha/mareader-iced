@@ -46,12 +46,24 @@ const VIEWPORT_MARGIN: f64 = 8.0;
 /// the clamp pulls it back when that would hang it off an edge.
 pub fn place(anchor: Point, size: Size, viewport: Size) -> Point {
     let placed = ui_geom::floating::place_context_menu(
-        ui_geom::floating::Point::new(f64::from(anchor.x), f64::from(anchor.y)),
-        ui_geom::floating::Size::new(f64::from(size.width), f64::from(size.height)),
-        ui_geom::floating::Size::new(f64::from(viewport.width), f64::from(viewport.height)),
+        point_at(anchor),
+        size_of(size),
+        size_of(viewport),
         VIEWPORT_MARGIN,
     );
     Point::new(placed.rect.x as f32, placed.rect.y as f32)
+}
+
+/// The app's `f32` geometry as the crate's `f64` geometry. Not `From` impls:
+/// the orphan rule forbids them here (both the trait and the type are
+/// foreign), and the conversion cannot move into the crate without giving it
+/// a dependency on iced — which is what keeps it testable on its own.
+fn point_at(point: Point) -> ui_geom::floating::Point {
+    ui_geom::floating::Point::new(f64::from(point.x), f64::from(point.y))
+}
+
+fn size_of(size: Size) -> ui_geom::floating::Size {
+    ui_geom::floating::Size::new(f64::from(size.width), f64::from(size.height))
 }
 
 /// The panel frame: rows inside, the surface-popover card around them.
@@ -313,5 +325,49 @@ impl PanelSize {
 
     pub fn size(self) -> Size {
         Size::new(self.width, self.height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panel_with_room_lands_where_the_pointer_is() {
+        let at = place(Point::new(400.0, 300.0), Size::new(200.0, 150.0), Size::new(1200.0, 800.0));
+        assert_eq!(at, Point::new(400.0, 300.0));
+    }
+
+    #[test]
+    fn a_panel_past_an_edge_is_pulled_back_by_the_margin() {
+        let viewport = Size::new(1200.0, 800.0);
+        let panel = Size::new(200.0, 150.0);
+        let at = place(Point::new(1150.0, 760.0), panel, viewport);
+        assert!(at.x <= 1200.0 - 200.0 - VIEWPORT_MARGIN as f32 + 1e-4);
+        assert!(at.y <= 800.0 - 150.0 - VIEWPORT_MARGIN as f32 + 1e-4);
+        let at = place(Point::new(-20.0, -20.0), panel, viewport);
+        assert!(at.x >= VIEWPORT_MARGIN as f32 - 1e-4);
+        assert!(at.y >= VIEWPORT_MARGIN as f32 - 1e-4);
+    }
+
+    #[test]
+    fn a_panel_wider_than_the_window_still_answers_a_finite_point() {
+        // An oversized panel collapses the clamp range; it must not produce a
+        // NaN, because the point goes straight into the layer's position.
+        let at = place(Point::new(10.0, 10.0), Size::new(2000.0, 2000.0), Size::new(500.0, 400.0));
+        assert!(at.x.is_finite() && at.y.is_finite());
+    }
+
+    #[test]
+    fn a_stack_of_rows_tallies_the_metrics_it_draws_with() {
+        let size = PanelSize::new(220.0)
+            .row(ROW_H)
+            .row(SECTION_H)
+            .row(TALL_ROW_H)
+            .row(SEP_H)
+            .size();
+        assert_eq!(size.width, 220.0);
+        let rows = ROW_H + SECTION_H + TALL_ROW_H + SEP_H;
+        assert_eq!(size.height, rows + PAD * 2.0, "the padding is on both edges");
     }
 }
