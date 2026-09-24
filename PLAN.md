@@ -770,6 +770,16 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   read point into the rows the same `rows_for_read` rule names, with the shelf's own
   record of the name and author written the moment the document answers.
   Refactor passes run between 3b and 3c, ahead of that queue, one CI-green commit each.
+  The queue's own record lives in `review/` (outside the repo); what has landed there:
+  the library's cell kit was split out of `card.rs`, the grid's cell arithmetic now has
+  one derivation (`content_width`/`grid_metrics`) instead of four, the cells' rules
+  (hover, selection, drag bands, layering) are shared between the cards and the list
+  rows, the level's 32px rhythm is named once, the suites build their fixtures from
+  `library_core::testkit`, the bar reads the fold's one packing (`fold::pack_elided`),
+  the menus' decisions are pure functions with tests, and the two remaining god files
+  in the shelf are gone: `conflicts.rs` is `conflicts/{mod,planned,naming,words}.rs` and
+  `departure.rs` is `departure/{mod,leaving,returning,shelves,log,tests}.rs`. Next in the
+  queue is `src/app.rs` — 7,833 lines behind a frozen `Message`/`update`/`view` surface.
   The first took the shell's dead weight out: `theme::fade` was a byte-identical twin of
   `theme::wash` (a colour at a fraction of its own alpha) and 90 sites spelled it both
   ways — one helper now, `wash`; `theme::danger` names its one literal; `now_ms` was
