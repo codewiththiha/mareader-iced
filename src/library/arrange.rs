@@ -274,7 +274,7 @@ pub fn dismantle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use library_core::testkit::markdown_row;
+    use library_core::testkit::{self, markdown_row};
 
     fn row(id: &str) -> Row {
         markdown_row(id)
@@ -290,38 +290,6 @@ mod tests {
 
     fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| (*s).to_string()).collect()
-    }
-
-    fn own(id: &str, name: &str, parent: Option<&str>, books: &[&str]) -> Shelf {
-        let mut shelf =
-            Shelf::virtual_shelf(id.to_string(), name.to_string(), parent.map(str::to_string));
-        shelf.books = owned(books);
-        shelf
-    }
-
-    fn rung(
-        id: &str,
-        folder_id: &str,
-        rel: Option<&str>,
-        parent: Option<&str>,
-        books: &[&str],
-    ) -> Shelf {
-        let mut shelf = own(id, id, parent, books);
-        shelf.kind = library_core::shelf::ShelfKind::Folder {
-            folder_id: folder_id.to_string(),
-            rel: rel.map(str::to_string),
-        };
-        shelf
-    }
-
-    fn linked_row_at(id: &str, path: &str, n: u32) -> Row {
-        Row::Book(library_core::book::Book::new(
-            id.to_string(),
-            library_core::testkit::fp_n(n),
-            reader_core::format::Format::Markdown,
-            library_core::book::Origin::Linked { src: path.to_string() },
-            0,
-        ))
     }
 
     /// `home/root/1st/2nd`: a read-at-place tree with a rung per folder, its
@@ -341,14 +309,14 @@ mod tests {
             ..library_core::testkit::watched_folder("f1", "/books")
         };
         let shelves = vec![
-            rung("root", "f1", None, None, &["b0"]),
-            rung("one", "f1", Some("1st"), Some("root"), &[]),
-            rung("two", "f1", Some("1st/2nd"), Some("one"), &["b1", "b2"]),
+            testkit::folder_shelf("root", "root", "f1", None, &["b0"], None),
+            testkit::folder_shelf("one", "one", "f1", Some("1st"), &[], Some("root")),
+            testkit::folder_shelf("two", "two", "f1", Some("1st/2nd"), &["b1", "b2"], Some("one")),
         ];
         let books = vec![
-            linked_row_at("b0", "/books/notes.md", 8),
-            linked_row_at("b1", "/books/1st/2nd/a.md", 7),
-            linked_row_at("b2", "/books/1st/2nd/b.md", 9),
+            testkit::row_at_n("b0", "/books/notes.md", 8),
+            testkit::row_at_n("b1", "/books/1st/2nd/a.md", 7),
+            testkit::row_at_n("b2", "/books/1st/2nd/b.md", 9),
         ];
         (shelves, books, folder)
     }
@@ -474,8 +442,8 @@ mod tests {
     fn a_bulk_move_to_the_root_removes_each_row_from_every_shelf() {
         let mut rows = list();
         let mut shelves = vec![
-            own("from", "From", None, &["a", "b"]),
-            own("also", "Also", None, &["a", "c"]),
+            testkit::shelf("from", "From", &["a", "b"], None),
+            testkit::shelf("also", "Also", &["a", "c"], None),
         ];
         assert!(move_many_to_shelf(
             &mut shelves,
@@ -498,8 +466,8 @@ mod tests {
     fn a_move_onto_a_shelf_lifts_off_the_source_and_lands_at_the_slot() {
         let mut rows = list();
         let mut shelves = vec![
-            own("from", "From", None, &["a", "b"]),
-            own("to", "To", None, &["c"]),
+            testkit::shelf("from", "From", &["a", "b"], None),
+            testkit::shelf("to", "To", &["c"], None),
         ];
         assert!(move_many_to_shelf(
             &mut shelves,
@@ -561,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_filing_names_a_book_already_a_member_without_moving_it() {
-        let mut shelves = vec![own("to", "To", None, &["a", "b"])];
+        let mut shelves = vec![testkit::shelf("to", "To", &["a", "b"], None)];
         assert!(!file_many(&mut shelves, &owned(&["a"]), "to"));
         assert_eq!(shelves[0].books, owned(&["a", "b"]));
         assert!(file_many(&mut shelves, &owned(&["c"]), "to"));
@@ -571,8 +539,8 @@ mod tests {
     #[test]
     fn an_unfile_lets_go_of_one_shelf_alone() {
         let mut shelves = vec![
-            own("here", "Here", None, &["a", "b"]),
-            own("there", "There", None, &["a"]),
+            testkit::shelf("here", "Here", &["a", "b"], None),
+            testkit::shelf("there", "There", &["a"], None),
         ];
         assert!(unfile_books(&mut shelves, &owned(&["a"]), "here"));
         assert_eq!(shelves[0].books, owned(&["b"]));
@@ -582,9 +550,9 @@ mod tests {
     #[test]
     fn a_sibling_seam_lands_the_moved_shelf_beside_its_anchor() {
         let mut shelves = vec![
-            own("x", "X", None, &[]),
-            own("y", "Y", None, &[]),
-            own("z", "Z", None, &[]),
+            testkit::shelf("x", "X", &[], None),
+            testkit::shelf("y", "Y", &[], None),
+            testkit::shelf("z", "Z", &[], None),
         ];
         assert!(reorder_shelves_to_anchor(&mut shelves, &owned(&["x"]), "z", false));
         let order: Vec<&str> = shelves.iter().map(|shelf| shelf.id.as_str()).collect();
@@ -593,7 +561,7 @@ mod tests {
 
     #[test]
     fn a_folder_cannot_nest_inside_itself() {
-        let mut shelves = vec![own("outer", "Outer", None, &[]), own("inner", "Inner", Some("outer"), &[])];
+        let mut shelves = vec![testkit::shelf("outer", "Outer", &[], None), testkit::shelf("inner", "Inner", &[], Some("outer"))];
         assert!(!nest_shelf(&mut shelves, "outer", Some("inner")));
         assert!(nest_shelf(&mut shelves, "inner", None));
         assert!(shelf::find(&shelves, "inner").unwrap().parent.is_none());
@@ -601,7 +569,7 @@ mod tests {
 
     #[test]
     fn a_filing_answers_false_for_a_shelf_that_is_not_there() {
-        let mut shelves = vec![own("to", "To", None, &[])];
+        let mut shelves = vec![testkit::shelf("to", "To", &[], None)];
         assert!(!file_many(&mut shelves, &owned(&["a"]), "gone"));
         assert!(shelves[0].books.is_empty());
     }
@@ -609,7 +577,7 @@ mod tests {
     #[test]
     fn a_nesting_moves_the_folder_and_reports_the_move() {
         let mut shelves =
-            vec![own("a", "A", None, &[]), own("b", "B", None, &[]), own("home", "Home", None, &[])];
+            vec![testkit::shelf("a", "A", &[], None), testkit::shelf("b", "B", &[], None), testkit::shelf("home", "Home", &[], None)];
         assert!(nest_many(&mut shelves, &owned(&["a", "b"]), "home"));
         assert_eq!(shelves[0].parent.as_deref(), Some("home"));
         assert_eq!(shelves[1].parent.as_deref(), Some("home"));

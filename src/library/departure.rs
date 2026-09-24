@@ -776,26 +776,6 @@ mod tests {
     use reader_core::format::Format;
     use std::collections::{BTreeMap, HashSet};
 
-    fn linked_at(id: &str, path: &str, n: u32) -> Row {
-        Row::Book(Book::new(
-            id.to_string(),
-            testkit::fp_n(n),
-            Format::Markdown,
-            Origin::Linked { src: path.to_string() },
-            0,
-        ))
-    }
-
-    fn stored_at(id: &str, src: &str, store: &str, n: u32) -> Row {
-        Row::Book(Book::new(
-            id.to_string(),
-            testkit::fp_n(n),
-            Format::Markdown,
-            Origin::Stored { src: Some(src.to_string()), store: store.to_string() },
-            0,
-        ))
-    }
-
     fn nested(n: u32) -> WatchedFolder {
         WatchedFolder {
             placed: HashSet::from([testkit::fp_n(n)]),
@@ -805,20 +785,6 @@ mod tests {
                 ("Fiction/SciFi".to_string(), "shelf3".to_string()),
             ]),
             ..testkit::watched_folder("f1", "/books")
-        }
-    }
-
-    fn folder_shelf_at(id: &str, folder_id: &str, rel: &str) -> Shelf {
-        Shelf {
-            id: id.to_string(),
-            name: id.to_string(),
-            kind: library_core::shelf::ShelfKind::Folder {
-                folder_id: folder_id.to_string(),
-                rel: Some(rel.to_string()),
-            },
-            books: Vec::new(),
-            parent: None,
-            manual_parent: false,
         }
     }
 
@@ -846,7 +812,7 @@ mod tests {
     #[test]
     fn a_drag_to_another_rung_of_the_same_folder_is_a_departure() {
         let folders = vec![nested(7)];
-        let rows = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         // Reading the tie as the folder's shelf tree instead — "any shelf
         // this folder owns" — left the row linked at an address it had been
         // dragged off.
@@ -858,7 +824,7 @@ mod tests {
     #[test]
     fn a_reorder_on_the_book_s_own_rung_copies_nothing() {
         let folders = vec![nested(7)];
-        let rows = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         // Re-ordering the books a folder placed, on the rung it placed them
         // on, is the folder's own business.
         assert!(!converts_on_move(&rows, &folders, "b1", "shelf3"));
@@ -867,7 +833,7 @@ mod tests {
     #[test]
     fn the_root_and_the_reader_s_own_shelves_are_nobody_s_ground() {
         let folders = vec![nested(7)];
-        let rows = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         assert!(converts_on_move(&rows, &folders, "b1", ALL_SHELF));
         assert!(converts_on_move(&rows, &folders, "b1", "mine"));
     }
@@ -877,7 +843,7 @@ mod tests {
         let mut folder = nested(7);
         folder.shelf_map.remove("Fiction/SciFi");
         let folders = vec![folder];
-        let rows = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
         assert!(converts_on_move(&rows, &folders, "b1", "shelf3"));
     }
@@ -888,7 +854,7 @@ mod tests {
         folder.opts.groups = false;
         folder.shelf_map = BTreeMap::from([(String::new(), "flat".to_string())]);
         let folders = vec![folder];
-        let rows = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         assert!(!converts_on_move(&rows, &folders, "b1", "flat"));
         assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
     }
@@ -900,9 +866,9 @@ mod tests {
         copying.opts.in_place = false;
         let folders = vec![nested(7), copying];
         let rows = vec![
-            linked_at("b1", "/books/Fiction/SciFi/dune.md", 7),
-            stored_at("b2", "/books/Fiction/SciFi/dune.md", "/store/b2.md", 9),
-            linked_at("b3", "/elsewhere/loose.md", 11),
+            testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7),
+            testkit::stored_row("b2", "/books/Fiction/SciFi/dune.md", "/store/b2.md", 9),
+            testkit::row_at_n("b3", "/elsewhere/loose.md", 11),
         ];
 
         assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
@@ -914,7 +880,7 @@ mod tests {
     #[test]
     fn the_ask_names_the_ground_and_the_cost() {
         let folders = vec![nested(7)];
-        let rows = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         let ids = vec!["b1".to_string()];
         let converting = converting_rows(&rows, &folders, &ids, "mine");
         assert_eq!(converting, ids, "the screen keeps the gesture's own order");
@@ -935,9 +901,9 @@ mod tests {
 
     #[test]
     fn a_departure_writes_its_moved_log_on_the_placing_folder() {
-        let rows = [linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let rows = [testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         let book = rows[0].book().expect("the row is a book");
-        let mut held = folder_shelf_at("shelf3", "f1", "Fiction/SciFi");
+        let mut held = testkit::folder_shelf("shelf3", "shelf3", "f1", Some("Fiction/SciFi"), &[], None);
         held.books = vec!["b1".to_string()];
         let shelves = vec![held];
         let mut folders = vec![nested(7)];
@@ -956,9 +922,9 @@ mod tests {
 
     #[test]
     fn a_return_binds_the_log_by_the_address_they_share() {
-        let mut rows = vec![stored_at("b1", "/books/Fiction/SciFi/dune.md", "/store/b1.md", 9)];
+        let mut rows = vec![testkit::stored_row("b1", "/books/Fiction/SciFi/dune.md", "/store/b1.md", 9)];
         find_book_mut(&mut rows, "b1").unwrap().title = Some("Dune".to_string());
-        let shelves = vec![folder_shelf_at("shelf2", "f1", "Fiction")];
+        let shelves = vec![testkit::folder_shelf("shelf2", "shelf2", "f1", Some("Fiction"), &[], None)];
         let mut folders = vec![folder_with_moved_log()];
 
         // The shape of a return: a stored row whose source is the log's own
@@ -979,38 +945,11 @@ mod tests {
         // actually comes home. That skip is the app's resume; the bind it
         // skips is the one above.
         let mut fresh = vec![folder_with_moved_log()];
-        let linked = vec![linked_at("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let linked = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
         assert!(
             !bind_returned(&linked, &shelves, &mut fresh, "b1", "shelf2"),
             "a linked row is nobody's return — only the library's own copies bind"
         );
-    }
-
-    fn own(id: &str, name: &str, parent: Option<&str>, books: &[&str]) -> Shelf {
-        Shelf {
-            id: id.to_string(),
-            name: name.to_string(),
-            kind: library_core::shelf::ShelfKind::Virtual,
-            books: books.iter().map(|b| b.to_string()).collect(),
-            parent: parent.map(str::to_string),
-            manual_parent: false,
-        }
-    }
-
-    fn rung(
-        id: &str,
-        folder_id: &str,
-        rel: Option<&str>,
-        parent: Option<&str>,
-        books: &[&str],
-    ) -> Shelf {
-        Shelf {
-            kind: library_core::shelf::ShelfKind::Folder {
-                folder_id: folder_id.to_string(),
-                rel: rel.map(str::to_string),
-            },
-            ..own(id, id, parent, books)
-        }
     }
 
     fn reading_folder() -> WatchedFolder {
@@ -1032,22 +971,22 @@ mod tests {
 
     fn tree() -> Vec<Shelf> {
         vec![
-            rung("r", "f1", None, None, &["top", "shown2"]),
-            rung("fic", "f1", Some("Fiction"), Some("r"), &["mid"]),
-            rung("sf", "f1", Some("Fiction/SciFi"), Some("fic"), &["deep", "shown2", "loose", "kept"]),
-            own("mine", "Mine", Some("fic"), &[]),
-            own("elsewhere", "Elsewhere", None, &[]),
+            testkit::folder_shelf("r", "r", "f1", None, &["top", "shown2"], None),
+            testkit::folder_shelf("fic", "fic", "f1", Some("Fiction"), &["mid"], Some("r")),
+            testkit::folder_shelf("sf", "sf", "f1", Some("Fiction/SciFi"), &["deep", "shown2", "loose", "kept"], Some("fic")),
+            testkit::shelf("mine", "Mine", &[], Some("fic")),
+            testkit::shelf("elsewhere", "Elsewhere", &[], None),
         ]
     }
 
     fn tree_rows() -> Vec<Row> {
         vec![
-            linked_at("top", "/books/top.md", 9),
-            linked_at("mid", "/books/Fiction/other.md", 8),
-            linked_at("deep", "/books/Fiction/SciFi/dune.md", 7),
-            linked_at("shown2", "/books/top2.md", 14),
-            linked_at("loose", "/loose/x.md", 12),
-            stored_at("kept", "/books/Fiction/SciFi/old.md", "/store/kept.md", 13),
+            testkit::row_at_n("top", "/books/top.md", 9),
+            testkit::row_at_n("mid", "/books/Fiction/other.md", 8),
+            testkit::row_at_n("deep", "/books/Fiction/SciFi/dune.md", 7),
+            testkit::row_at_n("shown2", "/books/top2.md", 14),
+            testkit::row_at_n("loose", "/loose/x.md", 12),
+            testkit::stored_row("kept", "/books/Fiction/SciFi/old.md", "/store/kept.md", 13),
         ]
     }
 
@@ -1061,14 +1000,14 @@ mod tests {
             ("1st/2nd".to_string(), "two".to_string()),
         ]);
         let shelves = vec![
-            rung("root", "f1", None, None, &["b0"]),
-            rung("one", "f1", Some("1st"), Some("root"), &[]),
-            rung("two", "f1", Some("1st/2nd"), Some("one"), &["b1", "b2"]),
+            testkit::folder_shelf("root", "root", "f1", None, &["b0"], None),
+            testkit::folder_shelf("one", "one", "f1", Some("1st"), &[], Some("root")),
+            testkit::folder_shelf("two", "two", "f1", Some("1st/2nd"), &["b1", "b2"], Some("one")),
         ];
         let books = vec![
-            linked_at("b0", "/books/notes.md", 8),
-            linked_at("b1", "/books/1st/2nd/a.md", 7),
-            linked_at("b2", "/books/1st/2nd/b.md", 9),
+            testkit::row_at_n("b0", "/books/notes.md", 8),
+            testkit::row_at_n("b1", "/books/1st/2nd/a.md", 7),
+            testkit::row_at_n("b2", "/books/1st/2nd/b.md", 9),
         ];
         (shelves, books, folder)
     }
@@ -1200,11 +1139,11 @@ mod tests {
         let mut tree = tree();
         tree[1].name = "Fiction".to_string();
         let mut shelves = vec![
-            own("to", "To", None, &[]),
-            own("held", "Fiction", Some("to"), &[]),
+            testkit::shelf("to", "To", &[], None),
+            testkit::shelf("held", "Fiction", &[], Some("to")),
         ];
         shelves.extend(tree);
-        let mut fic2 = rung("fic2", "f2", Some("Fiction"), None, &[]);
+        let mut fic2 = testkit::folder_shelf("fic2", "fic2", "f2", Some("Fiction"), &[], None);
         fic2.name = "Fiction".to_string();
         shelves.push(fic2);
         let rows = tree_rows();
@@ -1256,10 +1195,10 @@ mod tests {
         member.root = "/books/Fiction/SciFi".into();
         member.shelf_map = BTreeMap::from([(String::new(), "s3".to_string())]);
         let shelves = vec![
-            rung("r", "f1", None, None, &[]),
-            rung("fic", "f1", Some("Fiction"), Some("r"), &[]),
-            rung("s3", "f3", None, None, &["deep"]),
-            own("mine", "Mine", None, &[]),
+            testkit::folder_shelf("r", "r", "f1", None, &[], None),
+            testkit::folder_shelf("fic", "fic", "f1", Some("Fiction"), &[], Some("r")),
+            testkit::folder_shelf("s3", "s3", "f3", None, &["deep"], None),
+            testkit::shelf("mine", "Mine", &[], None),
         ];
         (shelves, vec![tree, member])
     }

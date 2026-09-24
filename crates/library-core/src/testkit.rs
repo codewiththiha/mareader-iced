@@ -79,6 +79,35 @@ pub fn row_at(id: &str, path: &str) -> Row {
     Row::Book(book_at(id, path))
 }
 
+/// A book row at `path`, measured `n`: the address matters to the test, so
+/// the fingerprint has to as well.
+pub fn row_at_n(id: &str, path: &str, n: u32) -> Row {
+    Row::Book(Book::new(
+        id.to_string(),
+        fp_n(n),
+        Format::Markdown,
+        Origin::Linked {
+            src: path.to_string(),
+        },
+        0,
+    ))
+}
+
+/// A stored book row: the library's own copy measured `n`, whose source sat
+/// at `src`.
+pub fn stored_row(id: &str, src: &str, store: &str, n: u32) -> Row {
+    Row::Book(Book::new(
+        id.to_string(),
+        fp_n(n),
+        Format::Markdown,
+        Origin::Stored {
+            src: Some(src.to_string()),
+            store: store.to_string(),
+        },
+        0,
+    ))
+}
+
 /// A pointer row: a link called `name` at `target`, made at `0`.
 pub fn link(id: &str, name: &str, target: &str) -> Row {
     Row::link(id.to_string(), name.to_string(), target.to_string(), 0)
