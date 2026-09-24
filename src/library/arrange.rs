@@ -6,13 +6,14 @@
 //! OS file a read-in-place book points at is never renamed, moved or
 //! deleted from here.
 //!
-//! The departure's copy question and the moved-out log a return binds live
-//! in [`super::departure`], and the app's own callers wrap these edits with
-//! them; the conflict sheet's name screen arrives with the system that owns
-//! it. Until then a screened move is the membership edit alone, which is
-//! also all a reorder ever was.
+//! The gates the app's callers wrap these edits with live beside them: the
+//! departure's copy question and the moved-out log a return binds in
+//! [`super::departure`], the level's name screen and its queue in
+//! [`super::conflicts`]. A screened move is the membership edit alone,
+//! which is also all a reorder ever was.
 
-use library_core::book::Row;
+use library_core::book::{self as book_ops, Row};
+use library_core::folder::{self as folder_ops, WatchedFolder};
 use library_core::shelf::{self, Shelf, ALL_SHELF};
 
 /// Membership only, so the same rule covers a bulk filing and a drag's
@@ -218,6 +219,58 @@ pub fn insert_many<T>(
     }
 }
 
+/// A shelf coming off the list, whole: the children re-hang on its parent,
+/// the folder's own rungs re-hang the way its next scan would hang them — a
+/// rung whose level is gone takes the nearest one still standing — the
+/// folder lets the rung go in its map, and the books standing on the level
+/// come up exactly one level too, onto the nearest rung the folder's tree
+/// still stands on: a shelf a level was taken out from under is a shelf the
+/// folder's next scan cannot see, and the reader never put its books on the
+/// library's own top level. Returns the level the shelf hung from, for the
+/// reader standing on it to step out to.
+pub fn dismantle(
+    shelves: &mut Vec<Shelf>,
+    folders: &mut [WatchedFolder],
+    rows: &mut Vec<Row>,
+    shelf_id: &str,
+) -> Option<String> {
+    // One read of the shelf that is going answers every fact about it: the
+    // level to step out to, which watched folder filed onto it, the rung it
+    // stood on, and the books that come up with it.
+    let gone = shelf::find(shelves, shelf_id)?;
+    let stepped_out = gone.parent.clone().unwrap_or_else(|| ALL_SHELF.to_string());
+    let detached = gone.kind.folder_id().map(str::to_string);
+    let rung = gone.is_folder().then(|| gone.kind.rung().to_string());
+    let stood_on = gone.books.clone();
+    shelf::lift_children(shelves, shelf_id);
+    shelves.retain(|one| one.id != shelf_id);
+    if let Some(folder_id) = &detached {
+        for (id, want) in shelf::rehang_moves(shelves, folder_id) {
+            if let Some(moved) = shelf::find_mut(shelves, &id) {
+                moved.parent = want;
+            }
+        }
+        if let Some(folder) = folder_ops::find_mut(folders, folder_id) {
+            folder.shelf_map.retain(|_, sid| sid != shelf_id);
+        }
+    }
+    // Read after the removal, so the rung that went cannot answer for
+    // itself.
+    let home = match (&detached, &rung) {
+        (Some(folder_id), Some(rung)) => shelf::rung_above(shelves, folder_id, rung),
+        _ => None,
+    };
+    if let Some(home) = &home {
+        for id in &stood_on {
+            if let Some(seat) = shelf::find_mut(shelves, home) {
+                shelf::shelf_add(seat, id);
+            }
+        }
+    }
+    book_ops::drop_dead_shelf_links(rows, shelves);
+    Some(stepped_out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +297,118 @@ mod tests {
             Shelf::virtual_shelf(id.to_string(), name.to_string(), parent.map(str::to_string));
         shelf.books = owned(books);
         shelf
+    }
+
+    fn rung(
+        id: &str,
+        folder_id: &str,
+        rel: Option<&str>,
+        parent: Option<&str>,
+        books: &[&str],
+    ) -> Shelf {
+        let mut shelf = own(id, id, parent, books);
+        shelf.kind = library_core::shelf::ShelfKind::Folder {
+            folder_id: folder_id.to_string(),
+            rel: rel.map(str::to_string),
+        };
+        shelf
+    }
+
+    fn linked_row_at(id: &str, path: &str, n: u32) -> Row {
+        Row::Book(library_core::book::Book::new(
+            id.to_string(),
+            library_core::testkit::fp_n(n),
+            reader_core::format::Format::Markdown,
+            library_core::book::Origin::Linked { src: path.to_string() },
+            0,
+        ))
+    }
+
+    /// `home/root/1st/2nd`: a read-at-place tree with a rung per folder, its
+    /// books on the lowest one.
+    fn deep_tree() -> (Vec<Shelf>, Vec<Row>, WatchedFolder) {
+        let folder = WatchedFolder {
+            placed: std::collections::HashSet::from([
+                library_core::testkit::fp_n(7),
+                library_core::testkit::fp_n(8),
+                library_core::testkit::fp_n(9),
+            ]),
+            shelf_map: std::collections::BTreeMap::from([
+                (String::new(), "root".to_string()),
+                ("1st".to_string(), "one".to_string()),
+                ("1st/2nd".to_string(), "two".to_string()),
+            ]),
+            ..library_core::testkit::watched_folder("f1", "/books")
+        };
+        let shelves = vec![
+            rung("root", "f1", None, None, &["b0"]),
+            rung("one", "f1", Some("1st"), Some("root"), &[]),
+            rung("two", "f1", Some("1st/2nd"), Some("one"), &["b1", "b2"]),
+        ];
+        let books = vec![
+            linked_row_at("b0", "/books/notes.md", 8),
+            linked_row_at("b1", "/books/1st/2nd/a.md", 7),
+            linked_row_at("b2", "/books/1st/2nd/b.md", 9),
+        ];
+        (shelves, books, folder)
+    }
+
+    #[test]
+    fn taking_a_rung_apart_brings_its_books_up_one_level_inside_the_tree() {
+        let (mut shelves, mut rows, folder) = deep_tree();
+        let mut folders = vec![folder];
+        let stepped = dismantle(&mut shelves, &mut folders, &mut rows, "two").expect("the rung");
+        assert_eq!(stepped, "one", "a reader standing on it steps out to the level it hung from");
+        assert!(shelves.iter().all(|s| s.id != "two"), "one level, and only that one");
+        let one = shelves.iter().find(|s| s.id == "one").expect("the level above it stands");
+        assert_eq!(
+            one.books,
+            vec!["b1".to_string(), "b2".to_string()],
+            "the books come up exactly one level"
+        );
+        assert_eq!(
+            folders[0].shelf_map.get("1st/2nd"),
+            None,
+            "and the folder's map lets the rung go"
+        );
+    }
+
+    #[test]
+    fn the_level_below_a_hole_still_hangs_inside_the_tree() {
+        let (mut shelves, mut rows, folder) = deep_tree();
+        let mut folders = vec![folder];
+        assert_eq!(dismantle(&mut shelves, &mut folders, &mut rows, "one"), Some("root".to_string()));
+        assert_eq!(dismantle(&mut shelves, &mut folders, &mut rows, "two"), Some("root".to_string()));
+        let root = shelves.iter().find(|s| s.id == "root").expect("the tree's own rung");
+        assert_eq!(
+            root.books,
+            vec!["b0".to_string(), "b1".to_string(), "b2".to_string()],
+            "the repro: `2nd` comes up to `1st`, and once `1st` is a hole, to the root"
+        );
+        assert_eq!(
+            shelves.iter().filter(|s| s.is_folder()).count(),
+            1,
+            "one level left, and no shelf standing beside the tree"
+        );
+    }
+
+    #[test]
+    fn the_root_rung_has_nothing_above_it_to_come_up_to() {
+        let (mut shelves, mut rows, folder) = deep_tree();
+        let mut folders = vec![folder];
+        let stepped = dismantle(&mut shelves, &mut folders, &mut rows, "root").expect("the root");
+        assert_eq!(stepped, ALL_SHELF, "the root hangs from the library's own level");
+        // The tree's own root going leaves no rung of the folder's above its
+        // books: they stay in the library at the top level, and the levels
+        // below keep the shape the tree gave them.
+        assert!(rows.iter().any(|r| r.id() == "b0"), "no book goes with the shelf");
+        assert!(
+            shelves.iter().all(|s| !s.books.contains(&"b0".to_string())),
+            "and no shelf seats it: the library's own floor does"
+        );
+        let one = shelves.iter().find(|s| s.id == "one").expect("the rung below stands");
+        assert_eq!(one.parent, None, "and it hangs from the top now");
+        assert!(shelves.iter().any(|s| s.id == "two"));
     }
 
     #[test]

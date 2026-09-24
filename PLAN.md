@@ -425,6 +425,57 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   and nothing else. Returns bind by address: a stored row landing where its source
   file stood spends the folder's moved-out log, and a departure's own landing
   never binds the log it just wrote. The covers a departure prunes wait on the
-  engines, documented where the web does them. Next: the conflict sheet's name
-  screen around the same moves, then the shelf's, the rung's and the removal's own
-  copy doors, and the already-imported note.
+  engines, documented where the web does them. The level's name screen now rides
+  the same moves: one pure module (`library/conflicts.rs`, the wiring around the
+  core's own collision rule) screens every hand-move, filing and lift-out — what
+  collides waits on the sheet, what does not lands now — and a queue holds the
+  questions a busy sheet cannot take yet. The sheet asks which of three things
+  the reader meant, in the web's own sentences: merge folds the arrival into the
+  row that is there and inherits its shelves but the level it left; replace
+  purges the displaced row through the removal's own sweep and seats the arrival
+  in its slot on every shelf it held — a read-at-place arrival riding its own
+  copy run first; "as new" mints the next free name, renames and moves; and
+  where neither side is the reader's to destroy — a dragged read-at-place book
+  meeting the library's own copy of its file — the sheet offers a link in place
+  of replace, dissolves the dragged row and writes the folder's moved-out log
+  bound to the survivor. The import's own questions (a merged folder's per-file
+  ask, a covered file, the folder-name collision, the already-imported note) and
+  the reveal's scroll-and-flash wait on their systems, documented where they
+  would land. The rung's and the removal's copy doors have arrived on the same
+  sheet: taking a shelf apart now asks first whenever the level reads books in
+  place — the question names the cost, the ground, and the way up (the nearest
+  rung of the folder still standing, or the library's top level) — and "Copy and
+  take apart" rides a store batch of its own, with the level coming apart only
+  once every book it owed is safe; a book the store refused leaves the shelf
+  standing so the reader can ask again. Removing shelves screens the same way:
+  a shelf off the list that reads books in place buys their copies first, and
+  the sheet's second answer — let the folder make the level again on its next
+  import — removes without them; the removal itself runs whatever the copies
+  did, deepest shelf first, because a shelf dissolved first is a shelf no
+  sweep reaches. Underneath both, the take-apart is one pure primitive
+  (`arrange::dismantle`, the web's `delete_shelf` with its own tests): the
+  children re-hang on the parent, the folder's own rungs re-hang the way its
+  next scan would hang them — a rung whose level is gone takes the nearest one
+  still standing — the folder lets the rung go in its map, the books standing
+  on the level come up exactly one level onto the nearest rung the tree still
+  stands on, and the dead shelf links drop. The simplified dismantle this
+  replaces left the folder's rungs hanging beside their tree and stranded the
+  level's books; the menus' take-apart now rides the same primitive and the
+  same door. The shelf's own move door has arrived on the same sheet: a drag
+  onto a level, a bulk filing and a sibling seam all ride one screen — the
+  core's own departing rule says which movers leave a read-at-place seat — and
+  the question counts the books of every departing shelf in one row, promises
+  each copy the level's next free name so the folder's own name stays free for
+  the original, and offers a way home instead of a copy for a drop inside the
+  mover's own family: an off-seat rung reseats under the shelf its directory
+  names, and a displaced folder's root shelf folds back into the family tree —
+  hung on the rung its directory names, its own rungs become the tree's, its
+  ledger retires into the tree's, and a tree a walk holds is the one fold
+  refused. The bought landing converts the departing rungs before any shelf
+  write, marks the tree that rode along as hand-placed, lets the folder's map
+  go of the departed zone, names the copies as promised, and seats what landed
+  through the very gesture the screen wrapped; a shelf whose books the store
+  refused entire stays where it was, with its own sentence. Next: the
+  import-side collision sheets (a merged folder's per-file ask, a covered
+  file, the folder-name collision, the already-imported note) and the reveal's
+  own light.

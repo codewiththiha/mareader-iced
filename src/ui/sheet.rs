@@ -19,6 +19,10 @@ pub const SHEET_W: f32 = 380.0;
 /// needs the room the question sheets do not.
 pub const IMPORT_W: f32 = 460.0;
 
+/// The question sheet's width: its answer rows carry a sentence of note
+/// each, so it is a little wider than the yes-or-no panel.
+pub const CONFLICT_W: f32 = 420.0;
+
 const MEDIUM: Font = Font { weight: iced::font::Weight::Medium, ..Font::DEFAULT };
 
 /// A sheet over its scrim: the scrim cancels, the panel floats centred.
@@ -57,9 +61,32 @@ pub fn panel_sized<'a, M: Clone + 'a>(
     body: Element<'a, M>,
     actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
+    panel_of(tokens, width, text(title).size(15).font(MEDIUM).color(tokens.ink).into(), body, actions)
+}
+
+/// The panel with an owned title: the question sheets build their heading
+/// off the library at render time, and an owned string outlives the
+/// snapshot it was read from.
+pub fn panel_owned<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    width: f32,
+    title: String,
+    body: Element<'a, M>,
+    actions: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    panel_of(tokens, width, text(title).size(15).font(MEDIUM).color(tokens.ink).into(), body, actions)
+}
+
+fn panel_of<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    width: f32,
+    title: Element<'a, M>,
+    body: Element<'a, M>,
+    actions: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
     container(
         Column::new()
-            .push(text(title).size(15).font(MEDIUM).color(tokens.ink))
+            .push(title)
             .push(body)
             .push(
                 container(Row::with_children(actions).spacing(8).align_y(Alignment::Center))
@@ -82,6 +109,75 @@ pub fn panel_sized<'a, M: Clone + 'a>(
         ..container::Style::default()
     })
     .into()
+}
+
+/// One answer on a question sheet: its name, and the line under it that
+/// says what choosing it does. Not the small action buttons — a merge, a
+/// replace and an "as new" are consequences the reader has to be able to
+/// read before the click, so the note wraps and the row is the width of the
+/// sheet.
+pub fn choice_row<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    label: &'a str,
+    note: String,
+    message: M,
+) -> Element<'a, M> {
+    button(
+        Column::new()
+            .push(text(label).size(13).color(tokens.ink))
+            .push(text(note).size(11).color(tokens.muted))
+            .spacing(2)
+            .align_x(Alignment::Start)
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .padding(Padding { top: 10.0, right: 14.0, bottom: 10.0, left: 14.0 })
+    .style(move |_, status| {
+        let background = match status {
+            button::Status::Hovered | button::Status::Pressed => wash(tokens.ink, 0.06),
+            _ => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 0.0.into() },
+            text_color: tokens.ink,
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    })
+    .on_press(message)
+    .into()
+}
+
+/// The answer rows in one bordered group with hairlines between them: the
+/// web sheet's divided list, natively — iced's border is one edge-set per
+/// container, so a divider is a hairline of its own rather than a row's
+/// bottom edge.
+pub fn choice_group<'a, M: Clone + 'a>(
+    tokens: Tokens,
+    choices: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut column = Column::new();
+    for (i, choice) in choices.into_iter().enumerate() {
+        if i > 0 {
+            column = column.push(
+                container(Space::new().width(Length::Fill).height(1))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(tokens.line)),
+                        ..container::Style::default()
+                    }),
+            );
+        }
+        column = column.push(choice);
+    }
+    container(column.width(Length::Fill))
+        .width(Length::Fill)
+        .clip(true)
+        .style(move |_| container::Style {
+            border: Border { color: tokens.line, width: 1.0, radius: 12.0.into() },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// The sheet's cancel button: quiet, outlined.

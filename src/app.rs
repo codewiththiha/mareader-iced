@@ -26,6 +26,7 @@ use iced::{
 
 use library_core::blob::LibraryBlob;
 use library_core::book::{self, Book, Fingerprint, Origin};
+use library_core::conflict::Placement;
 use library_core::folder::{
     self as folder_ops, rel_under, FolderMode, FolderOpts, Tombstone, WatchedFolder,
     MIN_SIZE_CEIL, MIN_SIZE_FLOOR,
@@ -52,7 +53,10 @@ use crate::library::drag::{
     drop_effect, fold_items, fold_preview, Band, DragPayload, DropEffect, DropQuery,
     DropTargetKind, FoldPreview,
 };
-use crate::library::departure::{self, CopyAnswer, CopyAsk, CopyWork, RowMove};
+use crate::library::conflicts::{self, ConflictAsk};
+use crate::library::departure::{
+    self, CopyAnswer, CopyAsk, CopyWork, ReturnPath, RowMove, ShelfDeparture, ShelfSeam,
+};
 use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
 use crate::platform::{dialogs, fs, progress, store};
@@ -241,6 +245,9 @@ enum Sheet {
     /// A move about to store copies: the departure's question, carrying the
     /// gesture it interrupted.
     Copy { ask: CopyAsk },
+    /// A level that already holds the arriving name: the question, and the
+    /// arrival the answer places.
+    Conflict { ask: ConflictAsk },
 }
 
 /// Which question a folder run answers; a boolean at the signature could
@@ -343,12 +350,30 @@ enum DupWork {
     Tree(TreePlan),
 }
 
-/// A departure run's landing: the gesture's whole id list, the rows the
-/// copies were asked for, and the hand that resumes when they come home.
+/// A departure run's landing: the rows the copies were asked for, and the
+/// gesture that finishes when they come home.
 struct DepartWork {
-    ids: Vec<String>,
     converting: Vec<String>,
-    hand: RowMove,
+    landing: DepartLand,
+}
+
+/// The gesture a copy run finishes: a move resumes with what landed, a rung
+/// comes apart once its books are safe, and a removal runs whatever the
+/// copies did.
+enum DepartLand {
+    /// A hand-move: the gesture's whole id list and the hand that resumes.
+    Move { ids: Vec<String>, hand: RowMove },
+    /// The shelf move's landing: the departures read at the answer, the
+    /// level they were going to, and the seam a sibling drop named.
+    ShelfMove {
+        deps: Vec<ShelfDeparture>,
+        level: Option<String>,
+        seam: Option<ShelfSeam>,
+    },
+    /// The rung the take-apart question named.
+    Rung { id: String },
+    /// The removal sheet's own gesture.
+    Removal { purge: Vec<String>, shelves: Vec<String> },
 }
 
 /// The folder walk's answer, planned against the ledger and waiting for its
@@ -480,6 +505,10 @@ pub struct Mareader {
     context: Option<ContextRequest>,
     /// The modal question in flight, if any.
     sheet: Option<Sheet>,
+    /// The name questions waiting behind the sheet's current one: two drops
+    /// in flight owe two answers, and an answered sheet stays up while the
+    /// queue lasts.
+    conflict_waiting: Vec<ConflictAsk>,
     /// The import sheet's options. They outlive the sheet: a second folder
     /// is usually imported the same way as the first.
     import_opts: FolderOpts,
@@ -621,6 +650,9 @@ pub enum Message {
     /// The copy sheet's own answer: buy the copies and finish the gesture,
     /// finish it without them, or leave everything as it is.
     AnswerCopy(CopyAnswer),
+    /// The name question's own answer: which of the offered placements the
+    /// reader meant.
+    AnswerPlacement(Placement),
     /// A cell was tapped. One message for every cell: the app decides what
     /// a tap means — a membership while choosing, an open otherwise.
     CardTap(String),
@@ -739,6 +771,7 @@ impl Mareader {
             rename_draft: String::new(),
             context: None,
             sheet: None,
+            conflict_waiting: Vec::new(),
             import_opts: FolderOpts::default(),
             settings,
             toasts: ToastHost::default(),
@@ -861,7 +894,8 @@ impl Mareader {
                     return Task::none();
                 }
                 if self.sheet.is_some() {
-                    self.sheet = None;
+                    self.dismiss_sheet();
+                    self.advance_conflict();
                     return Task::none();
                 }
                 if self.context.is_some() {
@@ -978,7 +1012,8 @@ impl Mareader {
             Message::NewShelfInside(parent_id) => self.create_shelf_in(Some(parent_id)),
             Message::TakeApart(id) => {
                 self.context = None;
-                self.remove_shelf_with(&id)
+                self.menu = None;
+                self.ask_shelf_apart(&id)
             }
             Message::SheetDraft(text) => {
                 if let Some(Sheet::Rename { draft, .. }) = &mut self.sheet {
@@ -987,7 +1022,8 @@ impl Mareader {
                 Task::none()
             }
             Message::SheetCancel => {
-                self.sheet = None;
+                self.dismiss_sheet();
+                self.advance_conflict();
                 Task::none()
             }
             Message::AnswerCopy(answer) => {
@@ -995,14 +1031,56 @@ impl Mareader {
                     return Task::none();
                 };
                 match answer {
-                    // Nothing moves and nothing copies. The rows' door has no
-                    // without-copies answer of its own — the gesture simply
-                    // stays where the folder's tree put it; the shelf's and
-                    // the removal's doors arrive with the systems that own
-                    // them.
-                    CopyAnswer::Cancel | CopyAnswer::WithoutCopies => Task::none(),
+                    // Nothing moves and nothing copies. A queue behind the
+                    // copy sheet shows now.
+                    CopyAnswer::Cancel => {
+                        self.advance_conflict();
+                        Task::none()
+                    }
+                    // The answer with no copies in it: a shelf with a way
+                    // home takes it — the fold or the reseat its folder
+                    // names — a removal runs as it always did, because the
+                    // sheet's second button promised the folder would make
+                    // its level again, and the rows' and the rung's doors
+                    // have nothing to do without their copies: the gesture
+                    // stays where the folder's tree put it.
+                    CopyAnswer::WithoutCopies => {
+                        let task = match ask.work {
+                            CopyWork::Shelf { returns, .. } => {
+                                if self.take_them_home(&returns) {
+                                    self.persist_library()
+                                } else {
+                                    Task::none()
+                                }
+                            }
+                            CopyWork::Removal { purge, shelves } => {
+                                if self.remove(purge, shelves) {
+                                    self.persist_library()
+                                } else {
+                                    Task::none()
+                                }
+                            }
+                            CopyWork::Rows { .. } | CopyWork::Rung { .. } => Task::none(),
+                        };
+                        self.advance_conflict();
+                        task
+                    }
                     CopyAnswer::Copy => self.copy_and_finish(ask),
                 }
+            }
+            Message::AnswerPlacement(choice) => {
+                let Some(Sheet::Conflict { ask }) = self.sheet.take() else {
+                    return Task::none();
+                };
+                // A move whose arrival names no row has nothing to write:
+                // the row went while the sheet was up.
+                if ask.arrival.moving.is_none() && !ask.arrival.is_import() {
+                    self.advance_conflict();
+                    return Task::none();
+                }
+                let task = self.apply_placement(&ask, choice);
+                self.advance_conflict();
+                task
             }
             Message::SheetSave => self.save_sheet(),
             Message::SheetImportFormat(format) => {
@@ -1463,21 +1541,23 @@ impl Mareader {
         self.persist_library()
     }
 
-    /// A shelf taken apart, receipt aside: the children re-hang on its
-    /// parent, it goes, and a reader standing anywhere inside it steps out
-    /// to the level it hung from. True when the id named a shelf.
+    /// A shelf taken apart, receipt and navigation aside: the primitive is
+    /// the tree's whole business — the children re-hang on its parent, the
+    /// folder's own rungs re-hang the way its next scan would hang them, the
+    /// folder lets the rung go in its map, and the books come up exactly one
+    /// level — and a reader standing ON the level steps out to the level it
+    /// hung from. True when the id named a shelf.
     fn dismantle_shelf(&mut self, id: &str) -> bool {
-        let Some(gone) = shelf::find(&self.library.shelves, id) else {
+        let was_inside = self.shelf == id;
+        let Some(step_out) = library::arrange::dismantle(
+            &mut self.library.shelves,
+            &mut self.library.folders,
+            &mut self.library.books,
+            id,
+        ) else {
             return false;
         };
-        let step_out = gone.parent.clone().unwrap_or_else(|| ALL_SHELF.to_string());
-        let gone_id = gone.id.clone();
-        let standing_within =
-            shelf::subtree_ids(&self.library.shelves, std::slice::from_ref(&gone_id))
-                .contains(&self.shelf);
-        shelf::lift_children(&mut self.library.shelves, &gone_id);
-        self.library.shelves.retain(|shelf| shelf.id != gone_id);
-        if standing_within {
+        if was_inside {
             self.shelf = step_out;
         }
         true
@@ -1835,16 +1915,11 @@ impl Mareader {
                 // folders get no position: a level renders its folders
                 // before its books.
                 let (to, index) = self.insert_anchor(&book_id, shelf.as_deref(), after);
-                moved |= self.gated_seat(&payload.books, from.clone(), to.clone(), index);
-                moved |= land_folders(&mut self.library.shelves, &payload.folders, &to);
+                moved |= self.gated_seat(&payload.books, from.clone(), to.clone(), index, &[]);
+                moved |= self.land_folders(&payload.folders, &to);
             }
             DropEffect::ShelfSibling { anchor_id, after } => {
-                moved |= library::arrange::reorder_shelves_to_anchor(
-                    &mut self.library.shelves,
-                    &payload.folders,
-                    &anchor_id,
-                    after,
-                );
+                moved |= self.reorder_shelves(&payload.folders, &anchor_id, after);
             }
             DropEffect::FileToShelf { shelf_id } if shelf_id.is_empty() => {
                 match from.as_deref() {
@@ -1862,15 +1937,15 @@ impl Mareader {
                         );
                     }
                 }
-                moved |= land_folders(&mut self.library.shelves, &payload.folders, ALL_SHELF);
+                moved |= self.land_folders(&payload.folders, ALL_SHELF);
             }
             DropEffect::FileToShelf { shelf_id } => {
-                moved |= self.gated_seat(&payload.books, from.clone(), shelf_id.clone(), None);
-                moved |= land_folders(&mut self.library.shelves, &payload.folders, &shelf_id);
+                moved |= self.gated_seat(&payload.books, from.clone(), shelf_id.clone(), None, &[]);
+                moved |= self.land_folders(&payload.folders, &shelf_id);
             }
             DropEffect::NestInto { folder_id } => {
-                moved |= self.gated_seat(&payload.books, from.clone(), folder_id.clone(), None);
-                moved |= land_folders(&mut self.library.shelves, &payload.folders, &folder_id);
+                moved |= self.gated_seat(&payload.books, from.clone(), folder_id.clone(), None, &[]);
+                moved |= self.land_folders(&payload.folders, &folder_id);
             }
             DropEffect::CreateFolder { with_book_id } => {
                 // The fold lands on the level the drag was standing on —
@@ -1882,8 +1957,8 @@ impl Mareader {
                 if !books.contains(&with_book_id) {
                     books.push(with_book_id);
                 }
-                moved |= self.gated_seat(&books, from.clone(), shelf_id.clone(), None);
-                moved |= land_folders(&mut self.library.shelves, &payload.folders, &shelf_id);
+                moved |= self.gated_seat(&books, from.clone(), shelf_id.clone(), None, &[]);
+                moved |= self.land_folders(&payload.folders, &shelf_id);
             }
         }
         moved
@@ -1972,20 +2047,13 @@ impl Mareader {
             Some(id) => id,
             None => self.mint_shelf(None),
         };
-        let mut moved = library::arrange::file_many(&mut self.library.shelves, &book_ids, &target);
-        moved |= library::arrange::nest_many(&mut self.library.shelves, &folder_ids, &target);
-        // A second membership is an arrival like any other: a stored book
-        // landing on a folder's shelf can be the file's return, and the bind
-        // is a write the persist has to cover.
-        for id in &book_ids {
-            moved |= departure::bind_returned(
-                &self.library.books,
-                &self.library.shelves,
-                &mut self.library.folders,
-                id,
-                &target,
-            );
-        }
+        // Books go through the filing's own gate — the level's name screen
+        // and the return's bind — and folders, whose names no level
+        // collides with, ride the shelf move's own screen: a rung dropped
+        // off the seat its tree names asks before it goes.
+        let mut moved = self.gated_file(&book_ids, &target);
+        let clean = self.screened_shelf_moves(&folder_ids, Some(&target), None);
+        moved |= library::arrange::nest_many(&mut self.library.shelves, &clean, &target);
         self.exit_selection();
         if moved {
             return self.persist_library();
@@ -2044,11 +2112,17 @@ impl Mareader {
                 self.persist_library()
             }
             Sheet::Remove { id, .. } => self.remove_row(&id),
-            Sheet::RemoveMany { books, shelves } => self.remove_many(books, shelves),
+            Sheet::RemoveMany { books, shelves } => self.remove_entries(books, shelves),
             // The copy sheet's buttons carry their own answers; its
             // affirmative one — the sheet's "Save", an Enter on the panel —
             // is the ask's primary: buy the copies and finish the gesture.
             Sheet::Copy { ask } => self.copy_and_finish(ask),
+            // The name question has no default yes: its answers are the
+            // placements, and its one close skips the queue with it.
+            Sheet::Conflict { .. } => {
+                self.conflict_waiting.clear();
+                Task::none()
+            }
             Sheet::Import { root, ground } => {
                 let opts = self.import_opts.clone();
                 let root_str = root.to_string_lossy().into_owned();
@@ -2099,15 +2173,48 @@ impl Mareader {
         self.persist_library()
     }
 
-    /// The set's removal, answered: every book leaves the library the way
-    /// one does — the ledger's tombstone, the swept copy, the memberships,
-    /// the links — and every shelf comes apart the way one does. One
-    /// receipt and one persist: a bulk act is one act, not n of them.
-    fn remove_many(&mut self, books: Vec<String>, shelves: Vec<String>) -> Task<Message> {
-        let removed_books = books.iter().filter(|id| self.purge_row(id)).count();
-        let removed_shelves = shelves.iter().filter(|id| self.dismantle_shelf(id)).count();
+    /// The removal sheet's own door: a shelf coming off the list that reads
+    /// books in place buys their copies first, and a removal with nothing to
+    /// copy runs at once.
+    fn remove_entries(&mut self, purge: Vec<String>, shelves: Vec<String>) -> Task<Message> {
+        let ask = departure::ask_of_removal(
+            &self.library.books,
+            &self.library.shelves,
+            &self.library.folders,
+            &purge,
+            &shelves,
+        );
+        match ask {
+            Some(ask) => {
+                self.sheet = Some(Sheet::Copy { ask });
+                Task::none()
+            }
+            None => {
+                if self.remove(purge, shelves) {
+                    self.persist_library()
+                } else {
+                    Task::none()
+                }
+            }
+        }
+    }
+
+    /// The removal, whole: the books go out of the library the way one does —
+    /// the ledger's tombstone, the swept copy, the memberships, the links —
+    /// and the shelves come off the list deepest first, because a shelf
+    /// dissolved first is a shelf no sweep reaches. One receipt; the persist
+    /// is the caller's, so a removal that rides a copy run is one write with
+    /// it.
+    fn remove(&mut self, purge: Vec<String>, shelves: Vec<String>) -> bool {
+        let removed_books = purge.iter().filter(|id| self.purge_row(id)).count();
+        let mut going: Vec<(usize, String)> = shelves
+            .into_iter()
+            .map(|id| (shelf::ancestors(&self.library.shelves, &id).len(), id))
+            .collect();
+        going.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+        let removed_shelves = going.into_iter().filter(|(_, id)| self.dismantle_shelf(id)).count();
         if removed_books == 0 && removed_shelves == 0 {
-            return Task::none();
+            return false;
         }
         let mut parts: Vec<String> = Vec::new();
         if removed_books > 0 {
@@ -2118,7 +2225,26 @@ impl Mareader {
         }
         let line = format!("Removed {} from the library", parts.join(" and "));
         self.toasts.show(Tone::Info, line, Instant::now());
-        self.persist_library()
+        true
+    }
+
+    /// What the menus call: a rung holding books read in place asks first,
+    /// and every other shelf comes apart at once, because nothing about it
+    /// is a question.
+    fn ask_shelf_apart(&mut self, id: &str) -> Task<Message> {
+        let ask = departure::ask_of_rung(
+            &self.library.books,
+            &self.library.shelves,
+            &self.library.folders,
+            id,
+        );
+        match ask {
+            Some(ask) => {
+                self.sheet = Some(Sheet::Copy { ask });
+                Task::none()
+            }
+            None => self.remove_shelf_with(id),
+        }
     }
 
     /// A row leaving the library, receipt aside: the tombstone the ledger
@@ -2132,7 +2258,7 @@ impl Mareader {
         if let Some(book) = &doomed {
             // Read the world before writing any of it: the tombstone needs
             // the folder that placed this book and the shelf it was filed
-            // on, and the sweep needs to know no twin still reads the byte.
+            // on.
             let placed_by = self
                 .library
                 .folders
@@ -2144,19 +2270,11 @@ impl Mareader {
                 .and_then(|folder_id| folder_shelf_of(&self.library.shelves, folder_id, &book.id));
             let entry = Tombstone::of(book, home, now_ms());
             ledger::tombstone(&mut self.library.folders, &entry);
-            let twin_reads = book::book_rows(&self.library.books)
-                .any(|each| each.id != book.id && each.path() == book.path());
-            if book.origin.is_stored() && !twin_reads
-                && let Err(error) = store::delete_stored(book.path())
-            {
-                // The row is gone either way; a byte the host will not
-                // release is the log's business, not a second question.
-                eprintln!("[library] could not sweep {}: {error}", book.path());
-            }
         }
-        book::remove_row(&mut self.library.books, id);
-        book::drop_dangling_links(&mut self.library.books);
-        shelf::forget_everywhere(&mut self.library.shelves, id);
+        self.unlist_row(id);
+        if let Some(book) = &doomed {
+            self.sweep_row_bytes(book);
+        }
         true
     }
 
@@ -2844,17 +2962,21 @@ impl Mareader {
         )
     }
 
-    /// The book half of a move, screened by the departure's gate: a
-    /// read-at-place book leaving the ground that made it becomes the
-    /// library's own stored copy, and a copy is a cost the reader agrees to
-    /// before anything moves. True when the move — or a return's bind —
-    /// wrote; a gated move writes nothing and waits in the sheet.
+    /// The book half of a move, behind both of its gates: the departure's
+    /// copy question first — a read-at-place book leaving the ground that
+    /// made it becomes the library's own stored copy, and a copy is a cost
+    /// the reader agrees to before anything moves — and then the level's
+    /// name screen, where what collides waits on the sheet and what does
+    /// not lands now. `departed` names the rows a copy of this very gesture
+    /// made: a departure is not a return, so they bind no moved-out log.
+    /// True when anything wrote; a gated move writes nothing and waits.
     fn gated_seat(
         &mut self,
         books: &[String],
         from: Option<String>,
         to: String,
         index: Option<usize>,
+        departed: &[String],
     ) -> bool {
         // A re-order leaves nothing behind — the rows are arriving where they
         // already are — and every other hand-move is screened by the one
@@ -2870,37 +2992,90 @@ impl Mareader {
                 return false;
             }
         }
-        let mut wrote = library::arrange::move_many_to_shelf(
-            &mut self.library.shelves,
-            &mut self.library.books,
-            books,
-            from.as_deref(),
-            &to,
-            index,
+        let (clean, asks) = conflicts::screen(
+            &self.library.books,
+            &self.library.shelves,
+            conflicts::moved_arrivals(&self.library.books, books, &to, index, from.as_deref()),
         );
-        // Every stored book the move lands can bind a folder's moved-out log
-        // as a return: the address they share is the bind.
-        for id in books {
-            wrote |= departure::bind_returned(
-                &self.library.books,
-                &self.library.shelves,
-                &mut self.library.folders,
-                id,
+        let ids = conflicts::clean_move_ids(clean);
+        let mut wrote = false;
+        if !ids.is_empty() {
+            wrote |= library::arrange::move_many_to_shelf(
+                &mut self.library.shelves,
+                &mut self.library.books,
+                &ids,
+                from.as_deref(),
                 &to,
+                index,
             );
+            // Every stored book the move lands can bind a folder's moved-out
+            // log as a return: the address they share is the bind.
+            for id in &ids {
+                if !departed.contains(id) {
+                    wrote |= departure::bind_returned(
+                        &self.library.books,
+                        &self.library.shelves,
+                        &mut self.library.folders,
+                        id,
+                        &to,
+                    );
+                }
+            }
         }
+        self.raise_conflict(asks);
         wrote
     }
 
-    /// The lift out of one shelf, screened the same way: to the library's own
-    /// floor is a departure for every read-at-place book a folder placed. No
-    /// bind on this door — a lift out arrives nowhere a log could name.
+    /// The lift out of one shelf, behind the same two gates: to the
+    /// library's own floor is a departure for every read-at-place book a
+    /// folder placed, and the floor has names of its own to collide with.
+    /// No bind on this door — a lift out arrives nowhere a log could name.
     fn gated_unfile(&mut self, books: &[String], shelf: &str) -> bool {
         let hand = RowMove::Unfile { shelf: shelf.to_string() };
         if self.ask_move_copy(books, ALL_SHELF, hand) {
             return false;
         }
-        library::arrange::unfile_books(&mut self.library.shelves, books, shelf)
+        let (clean, asks) = conflicts::screen(
+            &self.library.books,
+            &self.library.shelves,
+            conflicts::moved_arrivals(&self.library.books, books, ALL_SHELF, None, Some(shelf)),
+        );
+        let ids = conflicts::clean_move_ids(clean);
+        let wrote = if ids.is_empty() {
+            false
+        } else {
+            library::arrange::unfile_books(&mut self.library.shelves, &ids, shelf)
+        };
+        self.raise_conflict(asks);
+        wrote
+    }
+
+    /// A second membership — a filing or an "also show": no copy and no
+    /// departure, but the level's name screen rides the arrival all the
+    /// same, and a stored book landing on a folder's shelf can be the
+    /// file's return.
+    fn gated_file(&mut self, books: &[String], shelf_id: &str) -> bool {
+        let (clean, asks) = conflicts::screen(
+            &self.library.books,
+            &self.library.shelves,
+            conflicts::moved_arrivals(&self.library.books, books, shelf_id, None, None),
+        );
+        let ids = conflicts::clean_move_ids(clean);
+        let mut wrote = false;
+        if !ids.is_empty() {
+            wrote |= library::arrange::file_many(&mut self.library.shelves, &ids, shelf_id);
+            for id in &ids {
+                wrote |= departure::bind_returned(
+                    &self.library.books,
+                    &self.library.shelves,
+                    &mut self.library.folders,
+                    id,
+                    shelf_id,
+                );
+            }
+        }
+        self.raise_conflict(asks);
+        wrote
     }
 
     /// The gate every hand-move rides: a row that reads in place and is
@@ -2919,14 +3094,47 @@ impl Mareader {
         true
     }
 
-    /// The sheet's "Copy and move": the copies ride a store batch of their
-    /// own — one card for the whole gesture, the way fifty books leaving
-    /// their ground are one thing the reader asked for — and the interrupted
-    /// move resumes when they come home.
+    /// The sheet's own "Copy" answer, per door: the copies ride a store
+    /// batch of their own — one card for the whole gesture, the way fifty
+    /// books leaving their ground are one thing the reader asked for — and
+    /// the gesture finishes when they come home.
     fn copy_and_finish(&mut self, ask: CopyAsk) -> Task<Message> {
-        let CopyWork::Rows { ids, hand } = ask.work;
-        // The answer screens again, because the sheet was up while the
-        // library went on living.
+        match ask.work {
+            CopyWork::Rows { ids, hand } => self.copy_rows(ids, hand),
+            CopyWork::Shelf { ids, target, seam, .. } => self.copy_shelves(ids, target, seam),
+            CopyWork::Rung { id } => {
+                // The answer walks the rung again, because the sheet was up
+                // while the library went on living: a book that went comes
+                // back through the folder's own rescan, not this run.
+                let books = departure::books_the_rung_takes(
+                    &self.library.books,
+                    &self.library.shelves,
+                    &self.library.folders,
+                    &id,
+                );
+                let label = shelf::find(&self.library.shelves, &id)
+                    .map(|rung| rung.name.clone())
+                    .unwrap_or_else(|| "shelf".to_string());
+                self.begin_depart_run(label, books, DepartLand::Rung { id })
+            }
+            CopyWork::Removal { purge, shelves } => {
+                let books = departure::shelf_books(
+                    &self.library.books,
+                    &self.library.shelves,
+                    &self.library.folders,
+                    &shelves,
+                    &purge,
+                );
+                let label = lib_text::plural(books.len(), "book", "books");
+                self.begin_depart_run(label, books, DepartLand::Removal { purge, shelves })
+            }
+        }
+    }
+
+    /// The move door's copies: the answer screens again — the sheet was up
+    /// while the library went on living — and the interrupted move resumes
+    /// when they come home.
+    fn copy_rows(&mut self, ids: Vec<String>, hand: RowMove) -> Task<Message> {
         let converting =
             departure::converting_rows(&self.library.books, &self.library.folders, &ids, hand.to());
         let requests: Vec<BookFileRequest> = converting
@@ -2944,6 +3152,7 @@ impl Mareader {
                 ids.into_iter().filter(|id| !converting.contains(id)).collect();
             let moved =
                 if rest.is_empty() { false } else { self.resume_move(hand, rest, Vec::new()) };
+            self.advance_conflict();
             return if moved { self.persist_library() } else { Task::none() };
         }
         let label = match converting.len() {
@@ -2952,8 +3161,358 @@ impl Mareader {
                 .unwrap_or_else(|| "1 book".to_string()),
             n => format!("{n} books"),
         };
-        let work = DepartWork { ids, converting, hand };
+        let work = DepartWork { converting, landing: DepartLand::Move { ids, hand } };
         self.begin_store_run(label, requests, Stage::Departing { work: Box::new(work) })
+    }
+
+    /// The copies a door bought, as one store batch: the books to convert,
+    /// and the landing that finishes the gesture when they come home. A door
+    /// whose books all went while the sheet was up lands at once — a rung
+    /// with nothing left to copy is still a take-apart, and a removal still
+    /// removes.
+    fn begin_depart_run(
+        &mut self,
+        label: String,
+        converting: Vec<String>,
+        landing: DepartLand,
+    ) -> Task<Message> {
+        let requests: Vec<BookFileRequest> = converting
+            .iter()
+            .filter_map(|id| {
+                let book = book::find_row(&self.library.books, id)?.book()?;
+                Some(BookFileRequest { from: book.path().to_string(), id: id.clone() })
+            })
+            .collect();
+        if requests.is_empty() {
+            let failed = if converting.is_empty() { Vec::new() } else { converting };
+            let wrote = self.depart_landing(landing, Vec::new(), failed);
+            self.advance_conflict();
+            return if wrote { self.persist_library() } else { Task::none() };
+        }
+        let work = DepartWork { converting, landing };
+        self.begin_store_run(label, requests, Stage::Departing { work: Box::new(work) })
+    }
+
+    /// One spelling for the three shelf hand-moves, because a drag, a bulk
+    /// filing and a sibling reorder are one rule and one question. The rule
+    /// is the core's own `departing_moves` — pure and host-tested — and the
+    /// shelves that owe a departure ride the copy sheet, coming back through
+    /// its own answer; the clean ones move now.
+    fn screened_shelf_moves(
+        &mut self,
+        ids: &[String],
+        parent: Option<&str>,
+        seam: Option<ShelfSeam>,
+    ) -> Vec<String> {
+        let (clean, departing) =
+            shelf::departing_moves(&self.library.shelves, &self.library.folders, ids, parent);
+        if !departing.is_empty() {
+            let ask = departure::ask_of_shelf(
+                &self.library.books,
+                &self.library.shelves,
+                &self.library.folders,
+                departing,
+                parent.map(str::to_string),
+                seam,
+            );
+            if let Some(ask) = ask {
+                self.sheet = Some(Sheet::Copy { ask });
+            }
+        }
+        clean
+    }
+
+    /// What a drag onto a shelf row's edge commits — the sibling seam the
+    /// list layout draws — behind the departure's screen, because the seam
+    /// can stand on another level than the mover's seat.
+    fn reorder_shelves(&mut self, ids: &[String], anchor: &str, after: bool) -> bool {
+        if ids.is_empty() {
+            return false;
+        }
+        let parent = shelf::find(&self.library.shelves, anchor).and_then(|s| s.parent.clone());
+        let seam = ShelfSeam { anchor_id: anchor.to_string(), after };
+        let clean = self.screened_shelf_moves(ids, parent.as_deref(), Some(seam.clone()));
+        if clean.is_empty() {
+            return false;
+        }
+        library::arrange::reorder_shelves_to_anchor(&mut self.library.shelves, &clean, anchor, after)
+    }
+
+    /// Where held folders land after a drop: onto the root they re-hang with
+    /// no parent, one reparent each because the root has no member list to
+    /// batch into; onto a shelf they nest as a batch — behind the shelf
+    /// move's own screen.
+    fn land_folders(&mut self, folders: &[String], to: &str) -> bool {
+        if folders.is_empty() {
+            return false;
+        }
+        let parent = (to != ALL_SHELF).then_some(to);
+        let clean = self.screened_shelf_moves(folders, parent, None);
+        if clean.is_empty() {
+            return false;
+        }
+        let mut moved = false;
+        for folder in &clean {
+            moved |= library::arrange::nest_shelf(&mut self.library.shelves, folder, parent);
+        }
+        moved
+    }
+
+    /// The shelf door's copies: the rule is asked again — the sheet was up
+    /// while the library went on living — a shelf that no longer owes a
+    /// departure is skipped silently, and every departing shelf's books ride
+    /// ONE batch, the way the whole gesture is one thing the reader asked
+    /// for.
+    fn copy_shelves(
+        &mut self,
+        ids: Vec<String>,
+        target: Option<String>,
+        seam: Option<ShelfSeam>,
+    ) -> Task<Message> {
+        let level = departure::landing_level(&self.library.shelves, &target, seam.as_ref());
+        let deps = departure::shelf_departures(
+            &self.library.books,
+            &self.library.shelves,
+            &self.library.folders,
+            &ids,
+            level.as_deref(),
+        );
+        if deps.is_empty() {
+            self.advance_conflict();
+            return Task::none();
+        }
+        let mut books: Vec<String> = Vec::new();
+        for dep in &deps {
+            for id in &dep.books {
+                if !books.contains(id) {
+                    books.push(id.clone());
+                }
+            }
+        }
+        let label = match deps.len() {
+            1 => format!("“{}”", deps[0].name),
+            n => lib_text::plural(n, "shelf", "shelves"),
+        };
+        let landing = DepartLand::ShelfMove { deps, level, seam };
+        self.begin_depart_run(label, books, landing)
+    }
+
+    /// The landing the reader bought: the rungs leave the tree with the copy
+    /// they paid for, the other folders' shelves that rode along take the
+    /// hand's mark, the folder lets the departed zone go, and the copies
+    /// wear the level's next free names — then the gesture's own seam or
+    /// nest seats what landed. A shelf whose books the store refused entire
+    /// stays where it was, with its own sentence.
+    fn land_shelf_moves(
+        &mut self,
+        deps: Vec<ShelfDeparture>,
+        level: Option<String>,
+        seam: Option<ShelfSeam>,
+        departed: &[String],
+    ) -> bool {
+        let mut landed: Vec<String> = Vec::new();
+        for dep in &deps {
+            if dep.books.is_empty() || dep.books.iter().any(|id| departed.contains(id)) {
+                landed.push(dep.id.clone());
+            } else {
+                self.toasts.show(
+                    Tone::Info,
+                    format!(
+                        "“{}” stayed where it was — the library could not copy its books.",
+                        dep.name
+                    ),
+                    Instant::now(),
+                );
+            }
+        }
+        if landed.is_empty() {
+            return false;
+        }
+        let going: Vec<&ShelfDeparture> =
+            deps.iter().filter(|dep| landed.contains(&dep.id)).collect();
+        let mut promised: HashSet<String> =
+            shelf::children_of(&self.library.shelves, level.as_deref())
+                .into_iter()
+                .map(|s| s.name.clone())
+                .collect();
+        for dep in &going {
+            for rung in &dep.rungs {
+                if let Some(one) = shelf::find_mut(&mut self.library.shelves, rung) {
+                    one.kind = library_core::shelf::ShelfKind::Departed;
+                    one.manual_parent = false;
+                }
+            }
+            for id in &dep.subtree {
+                if dep.rungs.contains(id) {
+                    continue;
+                }
+                if let Some(one) = shelf::find_mut(&mut self.library.shelves, id)
+                    && one.is_folder()
+                {
+                    one.manual_parent = true;
+                }
+            }
+            if let Some(one) = shelf::find_mut(&mut self.library.shelves, &dep.id) {
+                one.name = departure::free_name(&dep.name, &mut promised);
+            }
+        }
+        for dep in &going {
+            let Some(folder) = folder_ops::find_mut(&mut self.library.folders, &dep.folder_id)
+            else {
+                continue;
+            };
+            folder.shelf_map.retain(|key, shelf_id| {
+                !folder_ops::key_in_zone(key, &dep.rel) && !dep.rungs.contains(shelf_id)
+            });
+        }
+        let ids: Vec<String> = going.iter().map(|dep| dep.id.clone()).collect();
+        // The seats ride the very gestures the screen wraps — clean by
+        // construction now, because a Departed rung owes no second copy.
+        if let Some(seam) = &seam {
+            library::arrange::reorder_shelves_to_anchor(
+                &mut self.library.shelves,
+                &ids,
+                &seam.anchor_id,
+                seam.after,
+            );
+        } else {
+            for id in &ids {
+                library::arrange::nest_shelf(&mut self.library.shelves, id, level.as_deref());
+            }
+        }
+        true
+    }
+
+    /// No copies: every mover that has a way home takes it, and a mover that
+    /// has none stays where the tree put it. The fold is the import's own
+    /// `reclaim_rung`, and the reseat rides the very `nest_shelf` the
+    /// gesture did. The reveal that lights the first seated shelf waits on
+    /// the reveal's own light.
+    fn take_them_home(&mut self, returns: &[(String, ReturnPath)]) -> bool {
+        let mut moved = false;
+        for (shelf_id, path) in returns {
+            moved |= match path {
+                ReturnPath::Reclaim { tree, gone, rel } => {
+                    self.reclaim_rung(tree, gone, rel, shelf_id).is_some()
+                }
+                ReturnPath::Reseat { seat } => library::arrange::nest_shelf(
+                    &mut self.library.shelves,
+                    shelf_id,
+                    seat.as_deref(),
+                ),
+            };
+        }
+        moved
+    }
+
+    /// Put a displaced member back on the rung its directory names and fold
+    /// the folder that was reading it into the tree that contains it: one
+    /// ground, one reader from here on. Three writes, in the order that
+    /// keeps them honest; the answer is the shelf the member sat on.
+    ///
+    /// A tree a walk holds is the one fold to refuse, because that walk's
+    /// clone of the ledger lands after this write and drops it. Persists
+    /// nothing itself: the caller ends its own transaction.
+    fn reclaim_rung(
+        &mut self,
+        tree_id: &str,
+        gone_id: &str,
+        rel: &str,
+        shelf_id: &str,
+    ) -> Option<String> {
+        let now = now_ms();
+        let mut minted: Vec<Shelf> = Vec::new();
+        let mut tree = folder_ops::find(&self.library.folders, tree_id)?.clone();
+        let gone = folder_ops::find(&self.library.folders, gone_id)?.clone();
+        // Read before anything is written: the answer is about the shelves
+        // standing, not the ones this move mints.
+        let rungs = member_rungs(&self.library.shelves, gone_id, rel);
+        // A shelf that went while the sheet was up is an answer with nothing
+        // to move; so is a tree a walk holds, whose ledger clone lands after
+        // this write.
+        let foreign_walk = !matches!(self.root_claim(&tree.root), Claim::Free);
+        if !rungs.iter().any(|(_, id)| id == shelf_id) || foreign_walk {
+            return None;
+        }
+        let root = tree.root.clone();
+        // Ground the shape keeps on one shelf has no rung for the member's
+        // directory to become: its books come onto the rung the ground
+        // answers for and its own shelves go, so an adoption cannot cut a
+        // nested rung into an import that asked for none.
+        let seat = if tree.cuts(rel) {
+            let parent = chain_for(
+                &mut tree,
+                folder_ops::parent_key(rel).unwrap_or(""),
+                now,
+                None,
+                &root,
+                &mut minted,
+            );
+            for (key, id) in &rungs {
+                tree.shelf_map.insert(key.clone(), id.clone());
+            }
+            page_into(&mut self.library.shelves, minted);
+            let nestable = shelf::can_nest(&self.library.shelves, shelf_id, &parent);
+            for (key, id) in &rungs {
+                let Some(one) = shelf::find_mut(&mut self.library.shelves, id) else {
+                    continue;
+                };
+                one.kind = library_core::shelf::ShelfKind::Folder {
+                    folder_id: tree_id.to_string(),
+                    rel: rel_of(key),
+                };
+                if id != shelf_id {
+                    continue;
+                }
+                if nestable {
+                    one.parent = Some(parent.clone());
+                    one.manual_parent = false;
+                } else {
+                    one.manual_parent = true;
+                }
+            }
+            shelf_id.to_string()
+        } else {
+            // A pointer to a shelf that went is no seat, and this tree's map
+            // is not the one the run pruned: the mint is asked for the key
+            // the map has no standing rung under.
+            let standing = tree
+                .shelf_map
+                .get("")
+                .filter(|id| shelf::find(&self.library.shelves, id).is_some())
+                .cloned();
+            let seat = match standing {
+                Some(seat) => seat,
+                None => {
+                    tree.shelf_map.remove("");
+                    chain_for(&mut tree, "", now, None, &root, &mut minted)
+                }
+            };
+            page_into(&mut self.library.shelves, minted);
+            flatten_rungs(&mut self.library.shelves, gone_id, &seat);
+            seat
+        };
+        // The answer the folded row carried for its own root becomes the
+        // rung it becomes: the row that answer was written on is the one
+        // this fold retires. A tree that cuts no rungs has one answer for
+        // the whole of its ground — the reader's own about its root — and
+        // the adoption does not second-guess it.
+        if tree.cuts(rel) {
+            tree.set_tracking(rel, gone.opts.watch);
+        }
+        tree.placed.extend(gone.placed.iter().copied());
+        for stone in gone.ignored.iter() {
+            if !tree.is_ignored(&stone.fp) {
+                tree.ignored.push(stone.clone());
+            }
+        }
+        tree.scanned_ms = tree.scanned_ms.max(gone.scanned_ms);
+        self.library.folders.retain(|f| f.id != gone_id);
+        match self.library.folders.iter().position(|f| f.id == tree_id) {
+            Some(at) => self.library.folders[at] = tree,
+            None => self.library.folders.push(tree),
+        }
+        Some(seat)
     }
 
     /// The store's answer for a departure: the copies become the library's
@@ -2983,87 +3542,419 @@ impl Mareader {
         if let Some(error) = failure {
             self.toasts.show(Tone::Error, error, Instant::now());
         }
-        // A copy that failed costs that book its move and nothing else: it
-        // stays where it was, and every screen downstream sees the books as
-        // what they are about to be.
-        let failed: HashSet<String> = work
+        let failed: Vec<String> = work
             .converting
             .iter()
             .filter(|id| !departed.contains(*id))
             .cloned()
             .collect();
-        let rest: Vec<String> = work.ids.into_iter().filter(|id| !failed.contains(id)).collect();
         let any_copies = !departed.is_empty();
-        let moved =
-            if rest.is_empty() { false } else { self.resume_move(work.hand, rest, departed) };
+        let moved = self.depart_landing(work.landing, departed, failed);
+        self.advance_conflict();
         if moved || any_copies {
             return self.persist_library();
         }
         Task::none()
     }
 
-    /// The gesture a copy question interrupted, finished: the same rows land,
-    /// and the copies land marked — a departure is not a return, so a copied
-    /// book binds no folder's moved-out log.
+    /// The gesture a copy run finishes. A move resumes with what landed — a
+    /// copy that failed costs that book its move and nothing else: it stays
+    /// where it was, and every screen downstream sees the books as what they
+    /// are about to be — except a replace, which seats its row whatever the
+    /// copy did: a failed copy re-asks at the seat's own gate. A rung comes
+    /// apart only once every book it owed is safe: a book the store refused
+    /// leaves the shelf standing, so the reader can ask again rather than
+    /// lose the ground the rest of the rung answers to. Shelves land as the
+    /// take-out wrote them: a shelf whose books the store refused entire
+    /// stays where it was. A removal runs whatever the copies did: the sheet
+    /// promised the removal, and the copies were the books' own way out of
+    /// it.
+    fn depart_landing(
+        &mut self,
+        landing: DepartLand,
+        departed: Vec<String>,
+        failed: Vec<String>,
+    ) -> bool {
+        match landing {
+            DepartLand::Move { ids, hand } => {
+                let resume_ids: Vec<String> = match &hand {
+                    RowMove::Replaced { .. } => ids.clone(),
+                    _ => ids.iter().filter(|id| !failed.contains(*id)).cloned().collect(),
+                };
+                if resume_ids.is_empty() {
+                    return false;
+                }
+                self.resume_move(hand, resume_ids, departed)
+            }
+            DepartLand::ShelfMove { deps, level, seam } => {
+                self.land_shelf_moves(deps, level, seam, &departed)
+            }
+            DepartLand::Rung { id } => {
+                if !failed.is_empty() {
+                    return false;
+                }
+                self.dismantle_shelf(&id)
+            }
+            DepartLand::Removal { purge, shelves } => self.remove(purge, shelves),
+        }
+    }
+
+    /// The gesture a copy question interrupted, finished: the same rows land
+    /// through the same doors — a seat re-runs its own gate and screen,
+    /// which the copies that came home pass by construction — and the copies
+    /// land marked: a departure is not a return, so a copied book binds no
+    /// folder's moved-out log.
     fn resume_move(&mut self, hand: RowMove, ids: Vec<String>, departed: Vec<String>) -> bool {
         match hand {
-            RowMove::Seat { from, to, index } => {
-                let mut wrote = library::arrange::move_many_to_shelf(
-                    &mut self.library.shelves,
-                    &mut self.library.books,
-                    &ids,
-                    from.as_deref(),
-                    &to,
-                    index,
-                );
-                for id in &ids {
-                    if !departed.contains(id) {
-                        wrote |= departure::bind_returned(
-                            &self.library.books,
-                            &self.library.shelves,
-                            &mut self.library.folders,
-                            id,
-                            &to,
-                        );
-                    }
-                }
-                wrote
-            }
+            RowMove::Seat { from, to, index } => self.gated_seat(&ids, from, to, index, &departed),
             RowMove::Row { to, index } => {
-                // One row's own move: off every shelf it was on and onto the
-                // one named. The single-row door arrives with the conflict
-                // sheet; the resume answers it from the first day.
+                let gone = !departed.is_empty();
                 let mut wrote = false;
                 for id in &ids {
-                    shelf::forget_everywhere(&mut self.library.shelves, id);
-                    if to == ALL_SHELF {
-                        if index.is_some() {
-                            wrote |= library::arrange::reorder_root(
-                                &mut self.library.books,
-                                std::slice::from_ref(id),
-                                index,
-                            );
-                        }
-                    } else if let Some(shelf) = shelf::find_mut(&mut self.library.shelves, &to) {
-                        shelf::place(&mut shelf.books, id, index);
-                        wrote = true;
-                    }
-                    if !departed.contains(id) {
-                        wrote |= departure::bind_returned(
-                            &self.library.books,
-                            &self.library.shelves,
-                            &mut self.library.folders,
-                            id,
-                            &to,
-                        );
-                    }
+                    wrote |= self.move_row(id, &to, index, gone);
                 }
                 wrote
             }
-            RowMove::Unfile { shelf } => {
-                library::arrange::unfile_books(&mut self.library.shelves, &ids, &shelf)
+            RowMove::Replaced { to, index, inherited } => {
+                let gone = !departed.is_empty();
+                let mut wrote = false;
+                for id in &ids {
+                    self.seat_replace(id, &to, index, &inherited, gone);
+                    wrote = true;
+                }
+                wrote
+            }
+            RowMove::Unfile { shelf } => self.gated_unfile(&ids, &shelf),
+        }
+    }
+
+    /// One row's own move: off every shelf it was on and onto the one named,
+    /// at the slot the drop pointed at. The root has no member list, so a
+    /// move there is the lift out of every shelf. The single row rides the
+    /// same departure gate as every hand-move — by the time a conflict
+    /// answer reaches here the gate's screen is empty by construction, but
+    /// an "as new" renames a row a filing converted, and that seat asks its
+    /// own question. `departed` is the copy's own answer: a departure binds
+    /// no moved-out log.
+    fn move_row(&mut self, row_id: &str, to: &str, index: Option<usize>, departed: bool) -> bool {
+        let one = [row_id.to_string()];
+        let hand = RowMove::Row { to: to.to_string(), index };
+        if self.ask_move_copy(&one, to, hand) {
+            return false;
+        }
+        shelf::forget_everywhere(&mut self.library.shelves, row_id);
+        if to == ALL_SHELF {
+            if index.is_some() {
+                library::arrange::reorder_root(&mut self.library.books, &one, index);
+            }
+        } else {
+            if let Some(shelf) = shelf::find_mut(&mut self.library.shelves, to) {
+                shelf::place(&mut shelf.books, row_id, index);
+            }
+            if !departed {
+                departure::bind_returned(
+                    &self.library.books,
+                    &self.library.shelves,
+                    &mut self.library.folders,
+                    row_id,
+                    to,
+                );
             }
         }
+        true
+    }
+
+    /// A sheet already up takes new asks onto its queue rather than being
+    /// replaced: two drops in flight owe two answers.
+    fn raise_conflict(&mut self, asks: Vec<ConflictAsk>) {
+        if asks.is_empty() {
+            return;
+        }
+        if self.sheet.is_some() {
+            self.conflict_waiting.extend(asks);
+            return;
+        }
+        let mut asks = asks;
+        let first = asks.remove(0);
+        self.conflict_waiting.extend(asks);
+        self.sheet = Some(Sheet::Conflict { ask: first });
+    }
+
+    /// The next question of the queue, when the slot is free: an answered
+    /// sheet stays up while questions wait, an answer that raised a sheet of
+    /// its OWN — a replace's copy question — keeps it, and a queue nothing
+    /// drained shows the moment a slot opens.
+    fn advance_conflict(&mut self) {
+        if self.sheet.is_some() || self.conflict_waiting.is_empty() {
+            return;
+        }
+        let ask = self.conflict_waiting.remove(0);
+        self.sheet = Some(Sheet::Conflict { ask });
+    }
+
+    /// What dropping this question means: the conflict sheet's close — its
+    /// Cancel, its scrim, its Escape — skips the question on screen and
+    /// every one behind it; placements already answered keep their answers.
+    fn dismiss_sheet(&mut self) {
+        if matches!(self.sheet, Some(Sheet::Conflict { .. })) {
+            self.conflict_waiting.clear();
+        }
+        self.sheet = None;
+    }
+
+    /// The click's own dispatch: the question's offers are the guard, so a
+    /// row the sheet rendered is a row the answer takes. The shelf scope —
+    /// a folder's own name collision — arrives with the import's screen;
+    /// every ask a move raises is about a row.
+    fn apply_placement(&mut self, ask: &ConflictAsk, choice: Placement) -> Task<Message> {
+        let offers = conflicts::offers_for(&self.library.books, &self.library.folders, ask);
+        if !offers.contains(&choice) {
+            return Task::none();
+        }
+        match choice {
+            Placement::Open => {
+                self.reveal_existing(&ask.existing_id);
+                Task::none()
+            }
+            Placement::KeepBoth => self.as_new(ask),
+            Placement::LinkOnly => self.link_to_row(ask),
+            Placement::Merge => self.merge_into_row(ask),
+            Placement::Replace => self.replace_row(ask),
+        }
+    }
+
+    /// "Already imported": add nothing and take the reader to the one they
+    /// have — the first shelf in shelf order, or the library's own floor
+    /// when it is on none. The web's light — the scroll-to and the flash —
+    /// waits on the grid's scroll-to; navigation is the reveal's
+    /// load-bearing half.
+    fn reveal_existing(&mut self, book_id: &str) {
+        self.shelf = shelf::containing(&self.library.shelves, book_id)
+            .first()
+            .map(|shelf| shelf.id.clone())
+            .unwrap_or_else(|| ALL_SHELF.to_string());
+    }
+
+    /// "As new": a moved row is renamed and then moved — the rename is what
+    /// frees the collision, and a move that did not rename would ask the
+    /// same question again on the way in. The import's file answer lands
+    /// through the import's own screen.
+    fn as_new(&mut self, ask: &ConflictAsk) -> Task<Message> {
+        let Some(row_id) = ask.arrival.moving.clone() else {
+            return Task::none();
+        };
+        let name = conflicts::minted_name(&self.library.books, &self.library.shelves, ask);
+        conflicts::rename_row(&mut self.library.books, &row_id, &name);
+        self.move_row(&row_id, &ask.arrival.shelf_id, ask.arrival.index, false);
+        self.persist_library()
+    }
+
+    /// "Make link": the row the reader was holding goes, the pointers at it
+    /// go with it, and — when the survivor is the library's own copy of that
+    /// row's file — the folder that placed it takes a moved-out log naming
+    /// the survivor. The link wears the target's own name at this moment,
+    /// which is what makes the row recognisable beside the book it points
+    /// at.
+    fn link_to_row(&mut self, ask: &ConflictAsk) -> Task<Message> {
+        if let Some(gone_id) = ask.arrival.moving.clone() {
+            let gone_book = book::find_by_id(&self.library.books, &gone_id).cloned();
+            if let Some(book) = &gone_book
+                && conflicts::survivor_is_the_copy_of(&self.library.books, &ask.existing_id, book)
+            {
+                departure::write_moved_stones(
+                    &mut self.library.folders,
+                    &self.library.shelves,
+                    book,
+                    Some(&ask.existing_id),
+                    now_ms(),
+                );
+            }
+            self.unlist_row(&gone_id);
+        }
+        self.add_link_at_target(ask, &ask.existing_id);
+        self.persist_library()
+    }
+
+    /// "Merge": the survivor is the row the reader can already see here, and
+    /// its id is what every shelf holding it and every key in storage
+    /// already names, so it is the one that stays. The reader's own data
+    /// folds while both rows can still be read; a read-at-place book folding
+    /// into the library's own copy of ITS content leaves the folder's file
+    /// with no row to answer for it, so the folder takes a moved-out log
+    /// bound to the survivor; and the survivor takes over every shelf the
+    /// dissolving row held except the level the move left — the departure is
+    /// the point of the move.
+    fn merge_into_row(&mut self, ask: &ConflictAsk) -> Task<Message> {
+        let survivor = ask.existing_id.clone();
+        let Some(gone_id) = ask.arrival.moving.clone() else {
+            return Task::none();
+        };
+        let gone_book = book::find_by_id(&self.library.books, &gone_id).cloned();
+        if let Some(gone) = &gone_book
+            && let Some(keep) = book::find_book_mut(&mut self.library.books, &survivor)
+        {
+            book::fold_books(keep, gone);
+        }
+        if let Some(gone) = &gone_book
+            && conflicts::survivor_is_the_copy_of(&self.library.books, &survivor, gone)
+        {
+            departure::write_moved_stones(
+                &mut self.library.folders,
+                &self.library.shelves,
+                gone,
+                Some(&survivor),
+                now_ms(),
+            );
+        }
+        let inherited: Vec<String> = conflicts::memberships(&self.library.shelves, &gone_id)
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| ask.arrival.from.as_deref() != Some(id.as_str()))
+            .collect();
+        conflicts::file_on_all(&mut self.library.shelves, &survivor, &inherited);
+        self.drop_row(&gone_id);
+        self.persist_library()
+    }
+
+    /// "Replace": the arrival takes the displaced row's SLOT and every OTHER
+    /// shelf it was filed on — a replace that quietly took a book off
+    /// shelves the question never mentioned is a removal the reader did not
+    /// ask for. The displaced row goes through the removal's own sweep,
+    /// receipt and all: the sheet's note said what this answer costs. A
+    /// read-at-place arrival becomes the library's own copy before it is
+    /// seated, and the seating waits for the copy.
+    fn replace_row(&mut self, ask: &ConflictAsk) -> Task<Message> {
+        let Some(moved_id) = ask.arrival.moving.clone() else {
+            return Task::none();
+        };
+        // Read the world before writing any of it: the slot and the
+        // memberships are about the row that is going.
+        let seat = conflicts::member_slot(
+            &self.library.shelves,
+            &ask.arrival.shelf_id,
+            &ask.existing_id,
+        );
+        let inherited: Vec<String> =
+            conflicts::memberships(&self.library.shelves, &ask.existing_id)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+        self.purge_row(&ask.existing_id);
+        let shelf_id = ask.arrival.shelf_id.clone();
+        let index = seat.or(ask.arrival.index);
+        if departure::converts_on_move(
+            &self.library.books,
+            &self.library.folders,
+            &moved_id,
+            &shelf_id,
+        ) {
+            let (label, request) = match book::find_row(&self.library.books, &moved_id) {
+                Some(row) => (
+                    row.display_name(),
+                    row.book().map(|book| BookFileRequest {
+                        from: book.path().to_string(),
+                        id: moved_id.clone(),
+                    }),
+                ),
+                None => ("1 book".to_string(), None),
+            };
+            let requests = request.into_iter().collect();
+            let hand = RowMove::Replaced { to: shelf_id, index, inherited };
+            let work = DepartWork {
+                converting: vec![moved_id.clone()],
+                landing: DepartLand::Move { ids: vec![moved_id], hand },
+            };
+            return self.begin_store_run(label, requests, Stage::Departing { work: Box::new(work) });
+        }
+        self.seat_replace(&moved_id, &shelf_id, index, &inherited, false);
+        self.persist_library()
+    }
+
+    /// The replace's seat: the row's own move, then the shelves the
+    /// displaced one held. `departed` is the replace's own copy of the
+    /// gate's answer, and it travels because a departure must not bind the
+    /// moved-out log it just wrote.
+    fn seat_replace(
+        &mut self,
+        moved_id: &str,
+        shelf_id: &str,
+        index: Option<usize>,
+        inherited: &[String],
+        departed: bool,
+    ) {
+        self.move_row(moved_id, shelf_id, index, departed);
+        conflicts::file_on_all(&mut self.library.shelves, moved_id, inherited);
+    }
+
+    /// One spelling for the answers that leave a link behind: the name is
+    /// the whole of what makes the row recognisable beside the book it
+    /// points at, and an empty one means the target went while the sheet
+    /// was up — the arrival's own name stands in.
+    fn add_link_at_target(&mut self, ask: &ConflictAsk, target: &str) -> bool {
+        let name = book::find_row(&self.library.books, target)
+            .map(|row| row.display_name())
+            .unwrap_or_default();
+        let name = if name.trim().is_empty() { ask.arrival.name.clone() } else { name };
+        let now = now_ms();
+        let link_id = library_core::id::next_id(now);
+        self.library.books.push(book::Row::link(
+            link_id.clone(),
+            name,
+            target.to_string(),
+            now,
+        ));
+        if ask.arrival.shelf_id != ALL_SHELF
+            && let Some(shelf) = shelf::find_mut(&mut self.library.shelves, &ask.arrival.shelf_id)
+        {
+            shelf::shelf_add(shelf, &link_id);
+        }
+        true
+    }
+
+    /// The whole of a removal that is NOT a sweep: no tombstone, no store
+    /// byte. One spelling, because the half of it that is easy to forget is
+    /// the expensive one.
+    fn unlist_row(&mut self, id: &str) {
+        book::remove_row(&mut self.library.books, id);
+        book::drop_dangling_links(&mut self.library.books);
+        shelf::forget_everywhere(&mut self.library.shelves, id);
+    }
+
+    /// The row's own byte, once no row reads it — the twin rule's other
+    /// half: two rows of one file share an address, and a sweep that forgot
+    /// the twin would delete the file the survivor reads. A linked book's
+    /// bytes are the reader's and are never touched.
+    fn sweep_row_bytes(&mut self, book: &Book) {
+        let in_use = book::book_rows(&self.library.books)
+            .any(|each| each.id != book.id && each.path() == book.path());
+        if in_use {
+            return;
+        }
+        if book.origin.is_stored()
+            && let Err(error) = store::delete_stored(book.path())
+        {
+            // The row is gone either way; a byte the host will not release
+            // is the log's business, not a second question.
+            eprintln!("[library] could not sweep {}: {error}", book.path());
+        }
+    }
+
+    /// Remove one row, everywhere it is filed, and sweep the byte only it
+    /// read — and no tombstone: the conflict sheet's dissolving row is one
+    /// whose content stays in the library through the row on the other side
+    /// of the question, so a rescan that re-found the file would resolve to
+    /// that row, and a tombstone for a fingerprint the library still holds
+    /// is noise in the folder's restore menu until the next scan prunes it.
+    fn drop_row(&mut self, id: &str) -> bool {
+        let Some(row) = book::find_row(&self.library.books, id) else {
+            return false;
+        };
+        let doomed = row.book().cloned();
+        self.unlist_row(id);
+        if let Some(book) = &doomed {
+            self.sweep_row_bytes(book);
+        }
+        true
     }
 
     /// The diff's answer, written to the live lists: relinks first, then
@@ -3749,15 +4640,16 @@ impl Mareader {
 
     /// One book, two memberships, nothing copied: the folder's ledger is
     /// untouched — the book stays placed where it was placed, which keeps
-    /// the next rescan quiet about it.
+    /// the next rescan quiet about it. The level's name screen rides the
+    /// filing's own gate, as it does for every second membership.
     fn also_show(&mut self, book_id: &str, shelf_id: &str) -> Task<Message> {
         self.menu = None;
         self.menu_confirm = None;
-        let Some(home) = shelf::find_mut(&mut self.library.shelves, shelf_id) else {
-            return Task::none();
-        };
-        shelf::shelf_add(home, book_id);
-        self.persist_library()
+        let one = [book_id.to_string()];
+        if self.gated_file(&one, shelf_id) {
+            return self.persist_library();
+        }
+        Task::none()
     }
 
     /// The confirm face's second answer: close the menu and take the
@@ -4209,6 +5101,43 @@ impl Mareader {
                 }
                 sheet::panel(self.tokens, &ask.action, body.into(), actions)
             }
+            // The name question: the arriving name as the heading, where the
+            // collision is — and what waits behind it — under that, the
+            // question in one sentence, and the answers as rows that each
+            // promise what choosing them does. Cancel means the same thing
+            // on every sheet: leave the shelf as it is, and skip the queue.
+            Sheet::Conflict { ask } => {
+                let spec = conflicts::describe(
+                    &self.library.books,
+                    &self.library.shelves,
+                    &self.library.folders,
+                    ask,
+                    self.conflict_waiting.len(),
+                );
+                let choices = spec
+                    .choices
+                    .iter()
+                    .map(|choice| {
+                        sheet::choice_row(
+                            self.tokens,
+                            choice.label,
+                            choice.note.clone(),
+                            Message::AnswerPlacement(choice.placement),
+                        )
+                    })
+                    .collect();
+                let mut body = Column::new().spacing(10);
+                body = body.push(text(spec.subtitle.clone()).size(12).color(self.tokens.muted));
+                body = body.push(text(spec.question.clone()).size(12).color(self.tokens.muted));
+                body = body.push(sheet::choice_group(self.tokens, choices));
+                sheet::panel_owned(
+                    self.tokens,
+                    sheet::CONFLICT_W,
+                    spec.heading.clone(),
+                    body.into(),
+                    vec![sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel)],
+                )
+            }
         };
         Some(sheet::overlay(panel, Message::SheetCancel))
     }
@@ -4403,6 +5332,74 @@ fn chain_for(
             new_shelves.push(shelf::Shelf::folder_shelf(id, name, &folder_id, rel, parent));
         },
     )
+}
+
+/// The rungs a folded member brings: every shelf the folded folder owns,
+/// keyed the way the receiving tree keys its own — the rung the member's
+/// directory names, and the ones below it.
+fn member_rungs(shelves: &[Shelf], gone_id: &str, rel: &str) -> Vec<(String, String)> {
+    shelves
+        .iter()
+        .filter(|s| s.kind.folder_id() == Some(gone_id))
+        .filter_map(|s| {
+            let library_core::shelf::ShelfKind::Folder { rel: own, .. } = &s.kind else {
+                return None;
+            };
+            let own = own.as_deref().unwrap_or("");
+            let key =
+                if own.is_empty() { rel.to_string() } else { format!("{rel}/{own}") };
+            Some((key, s.id.clone()))
+        })
+        .collect()
+}
+
+/// The map's key as the shelf's own rel: the root's empty key is no rel.
+fn rel_of(key: &str) -> Option<String> {
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
+/// The minted rungs join the list: one push per shelf no id already holds.
+fn page_into(shelves: &mut Vec<Shelf>, minted: Vec<Shelf>) {
+    for made in minted {
+        if !shelves.iter().any(|s| s.id == made.id) {
+            shelves.push(made);
+        }
+    }
+}
+
+/// The whole of one tree's books onto `seat`, and the shelves the one-shelf
+/// answer has no place for taken out: the flattening a re-import asks for,
+/// and the one an adopting tree takes a member in by. Every rung of `from`
+/// goes except the one that is `seat`. Books move, readers do not: a shelf
+/// the reader made inside one comes up to `seat` with its books.
+fn flatten_rungs(shelves: &mut Vec<Shelf>, from: &str, seat: &str) {
+    let own: Vec<String> =
+        shelf::rungs_of(shelves, from).into_values().map(String::from).collect();
+    let going: HashSet<String> = own.iter().filter(|id| id.as_str() != seat).cloned().collect();
+    // A set rather than a growing list: the whole tree's books pass through
+    // here, and membership was a scan per book.
+    let mut held: HashSet<String> = HashSet::new();
+    for rung in &own {
+        let Some(one) = shelf::find(shelves, rung) else {
+            continue;
+        };
+        held.extend(one.books.iter().cloned());
+    }
+    if let Some(one) = shelf::find_mut(shelves, seat) {
+        for book_id in held {
+            shelf::shelf_add(one, &book_id);
+        }
+    }
+    for one in shelves.iter_mut() {
+        if one.parent.as_deref().is_some_and(|parent| going.contains(parent)) {
+            one.parent = Some(seat.to_string());
+        }
+    }
+    shelves.retain(|one| !going.contains(&one.id));
 }
 
 /// The first shelf a folder's tree holds a book on — the home a tombstone
@@ -4927,25 +5924,6 @@ fn reader_surface(tokens: Tokens, document: Option<&Path>) -> Element<'static, M
         left: 0.0,
     })
     .into()
-}
-
-/// Where held folders land after a drop: onto the root they re-hang with
-/// no parent, one reparent each because the root has no member list to
-/// batch into; onto a shelf they nest as a batch (the web commit's own
-/// `land_folders`).
-fn land_folders(shelves: &mut [Shelf], folders: &[String], to: &str) -> bool {
-    if folders.is_empty() {
-        return false;
-    }
-    if to == ALL_SHELF {
-        let mut moved = false;
-        for folder in folders {
-            moved |= library::arrange::nest_shelf(shelves, folder, None);
-        }
-        moved
-    } else {
-        library::arrange::nest_many(shelves, folders, to)
-    }
 }
 
 /// The ghost's box: the web layer's own 9rem cover at A4 proportion
