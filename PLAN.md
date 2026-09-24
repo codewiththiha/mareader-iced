@@ -436,9 +436,10 @@ not yet delivered.
 * **The refactor queue.** The codebase review (`review/`, outside the repo) lands its findings as
   small refactor passes rather than a big rewrite, and keeps the plan as the record: each pass is
   one CI-green commit, taken between phases so the reader work is never interrupted mid-feature.
-  Pass 1 — the theme's one alpha helper, one home for the wall clock, the dead shell weight, one
-  title rule — is in. The queue's remaining entries (`app.rs`'s split and dispatch, the `Cow`
-  menu builders, `theme::Elevation`, the `chrome/` ↔ `platform/` seam) follow the same shape.
+  Passes 1–4 (the theme's one alpha helper and one home for the wall clock, the dead shell
+  weight, one title rule; the `Cow` menu rows; `theme::Elevation`; the `chrome::desktop` /
+  `platform::os` seam) are in. The queue's remaining entries — `app.rs`'s split and its
+  dispatch, the dialog controls, `ghost_button_style`'s home — follow the same shape.
 * **3g — The paper seam.** The render-queue priorities and cancellations under a zoom
   gesture (one lane, two priorities; a superseded render is dropped before the raster, not
   after), the memory ceilings (drop-on-close, the thumbnail LRU, the frame cache), and the
@@ -738,7 +739,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   PDFium service and bind strategy, the open pipeline, and the first
   reading surface the marks, covers and kept reading data all wait
   on.
-* **P3 — 3a and 3b shipped (plus one refactor pass); 3c (the scrolling modes) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
+* **P3 — 3a and 3b shipped (plus four refactor passes); 3c (the scrolling modes) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
   shared library at run time through `MAREAEDER_PDFIUM`/`MAREAEDER_PDFIUM_DIR`,
   beside the executable and its `lib`/`bin`, then the working directory's same three,
   then the system's loader — and a machine with no Pdfium gets a sentence naming
@@ -761,15 +762,29 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   and report the new position so the library's rows keep it; and leaving flush the
   read point into the rows the same `rows_for_read` rule names, with the shelf's own
   record of the name and author written the moment the document answers.
-  A refactor pass took the shell's dead weight out between 3b and 3c, ahead of that
-  queue: `theme::fade` was a byte-identical twin of `theme::wash` (a colour at a fraction
-  of its own alpha) and 90 sites spelled it both ways — one helper now, `wash`;
-  `theme::danger` names its one literal; `now_ms` was defined three times over and lives
-  in `platform` (the stamps are persisted and read back on another run, so it is a wall
-  clock on purpose); the app's own `folder_shelf_of` was a second copy of
-  `library::departure`'s; `Covered.rel` was carried and never read; `Route::title`'s two
-  arms returned the same string — the app's name is one constant now, and the window
-  title and the bar's centre read it through one `shown_title()`.
+  Refactor passes run between 3b and 3c, ahead of that queue, one CI-green commit each.
+  The first took the shell's dead weight out: `theme::fade` was a byte-identical twin of
+  `theme::wash` (a colour at a fraction of its own alpha) and 90 sites spelled it both
+  ways — one helper now, `wash`; `theme::danger` names its one literal; `now_ms` was
+  defined three times over and lives in `platform` (the stamps are persisted and read
+  back on another run, so it is a wall clock on purpose); the app's own
+  `folder_shelf_of` was a second copy of `library::departure`'s; `Covered.rel` was carried
+  and never read; `Route::title`'s two arms returned the same string — the app's name is
+  one constant now, and the window title and the bar's centre read it through one
+  `shown_title()`.
+  The second made one builder for each menu row: `item`/`owned_item`,
+  `danger_item`/`owned_danger_item` and `section`/`owned_section` were the same bodies
+  written twice over `&str` against `String`, and the sheet's `panel_owned` was
+  `panel_sized` with an owned title — each pair is one builder over `impl Into<Cow<str>>`
+  now, and the danger row takes the item's icon slot, which is what its 24px inset was
+  imitating. The third named the shadows: sixteen `Shadow` literals in eight files, seven
+  blur radii and four alphas with nothing saying which surface sits above which, are
+  `theme::Elevation`'s ladder now — Thumb, Badge, Bar, Pill, Hover, Page, Ring, Float,
+  Plate, Toast, Sheet, Chrome — carrying the port's numbers unchanged. The fourth settled
+  the layer that had two names: `chrome::platform` is `chrome::desktop` (the bar's
+  numbers) and the OS identity moved to `platform::{Os, os()}`, so `platform` means the
+  OS layer only and `platform::fs` no longer reaches into the chrome for a fact about
+  the machine it is already running on.
   Zoom is the web app's pipeline, ported whole into `reader/zoom.rs` and wired to one
   owner: `Command` (Step / Refit / Constrain / Follow) resolved against the window, the
   mode and the sheet under the reader's eyes; the three scales kept apart — `desired`,

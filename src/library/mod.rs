@@ -44,7 +44,7 @@ use crate::app::{ContextTarget, LIBRARY_SCROLL, MenuKind, Message};
 use crate::library::drag::{DragPayload, DropEffect};
 
 use crate::chrome::icons::{icon, IconName};
-use crate::chrome::platform;
+use crate::chrome::desktop;
 use crate::theme::{mix, Tokens};
 
 /// What the level's cells read about a selection: the mode, and the set.
@@ -250,7 +250,7 @@ pub fn view(
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(Padding {
-            top: platform::TITLE_BAR_H,
+            top: desktop::TITLE_BAR_H,
             right: 0.0,
             bottom: 0.0,
             left: 0.0,

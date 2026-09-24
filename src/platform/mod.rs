@@ -17,6 +17,28 @@ pub mod pdfium;
 pub mod progress;
 pub mod store;
 
+/// The desktops this app ships on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Mac,
+    Windows,
+    Linux,
+}
+
+/// The desktop this process runs on. Anything unrecognised is treated as
+/// Linux: frameless with the app's own caption cluster is the safe default.
+///
+/// Asked by the chrome (which cluster to draw) and by this layer's own file
+/// handling (which reveal command exists), which is why it lives here rather
+/// than with the chrome that was its first caller.
+pub fn os() -> Os {
+    match std::env::consts::OS {
+        "macos" => Os::Mac,
+        "windows" => Os::Windows,
+        _ => Os::Linux,
+    }
+}
+
 use std::io;
 use std::path::{Path, PathBuf};
 

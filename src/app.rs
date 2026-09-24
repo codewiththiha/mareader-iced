@@ -44,7 +44,7 @@ use reader_core::format::{is_supported_path, Format};
 use reader_core::settings::Settings;
 
 use crate::chrome::icons::{icon, IconName};
-use crate::chrome::platform::{self, Os};
+use crate::chrome::desktop;
 use crate::chrome::titlebar::{self, Titlebar};
 use crate::library::card::{plate_seam, THUMB_CAP};
 use crate::library::fold::{self, FoldPlan};
@@ -59,7 +59,7 @@ use crate::library::departure::{
 use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
 use crate::library::reveal::{self, Reveal};
-use crate::platform::{dialogs, fs, now_ms, progress, store};
+use crate::platform::{self, dialogs, fs, now_ms, Os, progress, store};
 use crate::reader;
 use crate::route::Route;
 use crate::storage;
@@ -2178,7 +2178,7 @@ impl Mareader {
         // The ellipsis is a hover target and never a drop: it stands for
         // several levels, and the table's refusal keeps the ghost honest
         // while the panel opens under the rest.
-        if self.cursor.y < platform::TITLE_BAR_H
+        if self.cursor.y < desktop::TITLE_BAR_H
             && drag.last_hot.as_ref() == Some(&Hot::Ellipsis)
         {
             let query = DropQuery {
@@ -2206,7 +2206,7 @@ impl Mareader {
         // crumb's own geometry check: a crumb lives in the titlebar — the
         // fold panel's crumbs, still Shelf targets, being the one hanging
         // exception, below the bar while the panel is open.
-        if (self.cursor.y < platform::TITLE_BAR_H || self.ellipsis_open)
+        if (self.cursor.y < desktop::TITLE_BAR_H || self.ellipsis_open)
             && let Some(id) = &self.hovered_crumb
         {
             let query = DropQuery {
@@ -2226,7 +2226,7 @@ impl Mareader {
         // The rest of the bar is not a target: the web registry never held
         // it, and a release over the chrome must not file the hold onto
         // the level.
-        if self.cursor.y < platform::TITLE_BAR_H {
+        if self.cursor.y < desktop::TITLE_BAR_H {
             return None;
         }
         let folders = library::level_folders(&self.library, &self.shelf, &self.query);
@@ -6354,7 +6354,7 @@ impl Mareader {
     /// over the content on macOS, and the bar keeps clear of them.
     fn bar_left_inset(&self) -> f32 {
         match platform::os() {
-            Os::Mac => platform::MACOS_LIGHTS_INSET + 8.0,
+            Os::Mac => desktop::MACOS_LIGHTS_INSET + 8.0,
             _ => 8.0,
         }
     }
@@ -6426,7 +6426,7 @@ impl Mareader {
             MenuKind::View => menus::view_menu(self.tokens, &self.library.view),
             MenuKind::Shelf => menus::shelf_menu(self.tokens, &self.shelf),
         };
-        let anchor = Point::new(self.cursor.x, platform::TITLE_BAR_H + 2.0);
+        let anchor = Point::new(self.cursor.x, desktop::TITLE_BAR_H + 2.0);
         let at = popover::place(anchor, size, self.viewport);
         Some(
             container(panel)

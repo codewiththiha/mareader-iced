@@ -29,7 +29,7 @@ use library_core::text as lib_text;
 
 use crate::app::{MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
-use crate::chrome::platform;
+use crate::chrome::desktop;
 use crate::chrome::titlebar::ghost_button_style;
 use crate::library::fold::{self, FoldPlan};
 use crate::theme::{wash, Tokens};
@@ -321,7 +321,7 @@ pub fn ellipsis_panel(
 pub fn ellipsis_anchor(left_inset: f32) -> Point {
     Point::new(
         left_inset + fold::crumb_px("Home", true) + 2.0 + fold::ELLIPSIS_PX * 0.5,
-        platform::TITLE_BAR_H + 2.0,
+        desktop::TITLE_BAR_H + 2.0,
     )
 }
 

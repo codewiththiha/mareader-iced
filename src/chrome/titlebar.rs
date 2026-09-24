@@ -24,7 +24,8 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point
 
 use super::captions;
 use super::icons::{icon, IconName};
-use super::platform::{self, Os};
+use super::desktop;
+use crate::platform::Os;
 use crate::route::Route;
 use crate::theme::{wash, Elevation, Tokens};
 
@@ -112,7 +113,7 @@ impl Titlebar {
     /// a hidden bar is found in the reveal band, a shown one is kept by
     /// anywhere inside its own height.
     pub fn on_cursor(&mut self, position: Option<Point>, route: Route, now: Instant) {
-        let limit = if self.shown() { platform::TITLE_BAR_H } else { platform::REVEAL_BAND };
+        let limit = if self.shown() { desktop::TITLE_BAR_H } else { desktop::REVEAL_BAND };
         self.hovered = position.is_some_and(|p| (0.0..limit).contains(&p.y));
         self.settle(route, now);
     }
@@ -137,7 +138,7 @@ impl Titlebar {
                 // The pointer just left: start the grace.
                 None => {
                     self.hide_at =
-                        Some(now + Duration::from_millis(platform::HIDE_GRACE_MS));
+                        Some(now + Duration::from_millis(desktop::HIDE_GRACE_MS));
                 }
                 // The grace ran out while ticking: hide.
                 Some(at) if now >= at => {
@@ -197,10 +198,10 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
         right,
         chrome,
     } = ctx;
-    let os = platform::os();
+    let os = crate::platform::os();
 
     let band = mouse_area(
-        container(Space::new().width(Length::Fill).height(platform::TITLE_BAR_H))
+        container(Space::new().width(Length::Fill).height(desktop::TITLE_BAR_H))
             .width(Length::Fill)
             .style(move |_| bar_style(tokens, factor)),
     )
@@ -224,7 +225,7 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
     let left_slot: Element<'a, M> = left.unwrap_or_else(|| match os {
         // The traffic lights are painted by AppKit over the content; the
         // bar keeps clear of them and owns no captions of its own.
-        Os::Mac => Space::new().width(platform::MACOS_LIGHTS_INSET).into(),
+        Os::Mac => Space::new().width(desktop::MACOS_LIGHTS_INSET).into(),
         _ => Space::new().width(1.0).into(),
     });
 
@@ -250,9 +251,9 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
     let content = row![left_slot, center_slot, right_slot]
         .align_y(Alignment::Center)
         .padding(Padding { top: 0.0, right: right_pad, bottom: 0.0, left: 8.0 })
-        .height(platform::TITLE_BAR_H);
+        .height(desktop::TITLE_BAR_H);
 
-    stack![band, content].width(Length::Fill).height(platform::TITLE_BAR_H).into()
+    stack![band, content].width(Length::Fill).height(desktop::TITLE_BAR_H).into()
 }
 
 /// The bar's plate: the paper's own colour, mostly opaque, with the

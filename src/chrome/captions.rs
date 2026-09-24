@@ -16,7 +16,8 @@ use iced::widget::{button, row, Button, Space};
 use iced::{Alignment, Background, Color, Element, Length};
 
 use super::icons::{icon, IconName};
-use super::platform::{Os, GNOME_BUTTON_D, WIN_CAPTION_W};
+use super::desktop::{GNOME_BUTTON_D, WIN_CAPTION_W};
+use crate::platform::Os;
 use super::titlebar::{Message, WindowAction};
 use crate::theme::{wash, Tokens};
 

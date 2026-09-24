@@ -69,12 +69,12 @@ pub fn reveal(address: &str) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("“{address}” is not on this disk right now"));
     }
-    let spawn = match crate::chrome::platform::os() {
-        crate::chrome::platform::Os::Mac => {
+    let spawn = match super::os() {
+        super::Os::Mac => {
             // `open -R` selects the file inside its folder.
             std::process::Command::new("open").arg("-R").arg(path).spawn()
         }
-        crate::chrome::platform::Os::Windows => {
+        super::Os::Windows => {
             // Explorer wants `/select,<path>` as one argument; a directory
             // simply opens.
             if path.is_dir() {
@@ -85,7 +85,7 @@ pub fn reveal(address: &str) -> Result<(), String> {
                     .spawn()
             }
         }
-        crate::chrome::platform::Os::Linux => {
+        super::Os::Linux => {
             // No selection protocol to count on: open the folder itself.
             let dir = if path.is_dir() {
                 path.to_path_buf()
