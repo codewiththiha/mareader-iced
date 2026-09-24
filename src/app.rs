@@ -1072,7 +1072,13 @@ impl Mareader {
                     self.ellipsis_close_at = None;
                     self.ellipsis_open = false;
                 }
-                Task::none()
+                // A zoom in flight is driven by the app's own frames rather
+                // than a clock of the reader's: the subscription is alive
+                // exactly while one is — `needs_tick` — so a still reader costs
+                // no redraws at all, and a moving one moves with the display's
+                // refresh rate.
+                let effects = self.reader.update(reader::Message::Tick, at);
+                self.apply_reader_effects(effects)
             }
             Message::ShelfViewport(viewport) => {
                 self.shelf_viewport_h = viewport.bounds().height;
@@ -6801,6 +6807,7 @@ impl Mareader {
         // redraws.
         if self.titlebar.needs_tick(now)
             || self.toasts.needs_tick(now)
+            || self.reader.needs_tick()
             || self.press.is_some()
             || self.drag.is_some()
             || self.ellipsis_close_at.is_some()
@@ -7026,14 +7033,33 @@ fn on_event(event: iced::Event, status: event::Status, id: window::Id) -> Option
         }) if matches!(status, event::Status::Ignored) => {
             Some(if modifiers.shift() { Message::ShiftEnter } else { Message::EnterPressed })
         }
-        // The page turns, and they come last on purpose: `Escape` and `Enter`
-        // are matched above, and a key this arm declines falls through to the
-        // same `None` every unhandled key does. A focused field keeps its own
-        // arrows — that is what the status guard says — so the reader hears
-        // only the keys the fields have no use for.
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
-            if matches!(status, event::Status::Ignored) =>
-        {
+        // The page turns and the zoom ladder, and they come last on purpose:
+        // `Escape` and `Enter` are matched above, and a key this arm declines
+        // falls through to the same `None` every unhandled key does. A focused
+        // field keeps its own keys — that is what the status guard says — so the
+        // reader hears only what the fields have no use for.
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            ..
+        }) if matches!(status, event::Status::Ignored) => {
+            // The zoom ladder's keys are the web app's own, and they are PLAIN
+            // presses there: with a modifier the key belongs to the window's
+            // shortcuts (⌘F, ⌘O, ⌘←/→) and the reader never sees it, so the
+            // same guard holds here.
+            let plain = !(modifiers.control() || modifiers.alt() || modifiers.logo());
+            if plain {
+                let zoom = match key.as_ref() {
+                    keyboard::Key::Character("+") | keyboard::Key::Character("=") => Some(1),
+                    keyboard::Key::Character("-") | keyboard::Key::Character("_") => Some(-1),
+                    _ => None,
+                };
+                if let Some(dir) = zoom {
+                    return Some(Message::Reader(reader::Message::Zoom(reader::Command::Step(
+                        dir,
+                    ))));
+                }
+            }
             let step = match key {
                 keyboard::Key::Named(keyboard::key::Named::ArrowLeft)
                 | keyboard::Key::Named(keyboard::key::Named::PageUp) => -1,

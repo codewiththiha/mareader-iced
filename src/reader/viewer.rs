@@ -1,12 +1,17 @@
 //! Where the reader is, and how big the page under their eyes is drawn.
 //!
 //! A port of the web app's `ViewerSignals` — the page, the view mode, the fit
-//! mode and the scale — plus the one piece of arithmetic that decides the
-//! scale: [`FitDims`], which was `src/zoom/target.rs` in the web tree and is
-//! kept apart from the signals here for the same reason it was kept apart
-//! there. The seed scale at open and the live refit on a window resize must
-//! answer with the same number, and one definition of what a fit measures
-//! against is the only way they can.
+//! mode — plus the one piece of arithmetic that decides a scale: [`FitDims`],
+//! which was `src/zoom/target.rs` in the web tree and is kept apart from the
+//! state here for the same reason it was kept apart there. The seed scale at
+//! open and the live refit on a window resize must answer with the same number,
+//! and one definition of what a fit measures against is the only way they can.
+//!
+//! The scales themselves are deliberately NOT here: they belong to the zoom
+//! pipeline ([`super::zoom`]), which keeps the reader's own, the one on screen
+//! and the one the rasters are crisp at apart. The viewer answers "what does
+//! this fit want, given this window and this sheet", and every caller hands it
+//! the scale it is measuring from.
 
 use iced::Size;
 use reader_core::view::ViewMode;
@@ -23,10 +28,6 @@ pub struct Viewer {
     pub mode: ViewMode,
     /// The fit mode in force. `None` means the scale is the reader's own.
     pub fit: FitMode,
-    /// The settled scale. The web app kept `desired`, `visual` and the tween's
-    /// target apart because a zoom animated; 3b brings that machine with it,
-    /// and until then there is one scale because nothing moves.
-    pub scale: f64,
     /// The reading area, in CSS px: the window, less the space a docked rail
     /// takes. The title bar is an overlay, so it is not subtracted.
     pub container: Size,
@@ -51,7 +52,6 @@ impl Default for Viewer {
             // every mode resolves through the same page host.
             mode: ViewMode::Single,
             fit: FitMode::Width,
-            scale: 1.0,
             container: Size::new(0.0, 0.0),
             dpr: 1.0,
             margin: 0.0,
@@ -68,22 +68,22 @@ impl Viewer {
         self.container.width > 1.0 && self.container.height > 1.0
     }
 
-    /// The scale a fit mode wants right now, or the settled scale when no fit
-    /// owns it or nothing can be measured yet.
+    /// The scale a fit mode wants right now, or the scale the caller measured
+    /// from when no fit owns it or nothing can be measured yet.
     ///
     /// A document opening straight into the continuous stream is the
-    /// exception, and the reason this answers `1.0` there: there is no page to
-    /// fit, the window *is* the page, and type size belongs to the typography
-    /// settings. The branch is dead until 3c turns the strip on, and it is
-    /// written now so the seed scale and the live refit cannot disagree when
-    /// it does.
-    pub fn resolved_scale(&self, box_: PageBox) -> f64 {
+    /// exception, and the reason this answers `current` there: there is no page
+    /// to fit, the window *is* the page, and type size belongs to the
+    /// typography settings. The branch is dead until 3c turns the strip on, and
+    /// it is written now so the seed scale and the live refit cannot disagree
+    /// when it does.
+    pub fn resolved_scale(&self, box_: PageBox, current: f64) -> f64 {
         if self.mode == ViewMode::ScrollVertical || !self.measured() {
-            return clamp_scale(self.scale);
+            return clamp_scale(current);
         }
         match FitDims::from_geometry(self.mode, self.container, self.margin, box_) {
-            Some(dims) => dims.fit(self.fit, self.scale),
-            None => clamp_scale(self.scale),
+            Some(dims) => dims.fit(self.fit, current),
+            None => clamp_scale(current),
         }
     }
 
@@ -98,10 +98,12 @@ impl Viewer {
         self.page = 1;
     }
 
-    /// The page's box on screen, in CSS px at the settled scale.
-    pub fn page_px(&self, box_: PageBox) -> (f32, f32) {
-        let w = box_.width * self.scale;
-        let h = box_.height * self.scale;
+    /// The page's box in CSS px at `scale`: the settled box at the committed
+    /// scale, and the stretched box a tween is passing through at the display
+    /// one.
+    pub fn page_px(&self, box_: PageBox, scale: f64) -> (f32, f32) {
+        let w = box_.width * scale;
+        let h = box_.height * scale;
         (w.max(1.0) as f32, h.max(1.0) as f32)
     }
 }
@@ -187,14 +189,14 @@ mod tests {
     #[test]
     fn a_fit_width_spans_the_container_with_no_leftover_pan_space() {
         let v = viewer(ViewMode::Single, 1000.0, 800.0, 0.0);
-        assert!((v.resolved_scale(page(500.0, 700.0)) - 2.0).abs() < 1e-9);
+        assert!((v.resolved_scale(page(500.0, 700.0), 1.0) - 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn the_reader_margin_comes_off_the_width_only() {
         let v = viewer(ViewMode::Single, 1000.0, 800.0, 20.0);
         // 1000 - 2 x 20 is the usable width; the height is untouched.
-        assert!((v.resolved_scale(page(480.0, 700.0)) - 2.0).abs() < 1e-9);
+        assert!((v.resolved_scale(page(480.0, 700.0), 1.0) - 2.0).abs() < 1e-9);
     }
 
     #[test]
@@ -202,62 +204,51 @@ mod tests {
         let mut v = viewer(ViewMode::Single, 1000.0, 400.0, 0.0);
         v.fit = FitMode::Page;
         // The height is the binding constraint here: 400/700 < 1000/500.
-        assert!((v.resolved_scale(page(500.0, 700.0)) - 400.0 / 700.0).abs() < 1e-9);
+        assert!((v.resolved_scale(page(500.0, 700.0), 1.0) - 400.0 / 700.0).abs() < 1e-9);
     }
 
     #[test]
     fn a_spread_fits_two_pages_across() {
         let single = viewer(ViewMode::Single, 1024.0, 768.0, 0.0);
         let spread = viewer(ViewMode::Spread, 1024.0, 768.0, 0.0);
-        assert!(
-            (spread.resolved_scale(page(612.0, 792.0)) * 2.0
-                - single.resolved_scale(page(612.0, 792.0)))
-            .abs()
-                < 1e-9
-        );
+        let twice = spread.resolved_scale(page(612.0, 792.0), 1.0) * 2.0;
+        assert!((twice - single.resolved_scale(page(612.0, 792.0), 1.0)).abs() < 1e-9);
     }
 
     #[test]
     fn an_unmeasured_window_is_not_fitted() {
         // The window has not reported its size yet: the page keeps the scale it
         // has rather than being slammed to the minimum by a fit against zero.
-        let v = Viewer {
-            scale: 1.4,
-            ..Viewer::default()
-        };
+        let v = Viewer::default();
         assert!(!v.measured());
-        assert!((v.resolved_scale(page(500.0, 700.0)) - 1.4).abs() < 1e-9);
+        assert!((v.resolved_scale(page(500.0, 700.0), 1.4) - 1.4).abs() < 1e-9);
     }
 
     #[test]
     fn the_stream_has_no_page_to_fit() {
         // The continuous strip's scale is the reader's own; the window is the
         // page. 3c turns this on.
-        let mut v = viewer(ViewMode::ScrollVertical, 1000.0, 800.0, 0.0);
-        v.scale = 1.0;
-        assert!((v.resolved_scale(page(500.0, 700.0)) - 1.0).abs() < 1e-9);
+        let v = viewer(ViewMode::ScrollVertical, 1000.0, 800.0, 0.0);
+        assert!((v.resolved_scale(page(500.0, 700.0), 1.0) - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn leaving_a_book_takes_the_page_and_keeps_the_reader_s_own_layout() {
+        // What is the reader's own survives a close — the mode, the fit and the
+        // margin here, the scales in `Zoom` (see the reader's own test).
         let mut v = viewer(ViewMode::Single, 1000.0, 800.0, 12.0);
         v.page = 40;
-        v.scale = 1.75;
         v.fit = FitMode::Page;
         v.reset_position();
         assert_eq!(v.page, 1);
-        assert_eq!(v.scale, 1.75, "the reader's own zoom survives the book");
-        assert_eq!(v.fit, FitMode::Page, "and so does the fit they chose");
+        assert_eq!(v.fit, FitMode::Page, "the fit they chose survives the book");
         assert_eq!(v.margin, 12.0);
     }
 
     #[test]
     fn a_page_box_on_screen_is_the_box_at_the_scale() {
-        let v = Viewer {
-            scale: 1.5,
-            ..Viewer::default()
-        };
-        assert_eq!(v.page_px(page(600.0, 800.0)), (900.0, 1200.0));
+        let v = Viewer::default();
+        assert_eq!(v.page_px(page(600.0, 800.0), 1.5), (900.0, 1200.0));
     }
 
     #[test]
@@ -266,8 +257,7 @@ mod tests {
         // reader answers with the A4 fallback before this point, and the guard
         // is here for the paths that reach it directly.
         let v = Viewer::default();
-        let (w, h) = v.page_px(page(0.0, 0.0));
-        assert_eq!((w, h), (1.0, 1.0));
+        assert_eq!(v.page_px(page(0.0, 0.0), 1.0), (1.0, 1.0));
     }
 
     #[test]
@@ -275,6 +265,6 @@ mod tests {
         // A one-pixel-wide window would ask for a scale far below the minimum.
         let v = viewer(ViewMode::Single, 2.0, 2.0, 0.0);
         let floor = reader_core::zoom_math::MIN_SCALE;
-        assert!((v.resolved_scale(page(1000.0, 1400.0)) - floor).abs() < 1e-9);
+        assert!((v.resolved_scale(page(1000.0, 1400.0), 1.0) - floor).abs() < 1e-9);
     }
 }

@@ -379,10 +379,30 @@ meets the app: engine, then the page, then everything that moves or measures it.
   from a real frame; page turn by keyboard and by the bar's own prev/next; close back to the
   shelf with the reading position flushed into the row's read point. *Accept: open a PDF, read
   it, turn pages, go back — and open it again where you left off.*
-* **3b — Zoom.** The coordinator: ladder steps, Fit Width / Fit Page, the refit on a container
-  change, the clamp at the ends, ctrl-wheel and the `+`/`-` keys, the zoom popover, and the
-  overflow that a hand-picked zoom is allowed to have (scroll affordance rather than a snap
-  back to fit). *Accept: every zoom door lands on the same scale, and a page stays crisp.*
+* **3b — Zoom.** The web app's `src/zoom/*` and its three scales, ported into one module,
+  `src/reader/zoom.rs`: `Command` (ladder `Step`, `Refit`, `Constrain`, `Follow`) resolved
+  against the window, the mode and the sheet under the reader's eyes to a single scale; the
+  three scales the pipeline keeps apart — `desired` (what the reader asked for, the ceiling a
+  manual zoom resolves to), `display` (what is on screen this frame) and `committed` (what the
+  mounted raster is crisp at); a transition tweened over 120 ms on an out-cubic curve (the web
+  app's `ease_out_cubic`: it covers ground early and lands on the target rather than stopping
+  dead on it), with the target re-resolved from the in-flight target so `+ +` advances two
+  rungs, and a container follow landing in the frame it was asked for with its crisp commit
+  held until the space around the page has been quiet for 180 ms. The fit arithmetic is the
+  `FitDims` the reader already carries (one definition for the seed scale and the live
+  refit); resolution records intent —
+  a step writes `desired` and clears the fit, a refit writes `desired` from the fit, a
+  constraint leaves `desired` alone so a hand-picked zoom overflows and scrolls instead of
+  snapping back to fit. The reference's own doors, and no others: the reading bar's zoom
+  cluster — the ladder's two steps with the readout between them, and the Fit Width / Fit
+  Page choices beside it, which is the web app's reader menu kept where the reader's hands
+  already are — the `+`/`=` and `-`/`_` keys as plain presses (a modified key belongs to the
+  window's shortcuts, exactly as in the reference; there is no wheel-zoom door to port), the
+  window's own follow posted on every resize report, and the page-turn re-fit while Auto
+  Resize is on. Every one of them lands through the same resolver, and every scale moves
+  through the same transition. *Accept: every zoom door lands on the same scale, the page
+  stays crisp once a zoom settles, and a window drag moves the page continuously without a
+  raster per frame.*
 * **3c — The scrolling modes.** The continuous strip on the ported `virtual-list` windowing
   with `PAGE_GAP` and page margin, the horizontal strip, spread's gutter arithmetic, the
   scroll→page sync (`scroll_fraction` ↔ `fraction_offset`) and the mount anchor that lands the
@@ -712,7 +732,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   PDFium service and bind strategy, the open pipeline, and the first
   reading surface the marks, covers and kept reading data all wait
   on.
-* **P3 — in flight, 3a.** The engine has landed: `pdfium-render` 0.9.4 binds the
+* **P3 — 3a and 3b shipped; 3c (the scrolling modes) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
   shared library at run time through `MAREAEDER_PDFIUM`/`MAREAEDER_PDFIUM_DIR`,
   beside the executable and its `lib`/`bin`, then the working directory's same three,
   then the system's loader — and a machine with no Pdfium gets a sentence naming
@@ -735,3 +755,25 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   and report the new position so the library's rows keep it; and leaving flush the
   read point into the rows the same `rows_for_read` rule names, with the shelf's own
   record of the name and author written the moment the document answers.
+  Zoom is the web app's pipeline, ported whole into `reader/zoom.rs` and wired to one
+  owner: `Command` (Step / Refit / Constrain / Follow) resolved against the window, the
+  mode and the sheet under the reader's eyes; the three scales kept apart — `desired`,
+  the reader's own and the ceiling a hand-picked zoom resolves to, `display`, what the
+  painter reads this frame, and `committed`, the only scale a raster is ever asked at;
+  and one transition, 120 ms on an out-cubic curve, retargeted from wherever the eye is
+  when a second press lands mid-flight. A window drag is a *follow*: the layout is in
+  the new window on the frame the size was reported — a scale that waited for the drag
+  to end would leave the page wider than its box for the whole burst — while the crisp
+  raster waits out a 180 ms quiet, so a drag costs one render instead of one per frame.
+  A page turn re-resolves the same way when Auto Resize is on; a chosen fit answers in
+  the frame it lands; a manual step drops the fit and becomes the ceiling, so a page
+  zoomed in on stays there and overflows rather than snapping back. The bar's readout is
+  the *display* scale, its step buttons are enabled by asking the resolver whether the
+  ladder has anywhere to go, and the app drives the whole thing from its own frames
+  subscription — alive exactly while a transition is, so a still reader costs no
+  redraws. The name the bar's centre, the window title and the error card show is
+  resolved once per move of the identity — the document's own `/Title` when it is one worth showing, else the
+  row's display name, else the address's stem — and kept, because the bar asks for it
+  every frame. All five CI lanes are green on the increment; the text lane (PDFium's
+  per-character boxes, grouped into runs) is ported and driven by the engine's own
+  test, and waits on the search that will ask it for a page.

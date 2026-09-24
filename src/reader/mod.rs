@@ -15,9 +15,11 @@
 mod document;
 mod page;
 mod viewer;
+mod zoom;
 
 pub use document::{DocStatus, Document};
 pub use viewer::Viewer;
+pub use zoom::Command;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -29,6 +31,8 @@ use reader_core::settings::Settings;
 use reader_core::zoom_math::FitMode;
 
 use crate::formats::pdf::{self, Engine, Event, FrameKey, Request};
+
+use zoom::{Advanced, Zoom};
 use crate::theme::Tokens;
 use crate::ui::toast::Tone;
 
@@ -57,6 +61,13 @@ pub struct Open {
 pub struct Reader {
     pub document: Document,
     pub viewer: Viewer,
+    /// The three scales and the transition in flight between them — the web
+    /// app's zoom pipeline, which is the one owner of how big the page is.
+    zoom: Zoom,
+    /// The instant the last animation frame was handed out. A tween's progress
+    /// is measured from it, so the reader's clock is the app's own frame rate
+    /// rather than a timer of its own.
+    last_tick: Instant,
     /// The page raster on screen, if any.
     frame: Option<Frame>,
     /// The engine worker, started by the first request it is given.
@@ -73,29 +84,17 @@ pub struct Reader {
     awaiting: Option<FrameKey>,
 }
 
-/// The page raster on screen: the texture the page host paints, the key it
-/// answers, and the box it actually came back as.
+/// The page raster on screen: the texture the page host paints, and the key it
+/// answers.
 ///
-/// The box is kept because the host may draw it at `width / dpr` logical px
-/// rather than at the box it asked for: Pdfium keeps the page's aspect ratio,
-/// and the raster it returns is the truth about what was drawn.
+/// The key is kept so a frame that belongs to another page — or another device
+/// grid, or another session — can be told apart from the one the page host is
+/// waiting for; the raster's own pixel box is not, because the page is drawn at
+/// the box its scale resolves to and the texture is fitted to it either way.
 #[derive(Debug, Clone)]
 struct Frame {
     key: FrameKey,
-    width: u32,
-    height: u32,
     handle: Handle,
-}
-
-impl Frame {
-    /// The box this frame occupies on screen, in logical px.
-    fn css_box(&self, dpr: f64) -> (f32, f32) {
-        let dpr = if dpr > 0.0 { dpr } else { 1.0 };
-        (
-            (f64::from(self.width) / dpr) as f32,
-            (f64::from(self.height) / dpr) as f32,
-        )
-    }
 }
 
 /// Everything the reader can be told.
@@ -113,6 +112,18 @@ pub enum Message {
     Resized(Size),
     /// The display's scale factor moved.
     Scale(f64),
+    /// One zoom intent, posted by whichever door the reader used — the bar's
+    /// own control, the `+`/`-` keys. Resolved against the window, the mode and
+    /// the sheet under the reader's eyes, and run through the one transition
+    /// pipeline.
+    Zoom(Command),
+    /// A fit mode was chosen. Written straight to the viewer, because it is a
+    /// decision rather than a scale: the scale follows it in the same frame,
+    /// untweened — a click answers where it lands instead of easing.
+    Fit(FitMode),
+    /// One animation frame: the app's frames subscription, alive exactly as
+    /// long as a transition is ([`Reader::needs_tick`]).
+    Tick,
     /// The surface asked to leave for the shelf. Standing on the shelf is the
     /// app's business — the route is the app's — so the app answers this one by
     /// changing route after the reader has let the document go.
@@ -178,6 +189,8 @@ impl Reader {
         Self {
             document: Document::default(),
             viewer,
+            zoom: Zoom::default(),
+            last_tick: Instant::now(),
             frame: None,
             engine: Engine::new(),
             bound: None,
@@ -234,6 +247,10 @@ impl Reader {
         self.awaiting = None;
         self.frame = None;
         self.document.reset();
+        // Whatever was still moving belonged to the book that just closed;
+        // a transition left open would keep asking for frames of a page
+        // nobody is reading.
+        self.zoom.cancel();
         // The page belonged to the book that just closed; the reader's own
         // layout — mode, fit, scale — is theirs and survives it.
         self.viewer.reset_position();
@@ -242,7 +259,7 @@ impl Reader {
     }
 
     /// One message, and what the app owes the world because of it.
-    pub fn update(&mut self, message: Message, _now: Instant) -> Vec<Effect> {
+    pub fn update(&mut self, message: Message, now: Instant) -> Vec<Effect> {
         match message {
             Message::Engine(event) => self.on_event(event),
             Message::Open(open) => self.begin_open(open),
@@ -260,8 +277,70 @@ impl Reader {
                 self.request_frame();
                 Vec::new()
             }
+            // The doors all ask for the tween: one press is one gesture, and a
+            // gesture is what the 120 ms is for. The watchers — a resize, a
+            // chosen fit — come in untweened instead, because they must land in
+            // the frame they were asked in.
+            Message::Zoom(command) => {
+                self.zoom_command(command, true);
+                Vec::new()
+            }
+            Message::Fit(fit) => {
+                self.viewer.fit = fit;
+                // The window's own follow: it resolves to the fit when one is
+                // active and to the reader's own scale otherwise, which is the
+                // same rule a resize goes through.
+                self.zoom_command(Command::Follow, false);
+                Vec::new()
+            }
+            Message::Tick => {
+                let delta = now.saturating_duration_since(self.last_tick);
+                self.last_tick = now;
+                if self.zoom.advance(delta.as_secs_f64() * 1000.0).committed {
+                    // The transaction ended: the scale the rasters are drawn
+                    // for has moved, and the page is re-asked for at it.
+                    self.request_frame();
+                }
+                Vec::new()
+            }
             Message::Close => self.close(),
         }
+    }
+
+    /// Whether the reader owes an animation frame. The app subscribes to the
+    /// frames it needs and nothing else: an idle reader costs no redraws.
+    pub fn needs_tick(&self) -> bool {
+        self.zoom.ticking()
+    }
+
+    /// Post one zoom intent: resolve it against the state it lands in, record
+    /// what the resolution decided, and open the transition it asks for.
+    ///
+    /// The one door every zoom goes through — the bar's buttons, the keyboard's
+    /// rungs, the window's own follow and a page turn's re-fit — so a fit
+    /// cannot race a gesture along a second path.
+    fn zoom_command(&mut self, command: Command, animate: bool) -> Advanced {
+        let sheet = self.document.page_box(self.viewer.page);
+        let Some(target) = zoom::resolve(&self.viewer, &self.zoom, sheet, command) else {
+            return Advanced::NONE;
+        };
+        if self.zoom.note(target) {
+            // A hand-picked scale owns the zoom now: the fit mode steps aside,
+            // or it would fight the gesture on the next window change.
+            self.viewer.fit = FitMode::None;
+        }
+        let following = command == Command::Follow;
+        let did = self.zoom.begin(target.scale, animate, following);
+        if did.moved {
+            // The instant the tween is measured from. The app's ticks carry
+            // their own instants, and this is the one the first of them compares
+            // against — a stale one would land the tween in a single frame.
+            self.last_tick = Instant::now();
+        }
+        if did.committed {
+            self.request_frame();
+        }
+        did
     }
 
     /// An answer from the engine.
@@ -331,8 +410,6 @@ impl Reader {
                 }
                 self.frame = Some(Frame {
                     key,
-                    width,
-                    height,
                     handle: Handle::from_rgba(width, height, pixels),
                 });
                 Vec::new()
@@ -388,8 +465,10 @@ impl Reader {
         self.viewer.page = self.document.resume.clamp(1, self.document.num_pages.max(1));
         // The seed scale is the same fit the first live refit will resolve, so
         // the first frame already sits where the fit is going to land instead
-        // of jumping to it a moment later.
-        self.viewer.scale = self.viewer.resolved_scale(page1);
+        // of jumping to it a moment later — and every scale is seeded at once,
+        // so nothing is left holding the previous book's number.
+        let seeded = self.viewer.resolved_scale(page1, self.zoom.committed);
+        self.zoom.initialize(seeded);
         self.frame = None;
         self.awaiting = None;
         // `Ready` LAST: it is what makes the surface ask for a frame, and
@@ -454,35 +533,60 @@ impl Reader {
         self.viewer.page = next;
         // A page turn may land on a differently sized sheet — a landscape plate
         // inside a portrait book — and the web app's `auto_resize` is what
-        // decides whether the scale follows it. An active fit always follows;
-        // a hand-picked zoom follows only while the setting is on.
-        if self.viewer.auto_resize && self.viewer.fit != FitMode::None {
-            let box_ = self.document.page_box(next);
-            self.viewer.scale = self.viewer.resolved_scale(box_);
+        // decides whether the scale follows it. On, the new sheet is resolved
+        // the way the window's own changes are: the fit when one owns the
+        // scale, the reader's own zoom when it does not. Off, the turn touches
+        // nothing, and a plate too wide for the window overflows and scrolls.
+        //
+        // Untweened, deliberately: the answer is not a gesture but the page
+        // arriving — the same reasoning that keeps a window resize finding the
+        // new size in the frame it was reported. (The web app debounced this by
+        // its settle window because a SCROLL moves pages continuously; a strip
+        // that does arrives in 3c, and the debounce belongs with it.)
+        let moved = if self.viewer.auto_resize {
+            let command = if self.viewer.fit == FitMode::None {
+                Command::Constrain
+            } else {
+                Command::Refit
+            };
+            self.zoom_command(command, false).committed
+        } else {
+            false
+        };
+        if !moved {
+            // The page under the reader's eyes changed, so a raster is owed for
+            // it whether or not the zoom moved the scale the old one was drawn
+            // at.
+            self.request_frame();
         }
-        self.request_frame();
         self.effect_of(Effect::Progress)
     }
 
-    /// The window changed size. A fit follows it; a hand-picked scale (3b's)
-    /// does not — that is the whole difference between the two, and the reason
-    /// this asks the viewer rather than deciding here.
+    /// The window changed size.
+    ///
+    /// The space around the page is a *follow*, not a refit: the layout moves
+    /// with the window every time it is reported — a scale that waits for the
+    /// drag to end leaves the page wider than its box, and the flex arithmetic
+    /// that would have to squish it is exactly what the web app refused to do —
+    /// while the crisp raster waits for the burst to go quiet, so a drag costs
+    /// one render rather than one per frame. A fit tracks the window; a
+    /// hand-picked zoom keeps its own scale and overflows instead, which is the
+    /// difference between the two, and the reason this resolves through the
+    /// pipeline rather than deciding here.
     fn resize(&mut self, size: Size) {
         self.viewer.container = size;
         if self.document.status.is_ready() {
-            let box_ = self.document.page_box(self.viewer.page);
-            self.viewer.scale = self.viewer.resolved_scale(box_);
-            self.request_frame();
+            self.zoom_command(Command::Follow, false);
         }
     }
 
     /// Ask the engine for the page under the reader's eyes, in the box it
-    /// occupies on screen.
+    /// occupies at the settled scale.
     fn request_frame(&mut self) {
         if !self.document.status.is_ready() || !self.viewer.measured() {
             return;
         }
-        let (width, height) = self.page_box_px();
+        let (width, height) = self.frame_box_px();
         let key = FrameKey::of_css(
             self.viewer.page,
             f64::from(width),
@@ -505,25 +609,35 @@ impl Reader {
             .filter(|frame| frame.key.page == self.viewer.page)
     }
 
-    /// The box the page occupies on screen, in CSS px: the frame's own box when
-    /// one is up, else the box the next frame will occupy.
-    ///
-    /// Snapped to the device-pixel grid (`pdf_core::pixel_grid`), and the same
-    /// number the raster is asked for in — one arithmetic, so the page's edge
-    /// is a whole device pixel and a page turn cannot leave a hairline of
-    /// background along the seam. A capped raster comes back smaller than this
-    /// box and is drawn up to it; every other frame lands on it exactly.
+    /// The box the page occupies on screen this frame, in CSS px: the settled
+    /// box while nothing moves, and the box a transition is passing through
+    /// while one does. The raster in hand is drawn up to it — stretched, the way
+    /// the web app's page hosts stretched theirs — which is what makes a zoom
+    /// read as the paper itself changing size rather than a jump at the end.
     fn page_box_px(&self) -> (f32, f32) {
-        let (width, height) = self.viewer.page_px(self.document.page_box(self.viewer.page));
-        let snapped = (
+        self.box_at(self.zoom.display)
+    }
+
+    /// The box the raster is asked for, in CSS px at the committed scale — the
+    /// only scale a frame is ever drawn at, so a zoom in flight never asks the
+    /// engine for a size the reader is already past.
+    fn frame_box_px(&self) -> (f32, f32) {
+        self.box_at(self.zoom.committed)
+    }
+
+    /// The page's box at `scale`, snapped to the device-pixel grid
+    /// (`pdf_core::pixel_grid`): the paint box and the raster box are the same
+    /// arithmetic, so the page's edge is a whole device pixel and a page turn
+    /// cannot leave a hairline of background along the seam. A capped raster
+    /// comes back smaller than this box and is drawn up to it.
+    fn box_at(&self, scale: f64) -> (f32, f32) {
+        let (width, height) = self
+            .viewer
+            .page_px(self.document.page_box(self.viewer.page), scale);
+        (
             pdf_core::pixel_grid::snap_px(f64::from(width)) as f32,
             pdf_core::pixel_grid::snap_px(f64::from(height)) as f32,
-        );
-        if let Some(frame) = self.frame_here() {
-            let (fw, fh) = frame.css_box(self.viewer.dpr);
-            return (snapped.0.max(fw), snapped.1.max(fh));
-        }
-        snapped
+        )
     }
 
     /// The reading surface.
@@ -536,6 +650,15 @@ impl Reader {
 mod tests {
     use super::*;
     use reader_core::settings::Settings;
+
+    use std::time::Duration;
+
+    /// One animation frame, `delta_ms` after the last: exactly what the app's
+    /// tick carries while the pipeline owes one.
+    fn tick(reader: &mut Reader, delta_ms: f64) {
+        let now = reader.last_tick + Duration::from_secs_f64(delta_ms / 1000.0);
+        reader.update(Message::Tick, now);
+    }
 
     /// A reader whose engine can never start a worker (see
     /// [`Engine::inert`]): these tests are about the surface's own arithmetic,
@@ -674,9 +797,13 @@ mod tests {
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
         seeded(&mut reader, 3, 1);
-        let seeded_scale = reader.viewer.scale;
+        let seeded_scale = reader.zoom.committed;
+        assert!(
+            (reader.zoom.display - seeded_scale).abs() < 1e-9,
+            "the three scales agree the moment a book opens"
+        );
         reader.resize(Size::new(800.0, 1000.0));
-        assert!((reader.viewer.scale - seeded_scale).abs() < 1e-9);
+        assert!((reader.zoom.committed - seeded_scale).abs() < 1e-9);
         assert!((seeded_scale - 800.0 / 612.0).abs() < 1e-9);
     }
 
@@ -686,16 +813,25 @@ mod tests {
         // keeps the scale it has rather than being slammed to the minimum.
         let mut reader = reader();
         seeded(&mut reader, 3, 1);
-        assert!((reader.viewer.scale - 1.0).abs() < 1e-9);
+        assert!((reader.zoom.committed - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn a_resize_refits_a_page_and_moves_the_scale_with_the_window() {
+    fn a_resize_follows_the_window_and_sharpens_once_it_stops() {
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
         seeded(&mut reader, 3, 1);
         reader.resize(Size::new(400.0, 1000.0));
-        assert!((reader.viewer.scale - 400.0 / 612.0).abs() < 1e-9);
+        assert!(
+            (reader.zoom.display - 400.0 / 612.0).abs() < 1e-9,
+            "the page is in the new window on the frame it was reported"
+        );
+        assert!(
+            (reader.zoom.committed - 800.0 / 612.0).abs() < 1e-9,
+            "while the raster waits for the burst to end"
+        );
+        tick(&mut reader, 200.0);
+        assert!((reader.zoom.committed - 400.0 / 612.0).abs() < 1e-9);
     }
 
     #[test]
@@ -733,10 +869,9 @@ mod tests {
         let key = FrameKey::of_css(1, f64::from(expected.0), f64::from(expected.1), 1.0);
         reader.frame = Some(Frame {
             key,
-            width: key.width,
-            height: key.height,
             handle: Handle::from_rgba(1, 1, vec![0, 0, 0, 0]),
         });
+        assert!(reader.frame_here().is_some(), "the page's own raster is up");
         assert_eq!(reader.page_box_px(), expected, "the page does not move when its raster lands");
     }
 
@@ -801,12 +936,13 @@ mod tests {
             title: None,
             author: None,
         });
-        assert!((reader.viewer.scale - 800.0 / 612.0).abs() < 1e-9);
+        assert!((reader.zoom.committed - 800.0 / 612.0).abs() < 1e-9);
         reader.turn(1);
         assert!(
-            (reader.viewer.scale - 800.0 / 1224.0).abs() < 1e-9,
+            (reader.zoom.committed - 800.0 / 1224.0).abs() < 1e-9,
             "the landscape plate is fitted on its own terms"
         );
+        assert!(!reader.needs_tick(), "and it lands in the frame the turn did");
     }
 
     #[test]
@@ -836,11 +972,133 @@ mod tests {
             title: None,
             author: None,
         });
-        let scale = reader.viewer.scale;
+        let scale = reader.zoom.committed;
         reader.turn(1);
         assert!(
-            (reader.viewer.scale - scale).abs() < 1e-9,
+            (reader.zoom.committed - scale).abs() < 1e-9,
             "the reader's own scale is not moved behind their back"
+        );
+    }
+
+    #[test]
+    fn a_step_moves_the_page_at_once_and_sharpens_it_when_it_lands() {
+        // The gesture's contract, and the whole reason three scales are kept:
+        // the paper grows under the reader's eyes while the raster on it is the
+        // one that was already crisp, and the engine is asked exactly once — at
+        // the end, for the size the page actually came to rest at.
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        seeded(&mut reader, 3, 1);
+        let before = reader.zoom.committed;
+        reader.update(Message::Zoom(Command::Step(1)), Instant::now());
+        assert!(reader.needs_tick(), "a gesture owes frames");
+        assert!(
+            (reader.zoom.display - before).abs() < 1e-9,
+            "the tween opens where the eye already is"
+        );
+        // The tween's first frame: the paper grows, and the raster on it is
+        // still the one drawn for the size the engine was last asked at.
+        tick(&mut reader, 60.0);
+        assert!(reader.zoom.display > before, "the page grew");
+        assert!(
+            (reader.zoom.committed - before).abs() < 1e-9,
+            "and the raster is drawn for the size it was asked at"
+        );
+        assert!(
+            reader.page_box_px().0 > reader.frame_box_px().0,
+            "the paper on screen is the bigger of the two"
+        );
+        // The rung above a 800/612 fit width.
+        tick(&mut reader, 200.0);
+        assert!((reader.zoom.committed - 1.5).abs() < 1e-9);
+        assert!((reader.zoom.display - 1.5).abs() < 1e-9);
+        assert!(!reader.needs_tick());
+    }
+
+    #[test]
+    fn a_window_drag_moves_the_page_every_frame_and_rasterises_once_at_the_end() {
+        // The follow's contract: the layout is in the new window on the frame
+        // it was reported — a scale that waited for the drag to end would leave
+        // the page wider than its box — while the RENDER waits, so a drag costs
+        // one raster pass rather than one per frame.
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        seeded(&mut reader, 3, 1);
+        let before = reader.zoom.committed;
+        reader.resize(Size::new(600.0, 1000.0));
+        assert!((reader.zoom.display - 600.0 / 612.0).abs() < 1e-9);
+        reader.resize(Size::new(400.0, 1000.0));
+        assert!((reader.zoom.display - 400.0 / 612.0).abs() < 1e-9);
+        assert!((reader.zoom.committed - before).abs() < 1e-9, "still no raster");
+        // Each frame of the burst pushes the deadline back…
+        tick(&mut reader, 100.0);
+        assert!((reader.zoom.committed - before).abs() < 1e-9);
+        assert!(reader.needs_tick(), "the burst is not over");
+        // …and the quiet at the end commits once, at the size it stopped at.
+        tick(&mut reader, 200.0);
+        assert!((reader.zoom.committed - 400.0 / 612.0).abs() < 1e-9);
+        assert!(!reader.needs_tick());
+    }
+
+    #[test]
+    fn a_hand_picked_zoom_is_not_shrunk_back_to_the_fit_ceiling() {
+        // The ceiling a manual zoom resolves to is what the reader chose, not
+        // fit width: a page zoomed in on keeps its scale and overflows with a
+        // scroll affordance (3c's), rather than snapping back to fit.
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        seeded(&mut reader, 3, 1);
+        reader.update(Message::Zoom(Command::Step(1)), Instant::now());
+        tick(&mut reader, 200.0);
+        assert!((reader.zoom.desired - 1.5).abs() < 1e-9);
+        assert_eq!(reader.viewer.fit, FitMode::None, "the gesture dropped the fit");
+        // A window the fit would now answer differently: the reader's own zoom
+        // is what the page keeps.
+        reader.resize(Size::new(1400.0, 1000.0));
+        assert!((reader.zoom.display - 1.5).abs() < 1e-9);
+        assert!((reader.zoom.committed - 1.5).abs() < 1e-9, "nothing moved, so nothing renders");
+    }
+
+    #[test]
+    fn choosing_a_fit_answers_in_the_frame_it_lands() {
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        seeded(&mut reader, 3, 1);
+        reader.update(Message::Zoom(Command::Step(1)), Instant::now());
+        tick(&mut reader, 200.0);
+        assert_eq!(reader.viewer.fit, FitMode::None);
+        // A click, not a gesture: the page is in its new size on the frame the
+        // answer landed (the raster sharpens on the held commit behind it).
+        reader.update(Message::Fit(FitMode::Page), Instant::now());
+        assert_eq!(reader.viewer.fit, FitMode::Page);
+        assert!(
+            (reader.zoom.display - 1000.0 / 792.0).abs() < 1e-9,
+            "the whole sheet shows: the height is the binding side"
+        );
+        tick(&mut reader, 200.0);
+        assert!((reader.zoom.committed - 1000.0 / 792.0).abs() < 1e-9);
+        assert!((reader.zoom.desired - 1000.0 / 792.0).abs() < 1e-9, "a fit owns the ceiling too");
+    }
+
+    #[test]
+    fn closing_keeps_the_reader_s_own_zoom_and_drops_what_was_moving() {
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        seeded(&mut reader, 3, 1);
+        reader.update(Message::Zoom(Command::Step(1)), Instant::now());
+        tick(&mut reader, 200.0);
+        reader.turn(1);
+        let scale = reader.zoom.committed;
+        // A gesture still in flight when the reader leaves: dropped, or it
+        // would keep asking the engine for frames of a page nobody is reading.
+        reader.update(Message::Zoom(Command::Step(-1)), Instant::now());
+        assert!(reader.needs_tick());
+        reader.close();
+        assert!(!reader.needs_tick());
+        assert_eq!(reader.viewer.page, 1);
+        assert!(
+            (reader.zoom.committed - scale).abs() < 1e-9,
+            "the reader's own zoom survives the book"
         );
     }
 
