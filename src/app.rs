@@ -75,6 +75,10 @@ const SHEET_INPUT: Id = Id::new("sheet-input");
 /// The shelf grid's scroll, for the reveal's own way to a cell.
 pub const LIBRARY_SCROLL: &str = "library-shelf";
 
+/// The app's own name: the window title and the bar's centre both fall back to
+/// it while no document owns them.
+const APP_TITLE: &str = "Mareader";
+
 /// The light's own clock: a reveal's ring stands for this long on the
 /// level the answer walked the reader to.
 const FLASH_DWELL: Duration = Duration::from_millis(1600);
@@ -6328,14 +6332,7 @@ impl Mareader {
             Route::Reader => (None, None, Vec::new()),
         };
 
-        // The bar's centre: the document's own name while a book is open, else
-        // the app's. Borrowed rather than built — the element the bar returns
-        // outlives this function's locals, so the name has to come from the
-        // state it belongs to.
-        let title: &str = match self.route {
-            Route::Reader if self.reader.document.is_open() => self.reader.name(),
-            _ => self.route.title(),
-        };
+        let title = self.shown_title();
 
         titlebar::view(
             &self.titlebar,
@@ -6768,17 +6765,24 @@ impl Mareader {
         popover::popover(self.tokens, rows, SELECT_POP_W)
     }
 
-    /// The window's own title: the same rule the bar's centre follows, owned
-    /// because this is what the OS asks for.
-    ///
-    /// The reader route hands the name to the document — the web app's
-    /// floating label — so the window says what is being read rather than what
-    /// the app is. A stored copy's name comes from its row, which is why this
-    /// asks the reader rather than the file name.
+    /// The window's own title: what iced hands the OS. Owned because the
+    /// platform wants a value, which is the only difference from the bar's
+    /// centre.
     fn title(&self) -> String {
+        self.shown_title().to_owned()
+    }
+
+    /// The name the window and the bar's centre both show.
+    ///
+    /// The reader route hands it to the document — the web app's floating
+    /// label — so both say what is being read rather than what the app is. A
+    /// stored copy's name comes from its row, which is why this asks the
+    /// reader rather than the file name. Borrowed, because the bar's element
+    /// outlives the frame that built it.
+    fn shown_title(&self) -> &str {
         match self.route {
-            Route::Reader if self.reader.document.is_open() => self.reader.name().to_owned(),
-            _ => self.route.title().to_owned(),
+            Route::Reader if self.reader.document.is_open() => self.reader.name(),
+            _ => APP_TITLE,
         }
     }
 

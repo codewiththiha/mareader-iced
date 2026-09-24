@@ -14,14 +14,3 @@ pub enum Route {
     /// A document is open and being read.
     Reader,
 }
-
-impl Route {
-    /// The bar's title while no document owns it. The reader's floating
-    /// document title replaces this when a book is open.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Library => "Mareader",
-            Self::Reader => "Mareader",
-        }
-    }
-}
