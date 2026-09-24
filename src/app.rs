@@ -6597,7 +6597,7 @@ impl Mareader {
                         )
                     });
                 }
-                sheet::panel(self.tokens, &ask.action, body.into(), actions)
+                sheet::panel(self.tokens, ask.action.as_str(), body.into(), actions)
             }
             // The name question: the arriving name as the heading, where the
             // collision is — and what waits behind it — under that, the
@@ -6635,7 +6635,7 @@ impl Mareader {
                 if spec.apply_all && spec.waiting > 0 {
                     body = body.push(apply_all_row(self.tokens, spec.waiting, apply_all));
                 }
-                sheet::panel_owned(
+                sheet::panel_sized(
                     self.tokens,
                     sheet::CONFLICT_W,
                     spec.heading.clone(),
@@ -6669,7 +6669,7 @@ impl Mareader {
                 body = body.push(text(spec.subtitle.clone()).size(12).color(self.tokens.muted));
                 body = body.push(text(spec.question.clone()).size(12).color(self.tokens.muted));
                 body = body.push(sheet::choice_group(self.tokens, choices));
-                sheet::panel_owned(
+                sheet::panel_sized(
                     self.tokens,
                     sheet::CONFLICT_W,
                     spec.heading.clone(),
@@ -6686,7 +6686,7 @@ impl Mareader {
                     text(note.kind.sublabel().to_string()).size(12).color(self.tokens.muted),
                 );
                 body = body.push(text(sentence).size(12).color(self.tokens.muted));
-                sheet::panel_owned(
+                sheet::panel_sized(
                     self.tokens,
                     sheet::CONFLICT_W,
                     note.name.clone(),
@@ -6744,7 +6744,7 @@ impl Mareader {
             let nestable = folder_ids
                 .iter()
                 .all(|id| shelf::can_nest(&self.library.shelves, id, &shelf.id));
-            rows.push(popover::owned_item(
+            rows.push(popover::item(
                 self.tokens,
                 Some(IconName::Folder),
                 shelf.name.clone(),

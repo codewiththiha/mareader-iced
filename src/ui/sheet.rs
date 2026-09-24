@@ -6,6 +6,8 @@
 //! contract: one question at a time, an escape hatch on the scrim and the
 //! Escape key, and the affirmative button on the right.
 
+use std::borrow::Cow;
+
 use iced::widget::{button, container, mouse_area, stack, text, Column, Row, Space};
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Vector};
 
@@ -46,35 +48,26 @@ pub fn overlay<'a, M: Clone + 'a>(panel: Element<'a, M>, cancel: M) -> Element<'
 /// edge — cancel on the left of the cluster, the answer at the right edge.
 pub fn panel<'a, M: Clone + 'a>(
     tokens: Tokens,
-    title: &'a str,
+    title: impl Into<Cow<'a, str>>,
     body: Element<'a, M>,
     actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
     panel_sized(tokens, SHEET_W, title, body, actions)
 }
 
-/// The panel at an explicit width, for sheets wider than a question.
+/// The panel at an explicit width, for sheets wider than a question. The
+/// title is a `Cow`, because the question sheets build their heading off the
+/// library at render time and the others hand it a literal.
 pub fn panel_sized<'a, M: Clone + 'a>(
     tokens: Tokens,
     width: f32,
-    title: &'a str,
+    title: impl Into<Cow<'a, str>>,
     body: Element<'a, M>,
     actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
-    panel_of(tokens, width, text(title).size(15).font(MEDIUM).color(tokens.ink).into(), body, actions)
-}
-
-/// The panel with an owned title: the question sheets build their heading
-/// off the library at render time, and an owned string outlives the
-/// snapshot it was read from.
-pub fn panel_owned<'a, M: Clone + 'a>(
-    tokens: Tokens,
-    width: f32,
-    title: String,
-    body: Element<'a, M>,
-    actions: Vec<Element<'a, M>>,
-) -> Element<'a, M> {
-    panel_of(tokens, width, text(title).size(15).font(MEDIUM).color(tokens.ink).into(), body, actions)
+    let title: Cow<'a, str> = title.into();
+    let title = text(title).size(15).font(MEDIUM).color(tokens.ink);
+    panel_of(tokens, width, title.into(), body, actions)
 }
 
 fn panel_of<'a, M: Clone + 'a>(

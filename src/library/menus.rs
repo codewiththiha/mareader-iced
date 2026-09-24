@@ -5,6 +5,7 @@
 //! panel together with the size its rows add up to, so placement can clamp
 //! against what the panel really occupies before layout exists.
 
+use std::borrow::Cow;
 use iced::widget::{container, row, text};
 use iced::{Alignment, Element, Length, Padding, Size};
 
@@ -89,11 +90,11 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
     let mut size = PanelSize::new(ADD_W);
 
     if let Some(confirm) = &facts.confirm {
-        rows.push(menu::owned_item(
+        rows.push(menu::item(
             tokens,
             Some(confirm.back.icon),
             confirm.back.label.clone(),
-            confirm.back.sublabel.clone(),
+            confirm.back.sublabel.clone().map(Cow::Owned),
             false,
             confirm.back.message.clone(),
         ));
@@ -110,21 +111,21 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
         );
         size = size.row(menu::ROW_H);
 
-        rows.push(menu::owned_item(
+        rows.push(menu::item(
             tokens,
             Some(confirm.also.icon),
             confirm.also.label.clone(),
-            confirm.also.sublabel.clone(),
+            confirm.also.sublabel.clone().map(Cow::Owned),
             false,
             confirm.also.message.clone(),
         ));
         size = size.row(menu::TALL_ROW_H);
 
-        rows.push(menu::owned_item(
+        rows.push(menu::item(
             tokens,
             Some(confirm.go.icon),
             confirm.go.label.clone(),
-            confirm.go.sublabel.clone(),
+            confirm.go.sublabel.clone().map(Cow::Owned),
             false,
             confirm.go.message.clone(),
         ));
@@ -157,11 +158,11 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
         rows.push(menu::separator(tokens));
         size = size.row(menu::SEP_H);
 
-        rows.push(menu::owned_item(
+        rows.push(menu::item(
             tokens,
             Some(line.icon),
             line.label.clone(),
-            line.sublabel.clone(),
+            line.sublabel.clone().map(Cow::Owned),
             false,
             line.message.clone(),
         ));
@@ -176,11 +177,11 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
         size = size.row(menu::SECTION_H);
 
         for line in &facts.restore {
-            rows.push(menu::owned_item(
+            rows.push(menu::item(
                 tokens,
                 Some(line.icon),
                 line.label.clone(),
-                line.sublabel.clone(),
+                line.sublabel.clone().map(Cow::Owned),
                 false,
                 line.message.clone(),
             ));
@@ -355,7 +356,7 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
         Row::Book { .. } => ("Remove from library", Message::AskRemoveRow(row_id_of(row))),
         Row::Link { .. } => ("Remove link", Message::AskRemoveRow(row_id_of(row))),
     };
-    rows.push(menu::danger_item(tokens, remove_label, remove_message));
+    rows.push(menu::danger_item(None, remove_label, remove_message));
     size = size.row(menu::ROW_H);
 
     (menu::popover(tokens, rows, CONTEXT_W), size.size())
@@ -425,11 +426,11 @@ pub fn folder_menu(
     size = size.row(menu::ROW_H);
 
     if let Some(watch) = watch {
-        rows.push(menu::owned_item(
+        rows.push(menu::item(
             tokens,
             Some(watch.icon),
             watch.label,
-            Some(watch.sublabel),
+            Some(watch.sublabel.into()),
             false,
             Some(watch.message),
         ));
@@ -449,7 +450,7 @@ pub fn folder_menu(
     rows.push(menu::separator(tokens));
     size = size.row(menu::SEP_H);
 
-    rows.push(menu::danger_item(tokens, "Take shelf apart", Message::TakeApart(shelf.id.clone())));
+    rows.push(menu::danger_item(None, "Take shelf apart", Message::TakeApart(shelf.id.clone())));
     size = size.row(menu::ROW_H);
 
     (menu::popover(tokens, rows, CONTEXT_W), size.size())
@@ -555,7 +556,7 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         tokens,
         Some(IconName::Reload),
         "Reload Window",
-        Some("Re-reads the library from disk"),
+        Some("Re-reads the library from disk".into()),
         false,
         Some(Message::Reload),
     ));
@@ -634,7 +635,7 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(CONTEXT_W);
 
-    rows.push(menu::owned_section(tokens, format!("{count} selected")));
+    rows.push(menu::section(tokens, format!("{count} selected")));
     size = size.row(menu::SECTION_H);
 
     rows.push(menu::item(
@@ -647,7 +648,7 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
     ));
     size = size.row(menu::ROW_H);
 
-    rows.push(menu::owned_item(
+    rows.push(menu::item(
         tokens,
         Some(IconName::Copy),
         format!("Duplicate ({count})"),
@@ -660,8 +661,7 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
     rows.push(menu::separator(tokens));
     size = size.row(menu::SEP_H);
 
-    rows.push(menu::owned_danger_item(
-        tokens,
+    rows.push(menu::danger_item(
         Some(IconName::Close),
         format!("Remove ({count})"),
         Message::AskRemoveSelection,

@@ -15,13 +15,15 @@
 //! row metrics below and the menus that stack them keep a running height on
 //! the same numbers.
 
+use std::borrow::Cow;
+
 use iced::widget::{button, column, container, row, text, Column, Space};
 use iced::{
     Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Size, Vector,
 };
 
 use crate::chrome::icons::{icon, IconName};
-use crate::theme::{mix, wash, Tokens};
+use crate::theme::{mix, wash, Tokens, DANGER};
 
 /// One menu item's height: 6px of padding around an 18px line.
 pub const ROW_H: f32 = 30.0;
@@ -82,15 +84,18 @@ fn panel_style(tokens: Tokens) -> container::Style {
 /// One menu item: the icon slot, the label (with an optional second line),
 /// and the trailing check slot. `None` for the message renders the row
 /// disabled — listed, but not quietly dropped.
-#[allow(clippy::too_many_arguments)]
+///
+/// The label is a `Cow`, so a row whose name is computed at build time — a
+/// restore row, a watch row — needs no second builder.
 pub fn item<'a, M: Clone + 'a>(
     tokens: Tokens,
     glyph: Option<IconName>,
-    label: &'a str,
-    sublabel: Option<&'a str>,
+    label: impl Into<Cow<'a, str>>,
+    sublabel: Option<Cow<'a, str>>,
     checked: bool,
     message: Option<M>,
 ) -> Element<'a, M> {
+    let label: Cow<'a, str> = label.into();
     let icon_slot: Element<'a, M> = match glyph {
         Some(name) => container(icon(name, 15, tokens.muted)).width(16.0).into(),
         None => Space::new().width(16.0).into(),
@@ -108,51 +113,6 @@ pub fn item<'a, M: Clone + 'a>(
             .into(),
     };
     let check_slot: Element<'a, M> = if checked {
-        container(icon(IconName::Check, 14, tokens.accent)).width(16.0).into()
-    } else {
-        Space::new().width(16.0).into()
-    };
-
-    let face = row![icon_slot, labels, check_slot].spacing(8).align_y(Alignment::Center);
-    let action = button(face)
-        .width(Length::Fill)
-        .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 })
-        .style(move |_, status| item_style(tokens, status));
-    match message {
-        Some(message) => action.on_press(message).into(),
-        None => action.into(),
-    }
-}
-
-/// The owned twin of [`item`]: the same row for a label computed at the
-/// moment the menu is built — a restore row, a watch row — where nothing
-/// borrows outlives the builder.
-#[allow(clippy::too_many_arguments)]
-pub fn owned_item<M: Clone + 'static>(
-    tokens: Tokens,
-    glyph: Option<IconName>,
-    label: String,
-    sublabel: Option<String>,
-    checked: bool,
-    message: Option<M>,
-) -> Element<'static, M> {
-    let icon_slot: Element<'static, M> = match glyph {
-        Some(name) => container(icon(name, 15, tokens.muted)).width(16.0).into(),
-        None => Space::new().width(16.0).into(),
-    };
-    let labels: Element<'static, M> = match sublabel {
-        Some(sub) => column![
-            text(label).size(13).color(tokens.ink),
-            text(sub).size(11).color(tokens.muted),
-        ]
-        .spacing(1)
-        .width(Length::Fill)
-        .into(),
-        None => container(text(label).size(13).color(tokens.ink))
-            .width(Length::Fill)
-            .into(),
-    };
-    let check_slot: Element<'static, M> = if checked {
         container(icon(IconName::Check, 14, tokens.accent)).width(16.0).into()
     } else {
         Space::new().width(16.0).into()
@@ -191,16 +151,24 @@ fn item_style(tokens: Tokens, status: button::Status) -> button::Style {
 }
 
 /// The row that takes something away: the item's shape, the palette's
-/// danger red, and no icon — the colour carries the warning.
-pub fn danger_item<M: Clone + 'static>(
-    tokens: Tokens,
-    label: &'static str,
+/// danger red, and an optional icon — the colour carries the warning, so a
+/// row without one still lands its label where the others start.
+pub fn danger_item<'a, M: Clone + 'a>(
+    glyph: Option<IconName>,
+    label: impl Into<Cow<'a, str>>,
     message: M,
-) -> Element<'static, M> {
-    let face = container(text(label).size(13).color(crate::theme::DANGER))
-        .width(Length::Fill)
-        .padding(Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 24.0 });
-    let _ = tokens;
+) -> Element<'a, M> {
+    let icon_slot: Element<'a, M> = match glyph {
+        Some(name) => container(icon(name, 15, DANGER)).width(16.0).into(),
+        None => Space::new().width(16.0).into(),
+    };
+    let label: Cow<'a, str> = label.into();
+    let face = row![
+        icon_slot,
+        container(text(label).size(13).color(DANGER)).width(Length::Fill)
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
     button(face)
         .width(Length::Fill)
         .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 })
@@ -212,59 +180,22 @@ pub fn danger_item<M: Clone + 'static>(
 /// The danger row's chrome: the item's wash, red ink throughout.
 fn danger_style(status: button::Status) -> button::Style {
     let wash_color = match status {
-        button::Status::Hovered => Some(wash(crate::theme::DANGER, 0.10)),
-        button::Status::Pressed => Some(wash(crate::theme::DANGER, 0.18)),
+        button::Status::Hovered => Some(wash(DANGER, 0.10)),
+        button::Status::Pressed => Some(wash(DANGER, 0.18)),
         _ => None,
     };
     button::Style {
         background: wash_color.map(Background::Color),
         border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 8.0.into() },
-        text_color: crate::theme::DANGER,
+        text_color: DANGER,
         shadow: Shadow::default(),
         snap: false,
     }
 }
 
-/// The owned twin of [`danger_item`], with the glyph slot [`item`] has: a
-/// danger row whose label is computed when the menu is built, and whose
-/// icon answers with the row.
-pub fn owned_danger_item<M: Clone + 'static>(
-    tokens: Tokens,
-    glyph: Option<IconName>,
-    label: String,
-    message: M,
-) -> Element<'static, M> {
-    let icon_slot: Element<'static, M> = match glyph {
-        Some(name) => container(icon(name, 15, crate::theme::DANGER)).width(16.0).into(),
-        None => Space::new().width(16.0).into(),
-    };
-    let face = row![
-        icon_slot,
-        container(text(label).size(13).color(crate::theme::DANGER))
-            .width(Length::Fill)
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    let _ = tokens;
-    button(face)
-        .width(Length::Fill)
-        .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 })
-        .style(move |_, status| danger_style(status))
-        .on_press(message)
-        .into()
-}
-
-/// The owned twin of [`section`]: the same caption for a heading computed
-/// when the menu is built.
-pub fn owned_section<M: Clone + 'static>(tokens: Tokens, label: String) -> Element<'static, M> {
-    container(text(label).size(11).color(tokens.muted))
-        .width(Length::Fill)
-        .padding(Padding { top: 6.0, right: 8.0, bottom: 4.0, left: 8.0 })
-        .into()
-}
-
 /// A section caption: the small muted label the menu's groups open with.
-pub fn section<'a, M: Clone + 'a>(tokens: Tokens, label: &'a str) -> Element<'a, M> {
+pub fn section<'a, M: Clone + 'a>(tokens: Tokens, label: impl Into<Cow<'a, str>>) -> Element<'a, M> {
+    let label: Cow<'a, str> = label.into();
     container(text(label).size(11).color(tokens.muted))
         .width(Length::Fill)
         .padding(Padding { top: 6.0, right: 8.0, bottom: 4.0, left: 8.0 })
