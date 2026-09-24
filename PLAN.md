@@ -443,10 +443,14 @@ not yet delivered.
     the review has begun on the library surface, file by file: the shelf's cell module is now the
     kit plus one file per cell (the paths stay `card::book_card` and its neighbours), and the
     grid's cell arithmetic has one home that the metrics, the layout, the fit report and the view
-    all read instead of re-deriving. The queue's remaining entries — `app.rs`'s split and its
-    dispatch, the chrome's tests — follow the same shape. The dialog controls closed as no
-    change: the three filled buttons the review suspected of one recipe are three looks, each with
-    a single call site.
+    all read instead of re-deriving. `app.rs` followed the same way: 7,814 lines around one `impl`
+    became eighteen modules under `src/app/`, each owning one subject — the walk, the landing, the
+    copies, the moves, the sheets, the choosing, the ghosts, the rows, the shelves, the view, the
+    reading route, the session, the events — with `mod.rs` left as the vocabulary they share and
+    `update.rs` as the dispatch, and `crate::app`'s surface unchanged. The queue's remaining
+    entries — the chrome's tests, `crates/library-core`'s larger files — follow the same shape. The
+    dialog controls closed as no change: the three filled buttons the review suspected of one
+    recipe are three looks, each with a single call site.
 * **3g — The paper seam.** The render-queue priorities and cancellations under a zoom
   gesture (one lane, two priorities; a superseded render is dropped before the raster, not
   after), the memory ceilings (drop-on-close, the thumbnail LRU, the frame cache), and the
