@@ -9,9 +9,9 @@
 use std::borrow::Cow;
 
 use iced::widget::{button, container, mouse_area, stack, text, Column, Row, Space};
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Vector};
+use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow};
 
-use crate::theme::{wash, Tokens};
+use crate::theme::{wash, Elevation, Tokens};
 
 /// The panel's width — wide enough for a question and a name, narrow enough
 /// to read as a card over the shelf.
@@ -94,11 +94,7 @@ fn panel_of<'a, M: Clone + 'a>(
     .style(move |_| container::Style {
         background: Some(Background::Color(tokens.surface)),
         border: Border { color: tokens.line, width: 1.0, radius: 14.0.into() },
-        shadow: Shadow {
-            color: wash(Color::BLACK, 0.35),
-            offset: Vector::new(0.0, 12.0),
-            blur_radius: 36.0,
-        },
+        shadow: Elevation::Sheet.shadow(),
         ..container::Style::default()
     })
     .into()

@@ -20,7 +20,7 @@ use iced::widget::{
 use iced::border::Radius;
 use iced::{
     event, keyboard, mouse, window, Alignment, Background, Border, Color, Element, Length,
-    Padding, Point, Shadow, Size, Subscription, Task, Theme, Vector,
+    Padding, Point, Shadow, Size, Subscription, Task, Theme,
 };
 
 use library_core::blob::LibraryBlob;
@@ -63,7 +63,7 @@ use crate::platform::{dialogs, fs, now_ms, progress, store};
 use crate::reader;
 use crate::route::Route;
 use crate::storage;
-use crate::theme::{self, mix, wash, Tokens};
+use crate::theme::{self, mix, wash, Elevation, Tokens};
 use crate::ui::menu as popover;
 use crate::ui::sheet;
 use crate::ui::toast::{ToastHost, Tone};
@@ -7106,11 +7106,7 @@ fn select_pill(tokens: Tokens, count: usize, pop_open: bool) -> Element<'static,
         .style(move |_| container::Style {
             background: Some(Background::Color(tokens.surface)),
             border: Border { color: tokens.line, width: 1.0, radius: 999.0.into() },
-            shadow: Shadow {
-                color: wash(Color::BLACK, 0.18),
-                offset: Vector::new(0.0, 4.0),
-                blur_radius: 12.0,
-            },
+            shadow: Elevation::Pill.shadow(),
             ..container::Style::default()
         })
         .into()
@@ -7179,11 +7175,7 @@ fn dock_pill(tokens: Tokens, line: String) -> Element<'static, Message> {
             .style(move |_| container::Style {
                 background: Some(Background::Color(wash(tokens.surface, 0.95))),
                 border: Border { color: tokens.line, width: 1.0, radius: 999.0.into() },
-                shadow: Shadow {
-                    color: wash(Color::BLACK, 0.18),
-                    offset: Vector::new(0.0, 4.0),
-                    blur_radius: 12.0,
-                },
+                shadow: Elevation::Pill.shadow(),
                 ..container::Style::default()
             }),
     )
@@ -7669,11 +7661,7 @@ fn ghost_fan(
                         bottom_left: 3.0,
                     },
                 },
-                shadow: Shadow {
-                    color: wash(Color::BLACK, 0.35),
-                    offset: Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
+                shadow: Elevation::Plate.shadow(),
                 ..container::Style::default()
             });
         layers.push(
@@ -7723,11 +7711,7 @@ fn count_badge(tokens: Tokens, total: usize, scale: f32) -> Element<'static, Mes
         .style(move |_| container::Style {
             background: Some(Background::Color(tokens.accent)),
             border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
-            shadow: Shadow {
-                color: wash(Color::BLACK, 0.35),
-                offset: Vector::new(0.0, 2.0),
-                blur_radius: 6.0,
-            },
+            shadow: Elevation::Badge.shadow(),
             ..container::Style::default()
         })
         .into()
@@ -7812,11 +7796,7 @@ fn fold_plate(tokens: Tokens, filled: usize) -> Element<'static, Message> {
         .style(move |_| container::Style {
             background: Some(Background::Color(plate_seam(tokens))),
             border: Border { color: plate_seam(tokens), width: 1.0, radius: 8.0.into() },
-            shadow: Shadow {
-                color: wash(Color::BLACK, 0.35),
-                offset: Vector::new(0.0, 8.0),
-                blur_radius: 24.0,
-            },
+            shadow: Elevation::Float.shadow(),
             ..container::Style::default()
         });
     container(

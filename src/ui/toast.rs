@@ -15,10 +15,10 @@
 use iced::time::{Duration, Instant};
 use iced::widget::{container, row, text};
 use iced::alignment::Vertical;
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
 use crate::chrome::icons::{icon, IconName};
-use crate::theme::Tokens;
+use crate::theme::{Elevation, Tokens};
 
 /// How long a toast stays up — the web primitive's 3500ms.
 const TOAST_MS: u64 = 3500;
@@ -111,11 +111,7 @@ impl ToastHost {
         .style(move |_| container::Style {
             background: Some(Background::Color(background)),
             border: Border { color: line, width: 1.0, radius: 12.0.into() },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-                offset: Vector::new(0.0, 10.0),
-                blur_radius: 24.0,
-            },
+            shadow: Elevation::Toast.shadow(),
             text_color: Some(ink),
             ..container::Style::default()
         });

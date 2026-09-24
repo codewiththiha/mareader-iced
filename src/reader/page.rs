@@ -24,7 +24,7 @@
 
 use iced::widget::{button, column, container, image, row, stack, text, Space};
 use iced::{
-    Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Shadow, Vector,
+    Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Shadow,
 };
 
 use reader_core::outline::active_entry;
@@ -34,7 +34,7 @@ use super::zoom::{self, Command};
 use super::{DocStatus, Message, Reader};
 use crate::chrome::icons::{IconName, icon};
 use crate::chrome::titlebar;
-use crate::theme::{Tokens, wash};
+use crate::theme::{Elevation, Tokens, wash};
 
 /// The surface.
 pub(super) fn view(reader: &Reader, tokens: Tokens) -> Element<'_, Message> {
@@ -100,11 +100,7 @@ fn page_card<'a>(reader: &'a Reader, tokens: Tokens) -> Element<'a, Message> {
                 width: 1.0,
                 radius: 2.0.into(),
             },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
-                offset: Vector::new(0.0, 3.0),
-                blur_radius: 16.0,
-            },
+            shadow: Elevation::Page.shadow(),
             ..container::Style::default()
         })
         .into()
@@ -254,11 +250,7 @@ fn bottom_bar<'a>(reader: &'a Reader, tokens: Tokens) -> Element<'a, Message> {
             width: 1.0,
             radius: 12.0.into(),
         },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.18),
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 12.0,
-        },
+        shadow: Elevation::Bar.shadow(),
         ..container::Style::default()
     });
 

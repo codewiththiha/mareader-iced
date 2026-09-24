@@ -20,13 +20,13 @@
 use iced::animation::Animation;
 use iced::time::{Duration, Instant};
 use iced::widget::{button, container, mouse_area, row, stack, text, Row, Space};
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Vector};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow};
 
 use super::captions;
 use super::icons::{icon, IconName};
 use super::platform::{self, Os};
 use crate::route::Route;
-use crate::theme::{wash, Tokens};
+use crate::theme::{wash, Elevation, Tokens};
 
 /// What the bar can be asked to do.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -262,11 +262,7 @@ fn bar_style(tokens: Tokens, factor: f32) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color { a: 0.92 * factor, ..tokens.paper })),
         border: Border { color: wash(tokens.line, factor), width: 1.0, radius: 0.0.into() },
-        shadow: Shadow {
-            color: Color { a: 0.10 * factor, ..Color::BLACK },
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: 12.0 * factor,
-        },
+        shadow: Elevation::Chrome(factor).shadow(),
         ..container::Style::default()
     }
 }

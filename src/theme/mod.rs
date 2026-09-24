@@ -8,7 +8,7 @@
 //! follows the system's light/dark answer.
 
 use iced::theme::{Palette, Style};
-use iced::{Color, Theme};
+use iced::{Color, Shadow, Theme, Vector};
 use reader_core::appearance::BaseMode;
 
 /// One base mode's worth of tokens.
@@ -141,6 +141,68 @@ pub fn mix(from: Color, to: Color, t: f32) -> Color {
         g: lerp(from.g, to.g),
         b: lerp(from.b, to.b),
         a: lerp(from.a, to.a),
+    }
+}
+
+/// The app's shadow ladder, lowest rung first: every raised surface in one
+/// place, so the ordering between a pill and a popover is a name rather than
+/// five numbers retyped at the call site. The numbers are the ones the port
+/// carried over from the reference's CSS; each rung keeps its own, because
+/// they were tuned separately there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Elevation {
+    /// A list row's thumbnail: the quietest bed the app draws.
+    Thumb,
+    /// The count badge on a cell.
+    Badge,
+    /// The reader's bottom bar, a step off the page under it.
+    Bar,
+    /// A row of controls in a pill: the selection bar, the runs dock, a
+    /// shelf card at rest.
+    Pill,
+    /// A shelf card under the pointer.
+    Hover,
+    /// The reader's sheet of paper — the deepest drop in the app.
+    Page,
+    /// The ring a selected cell wears, in the colour that marks it.
+    Ring(Color),
+    /// What floats over the app: a menu, a fold's plate.
+    Float,
+    /// The ghost fan's plate: the float's drop, a touch darker.
+    Plate,
+    /// The toaster, over whatever is on screen.
+    Toast,
+    /// The modal panel: the app's highest surface.
+    Sheet,
+    /// The titlebar over the shelf, scaled with the bar's own factor so a
+    /// pinned, revealed bar keeps its weight.
+    Chrome(f32),
+}
+
+impl Elevation {
+    /// The shadow this rung casts.
+    pub fn shadow(self) -> Shadow {
+        let (y, blur, color) = match self {
+            Self::Thumb => (1.0, 2.0, wash(Color::BLACK, 0.16)),
+            Self::Badge => (2.0, 6.0, wash(Color::BLACK, 0.35)),
+            Self::Bar => (2.0, 12.0, wash(Color::BLACK, 0.18)),
+            Self::Pill => (4.0, 12.0, wash(Color::BLACK, 0.18)),
+            Self::Hover => (10.0, 24.0, wash(Color::BLACK, 0.26)),
+            Self::Page => (3.0, 16.0, wash(Color::BLACK, 0.22)),
+            Self::Ring(mark) => (0.0, 10.0, wash(mark, 0.20)),
+            Self::Float => (8.0, 24.0, wash(Color::BLACK, 0.30)),
+            Self::Plate => (8.0, 24.0, wash(Color::BLACK, 0.35)),
+            Self::Toast => (10.0, 24.0, wash(Color::BLACK, 0.35)),
+            Self::Sheet => (12.0, 36.0, wash(Color::BLACK, 0.35)),
+            Self::Chrome(factor) => {
+                return Shadow {
+                    color: Color { a: 0.10 * factor, ..Color::BLACK },
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 12.0 * factor,
+                };
+            }
+        };
+        Shadow { color, offset: Vector::new(0.0, y), blur_radius: blur }
     }
 }
 

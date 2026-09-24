@@ -19,11 +19,11 @@ use std::borrow::Cow;
 
 use iced::widget::{button, column, container, row, text, Column, Space};
 use iced::{
-    Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Size, Vector,
+    Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Size,
 };
 
 use crate::chrome::icons::{icon, IconName};
-use crate::theme::{mix, wash, Tokens, DANGER};
+use crate::theme::{mix, wash, DANGER, Elevation, Tokens};
 
 /// One menu item's height: 6px of padding around an 18px line.
 pub const ROW_H: f32 = 30.0;
@@ -72,11 +72,7 @@ fn panel_style(tokens: Tokens) -> container::Style {
     container::Style {
         background: Some(Background::Color(tokens.surface)),
         border: Border { color: tokens.line, width: 1.0, radius: 12.0.into() },
-        shadow: Shadow {
-            color: wash(Color::BLACK, 0.30),
-            offset: Vector::new(0.0, 8.0),
-            blur_radius: 24.0,
-        },
+        shadow: Elevation::Float.shadow(),
         ..container::Style::default()
     }
 }

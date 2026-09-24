@@ -13,7 +13,6 @@ use iced::gradient::Linear;
 use iced::widget::{button, column, container, mouse_area, text, Column, Row, Space, Stack};
 use iced::{
     Alignment, Background, Border, Color, Element, Gradient, Length, Padding, Radians, Shadow,
-    Vector,
 };
 
 use library_core::blob::LibraryBlob;
@@ -27,7 +26,7 @@ use crate::chrome::icons::{icon, IconName};
 use crate::library::facts::{self, Badge, FolderFacts};
 use crate::library::drag::Band;
 use crate::library::{DragFacts, SelectionFacts};
-use crate::theme::{mix, wash, Tokens};
+use crate::theme::{mix, wash, Elevation, Tokens};
 
 /// The cover's aspect, A4 portrait: height = width × 297/210.
 pub const COVER_RATIO: f32 = 297.0 / 210.0;
@@ -71,17 +70,9 @@ fn cover_gradient(tokens: Tokens) -> Gradient {
 /// under the pointer.
 fn cover_style(tokens: Tokens, hovered: bool, selected: bool) -> container::Style {
     let shadow = if hovered {
-        Shadow {
-            color: wash(Color::BLACK, 0.26),
-            offset: Vector::new(0.0, 10.0),
-            blur_radius: 24.0,
-        }
+        Elevation::Hover.shadow()
     } else {
-        Shadow {
-            color: wash(Color::BLACK, 0.18),
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: 12.0,
-        }
+        Elevation::Pill.shadow()
     };
     container::Style {
         background: Some(Background::Gradient(cover_gradient(tokens))),
@@ -253,11 +244,7 @@ fn fold_ring(tokens: Tokens, height: f32) -> Element<'static, Message> {
             container::Style {
                 background: None,
                 border: Border { color: tokens.accent, width: 2.0, radius: 6.0.into() },
-                shadow: Shadow {
-                    color: wash(tokens.accent, 0.20),
-                    offset: Vector::new(0.0, 0.0),
-                    blur_radius: 10.0,
-                },
+                shadow: Elevation::Ring(tokens.accent).shadow(),
                 ..container::Style::default()
             }
         }),
@@ -278,11 +265,7 @@ fn nest_ring(tokens: Tokens) -> Element<'static, Message> {
         .style(move |_| container::Style {
             background: Some(Background::Color(wash(tokens.accent, 0.12))),
             border: Border { color: tokens.accent, width: 2.0, radius: 10.0.into() },
-            shadow: Shadow {
-                color: wash(tokens.accent, 0.20),
-                offset: Vector::new(0.0, 0.0),
-                blur_radius: 10.0,
-            },
+            shadow: Elevation::Ring(tokens.accent).shadow(),
             ..container::Style::default()
         })
         .into()
@@ -660,11 +643,7 @@ fn plate(
         face.style(move |_| container::Style {
             background: Some(Background::Color(plate_seam(tokens))),
             border: Border { color: plate_seam(tokens), width: 1.0, radius: 8.0.into() },
-            shadow: Shadow {
-                color: wash(Color::BLACK, 0.18),
-                offset: Vector::new(0.0, 4.0),
-                blur_radius: 12.0,
-            },
+            shadow: Elevation::Pill.shadow(),
             ..container::Style::default()
         })
         .into()
@@ -887,11 +866,7 @@ pub fn list_thumb(tokens: Tokens, check: Option<bool>) -> Element<'static, Messa
             .style(move |_| container::Style {
                 background: Some(Background::Gradient(cover_gradient(tokens))),
                 border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 3.0.into() },
-                shadow: Shadow {
-                    color: wash(Color::BLACK, 0.16),
-                    offset: Vector::new(0.0, 1.0),
-                    blur_radius: 2.0,
-                },
+                shadow: Elevation::Thumb.shadow(),
                 ..container::Style::default()
             })
             .into();
