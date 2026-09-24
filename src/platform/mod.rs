@@ -1,8 +1,8 @@
 //! The operating system's touch-points: where the app's data lives, how a
 //! byte reaches the disk safely, the document gate, the folder walks and the
 //! path checks behind them, the store the library's own copies live in, the
-//! progress channel that carries the runs' beats to the Elm loop, and the
-//! file and folder pickers.
+//! progress channel that carries the runs' beats to the Elm loop, the file
+//! and folder pickers, and the PDF engine's shared library.
 //!
 //! The web app kept this layer in Tauri's `commands` crate and crossed an
 //! IPC boundary to reach it; natively it is this module, called in-process
@@ -13,6 +13,7 @@
 
 pub mod dialogs;
 pub mod fs;
+pub mod pdfium;
 pub mod progress;
 pub mod store;
 

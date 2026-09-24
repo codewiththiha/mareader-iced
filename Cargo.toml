@@ -12,10 +12,13 @@ path = "src/main.rs"
 [dependencies]
 # The interface. The default feature set already carries the wgpu + tiny-skia
 # renderers, the thread-pool executor (no async runtime to drag along) and
-# both windowing backends; `svg` paints the icon sprite. Later phases add
-# `image` (page rasters), `canvas` (overlays) and `lazy` (virtualized rails)
-# when they first have something to render with them.
-iced = { version = "0.14.0", features = ["svg"] }
+# both windowing backends; `svg` paints the icon sprite, and
+# `image-without-codecs` carries the `image` widget and `image::Handle` that a
+# PDF page raster is handed to — no decoder is compiled, because every raster
+# this app paints arrives as RGBA that the engine already produced. `canvas`
+# (the highlight and selection overlays) and `lazy` (the virtualized rails)
+# arrive with the increments that first have something to render with them.
+iced = { version = "0.14.0", features = ["svg", "image-without-codecs"] }
 
 # The reader's format-agnostic domain and the library's: the persisted
 # settings and appearance models drive the theme, and the library blob,
@@ -30,6 +33,19 @@ pdf-core = { path = "crates/pdf-core" }
 # The floating-panel placement the menus sit on: the same clamp-and-flip
 # arithmetic the web app's popovers ran, ported verbatim.
 ui-geom = { path = "crates/ui-geom" }
+
+# The PDF engine. Pdfium is bound at RUN time — the crate ships no library and
+# the build needs no C toolchain — so where the library lives is a run-time
+# question the app answers itself (`src/platform/pdfium.rs`). `pdfium_latest`
+# selects the bindings for Pdfium build 7881, which is the build the release
+# sidecar and the CI lane fetch, so the bindings' API version and the library's
+# agree. `thread_safe` is the crate's soundness switch for the objects that
+# cross the engine thread's edge; the app takes it because the alternative is
+# reasoning about which of Pdfium's own structures are immutable this week.
+pdfium-render = { version = "0.9.4", default-features = false, features = [
+  "pdfium_latest",
+  "thread_safe",
+] }
 
 # Where the app's data lives, per OS convention.
 directories = "6"

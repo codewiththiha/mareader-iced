@@ -94,10 +94,38 @@ jobs:
         with:
           shared-key: test-cache
 
+      # The engine's tests open a real Pdfium. The build is pinned to the one
+      # pdfium-render's `pdfium_latest` bindings describe (chromium/7881) —
+      # the bindings' API version and the library's must agree — and cached by
+      # build number, so a warm runner downloads nothing.
+      - name: Cache Pdfium
+        id: pdfium
+        uses: actions/cache@v4
+        with:
+          path: pdfium
+          key: pdfium-chromium-7881-linux-x64
+
+      - name: Fetch Pdfium (chromium/7881)
+        if: steps.pdfium.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/pdfium.tgz \
+            https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7881/pdfium-linux-x64.tgz
+          mkdir -p pdfium
+          tar -xzf /tmp/pdfium.tgz -C pdfium
+          test -f pdfium/lib/libpdfium.so
+
       # --workspace, not a bare cargo test: the manifest root is also the
       # app package, and a bare run would silently skip the ten domain
       # crates whose ~1,000 tests are the parity proof of this port.
+      #
+      # The engine's tests skip themselves when no library is found — a
+      # contributor on a clean machine still gets green tests — and
+      # MAREAEDER_REQUIRE_PDFIUM turns that skip into a failure here, because a
+      # lane that passes because the engine was absent proves nothing.
       - name: Tests
+        env:
+          MAREAEDER_PDFIUM_DIR: ${{ github.workspace }}/pdfium/lib
+          MAREAEDER_REQUIRE_PDFIUM: "1"
         run: cargo test --workspace
 
   build:
@@ -128,3 +156,12 @@ jobs:
       # release workflow's business; this lane only proves the build.
       - name: Build
         run: cargo build --workspace
+
+      # ...and it must start. `--smoke` boots the whole app state in-process —
+      # settings, the library blob, both surfaces built as widget trees — and
+      # exits 0 without opening a window, which is what lets this run on a
+      # runner that has no display and no PDF engine. A phase that adds a
+      # surface without adding it to the smoke list fails here.
+      - name: Boot the app (smoke)
+        shell: bash
+        run: ./target/debug/mareader --smoke

@@ -1,0 +1,8 @@
+# The test fixtures are byte-exact documents: a line-ending translation would
+# rewrite a PDF's xref offsets and break every fixture test on Windows. The
+# `binary` attribute is git's shorthand for `-text -diff` — no conversion, and
+# a diff that says "Binary files differ" rather than pretending to read them.
+*.pdf binary
+
+# Snapshot roots are generated from these at the same byte level.
+*.png binary

@@ -157,19 +157,82 @@ subscriptions — the same ownership discipline the Leptos effects had, in one d
 
 ### 3.3 PDF engine (PDFium)
 
-* `pdfium-render` 0.9 (default features: `pdfium_latest`, `image_latest`, `thread_safe`;
-  objects are `Send + Sync` in 0.9). Bind order: library beside the executable (the release
-  bundle's sidecar) → system library → friendly "PDF engine unavailable" state (the app
-  still runs: library + text formats work).
-* A dedicated engine thread owns documents and the render queue (page renders, thumbnails,
-  text extraction, outline/links) — the native analogue of pdf.js's worker. The UI posts
-  requests; results return as messages with RGBA frames.
-* Frames render at device-pixel-grid sizes (`pdf_core::snap_to` with the live scale factor),
-  BGRA→RGBA, then through the appearance raster pipeline (§3.5) before becoming
-  `image::Handle::from_rgba` for the page host.
+* `pdfium-render` 0.9.4, `default-features = false`, features `pdfium_latest` + `thread_safe`.
+  `image_latest` is deliberately off: the crate's own `as_image()` is the only thing it buys,
+  and the reader never wants a `DynamicImage` — `PdfBitmap::as_rgba_bytes()` hands over the
+  pixels already normalised to RGBA (the render config's default `BGRA` format plus PDFium's
+  byte-order reversal *is* RGBA, so the crate returns the buffer without a conversion pass),
+  which is exactly what `image::Handle::from_rgba` takes. The `image` crate's codecs arrive
+  later through iced's own `image` feature, when covers need JPEG. `pdfium_latest` currently
+  pins Pdfium build 7881, so the sidecar is pinned to the matching bblanchon release
+  (`chromium/7881`, Pdfium 151.0.7881.0), not `latest` — the bindings' API version and the
+  library's must agree. iced's side is `image-without-codecs` for this phase: the widget and
+  `Handle::from_rgba` are what page rasters need, and no codec is compiled until a cover is
+  read back from disk.
+* **The library binds once per process, not once per document.** pdfium-render keeps its
+  bindings in a process-global `OnceCell`: `Pdfium::new(bindings)` initialises it, and a second
+  `bind_to_library` call answers `PdfiumLibraryBindingsAlreadyInitialized`. So one owner binds
+  — the engine thread, first thing — and every later use goes through the handle it hands back.
+  Bind order: `MAREAEDER_PDFIUM` (a full path to the library file) → `MAREAEDER_PDFIUM_DIR`
+  (a directory, which is what CI sets — deliberately *not* the crate's own
+  `PDFIUM_DYNAMIC_LIB_PATH`, which its build script reads to add a link-search path and would
+  be a false friend for a runtime bind) → beside the executable, its `lib/` and its `bin/`
+  (the three shapes the release archives use:
+  `lib/libpdfium.so`, `lib/libpdfium.dylib`, `bin/pdfium.dll`) → the working directory's same
+  three → the system library. Nothing found is not a crash: the engine reports
+  `unavailable` with the paths it tried, and the app keeps running — the shelf, the store and
+  the text formats never needed a PDF engine.
+* A dedicated engine thread owns the document (`src/formats/pdf/engine.rs`) — the native
+  analogue of pdf.js's worker, with a plain request/event protocol (`src/formats/pdf/
+  protocol.rs`) and no shared state with the UI. The scanner and thumbnails get no separate
+  lane yet: one request at a time covers 3a, and the priority lane arrives in 3g, because a
+  lane added before there is contention is a lane nobody can test.
+* A document is **served inside the borrow that owns it**. `PdfDocument<'a>` borrows the
+  `Pdfium` it came from, so the worker loads the document in an inner loop, serves it, and
+  returns to its outer loop when the document is closed or replaced — no `'static`
+  laundering, and the request that *ended* a document's life (a close, or an open that
+  replaces it) is the one the outer loop acts on next, so a drop can never be lost between
+  the two.
+* Requests carry a **session stamp** (which open they belong to) and renders name a
+  **[`FrameKey`]** — the page, and the whole number of device pixels it is to fill. The key is
+  the native answer to pdf.js's `cancel_thumb` and its per-canvas bookkeeping, and it is a
+  better one than a counter: it can be *compared*, so the reader asks for the key it wants
+  now, drops a frame whose key has moved on where it lands, and can keep that frame without
+  ever painting it over the page on screen.
+* Frames render at device-pixel-grid sizes: the CSS-px box the layout asked for, times the
+  live scale factor, rounded to whole device pixels by the app
+  (`pdf_core::pixel_grid::snap_to_device`) and **capped** (12 000 px wide) so a deep zoom on a
+  large display asks for a frame the machine can still allocate. The request carries both
+  sides of that box (`PdfRenderConfig::set_target_size`), so PDFium allocates exactly the
+  raster the host is about to draw: the two sides can differ only by the half-device-pixel
+  the rounding moved, and the stretch that leaves is invisible — a `set_target_width`-only
+  request would instead choose its own height and hand the host a bitmap whose aspect no
+  longer matches the rectangle it was measured for. The host draws the frame back into that
+  same box, so raster and rect agree by construction rather than by both sides rounding the
+  same way. `image::Handle::from_rgba` takes the pixels as they come —
+  `PdfBitmap::as_rgba_bytes()` normalises whatever channel order PDFium wrote — and the
+  appearance raster pipeline (§3.5) slots in between once it exists.
+* The document's **content identity** is a hash of the file itself (length, first and last
+  64 KiB): pdf.js published a `fingerprint` derived from the trailer's `/ID`, and that field is
+  the key a retained search index is adopted under. PDFium's equivalent
+  (`FPDF_GetFileIdentifier`) is only reachable through the raw bindings and a two-call
+  allocation dance, and the only thing that reads the value is our own in-process cache — the
+  question is "are these the same bytes", and that is what the hash answers.
 * Text: `PdfPageText` chars (loose bounds) → `pdf_core::SearchIndex` — the same Rust index
   the web app built from pdf.js text items; highlight rects, snippets and wrap-around come
-  from reader-core's shared search model.
+  from reader-core's shared search model. PDFium reports one box per CHARACTER where pdf.js
+  reported runs, so `src/formats/pdf/text.rs` flips each box into the reader's top-left space
+  and groups them back into runs (new line, size change, or a gap wider than 0.4 em) — pure
+  arithmetic with its own tests, no library needed.
+* The fixture the engine's tests open is hand-authored and byte-stable
+  (`tests/fixtures/three-pages.pdf`, written by `make_three_pages.py` beside it): three US
+  Letter pages — one with a filled bar and the word "Mareader" plus both kinds of link
+  annotation, one carrying a line of text, and one with `/Rotate 90` (which Pdfium reports as
+  792×612 and draws upright in that box — the engine must not apply the page's own rotation a
+  second time; the fixture exists partly to pin that) — a two-level chapter tree, and
+  document title/author metadata. `verify_three_pages.py` drives a real Pdfium through ctypes
+  and proves the fixture still carries all of it, so a fixture that quietly stopped testing
+  what it names fails before the Rust suite does.
 * Outline: `PdfBookmarks` flattened in document order with depth (reader-core's outline
   shape + active-section rules). Links: page link annotations → internal navigation /
   external browser (schemes vetted by reader-core's filename/url rules).
@@ -300,7 +363,64 @@ Every phase is visually testable on its own; the app always launches.
   clean conventional commits, force-push. *Accept: tagged build downloads and runs on all
   three OSes.*
 
-## 5. CI/CD
+### 4.1 P3 — the PDF reader, in increments
+
+P3 is the first phase whose subject is a whole surface, so it ships as seven increments, each
+one CI-green, each one visually testable on the day it lands. The order is the order a reader
+meets the app: engine, then the page, then everything that moves or measures it.
+
+* **3a — The engine and the first page.** The Pdfium bind strategy and its degradation path
+  (`MAREAEDER_PDFIUM` file → `MAREAEDER_PDFIUM_DIR` directory → beside the executable and
+  its `lib/`+`bin/` → the working directory's same three → the system library), the engine
+  thread with its request/event protocol, its session stamp and its frame keys, the
+  per-character text extraction grouped into runs, and the open pipeline (picker, drop, last
+  path, library row) with the status ladder `Idle → Opening → Ready/Error`; page size, page
+  count, title and author read off the file; single view at the reader's startup fit, painted
+  from a real frame; page turn by keyboard and by the bar's own prev/next; close back to the
+  shelf with the reading position flushed into the row's read point. *Accept: open a PDF, read
+  it, turn pages, go back — and open it again where you left off.*
+* **3b — Zoom.** The coordinator: ladder steps, Fit Width / Fit Page, the refit on a container
+  change, the clamp at the ends, ctrl-wheel and the `+`/`-` keys, the zoom popover, and the
+  overflow that a hand-picked zoom is allowed to have (scroll affordance rather than a snap
+  back to fit). *Accept: every zoom door lands on the same scale, and a page stays crisp.*
+* **3c — The scrolling modes.** The continuous strip on the ported `virtual-list` windowing
+  with `PAGE_GAP` and page margin, the horizontal strip, spread's gutter arithmetic, the
+  scroll→page sync (`scroll_fraction` ↔ `fraction_offset`) and the mount anchor that lands the
+  resume point, the first-paint gate. *Accept: all four modes read, and closing/reopening in
+  each resumes where you were.*
+* **3d — The sidebar.** The outline panel fed by PDFium's bookmarks through `pdf-core`'s
+  outline shape with the active chapter following the page, and the thumbnail rail on a
+  virtualized `lazy` rail with the page-pair LRU the web app kept (16 entries), prefetch
+  around the reader, and the cover path reusing it. *Accept: browse a book's chapters and
+  pages without waiting for a rail to repaint.*
+* **3e — Search.** Per-page text extraction behind the engine (PDFium chars grouped into the
+  runs `pdf_core::SearchIndex` expects), the index built lazily on the first search and
+  retained per content identity, the search pill and hits list, the amber highlight layer,
+  the overlay scrollbar and the page indicator, and the persistence of the reading position.
+  *Accept: search a book, walk the hits, watch the page light up on the match.*
+* **3f — Links, selection, covers.** Link annotations (internal jump, external open through
+  the platform's URL opener), the selectable text layer built from the same char boxes
+  (click/drag selection painting a tint over the page, double-click picking the word, copy to
+  the clipboard), and covers rendered from real first frames into `covers/{book_id}.jpg` —
+  including the backfill the shelf has been documenting and the prune a departure owes.
+  *Accept: copy a sentence out of a PDF and find the covers on the shelf.*
+**Carried out of P2, and where it lands.** One gap opened the moment the reader became real:
+the shelf knows which books are missing, but a click on one had nowhere to go — the web app
+answers it with the Find-again question, which re-points the row (a linked book takes the new
+address; a stored book takes a fresh copy, measured before the row is written). 3a gates the
+click instead: a row the library knows is dead does not open onto a document at all, and the
+toast says so. The sheet, its folder walk and the copy land in their own increment before 3f,
+because a bookshelf that cannot find a book it has lost is the one thing P2 promised and has
+not yet delivered.
+
+* **3g — The paper seam.** The render-queue priorities and cancellations under a zoom
+  gesture (one lane, two priorities; a superseded render is dropped before the raster, not
+  after), the memory ceilings (drop-on-close, the thumbnail LRU, the frame cache), and the
+  hooks `pdf-paper` and the appearance pipeline dock into — a no-op until P5 fills them, so
+  the reader is never rebuilt to receive them. *Accept: a page-flipping session's memory is
+  flat, and a zoom gesture never queues a raster it will throw away.*
+
+
 
 `ci.yml` (every push + PR, concurrency-cancelled):
 
@@ -310,12 +430,39 @@ Every phase is visually testable on its own; the app always launches.
   documented); new code is written fmt-clean regardless.
 * **test** (ubuntu): `cargo test --workspace --locked` — the ported suites are the parity
   proof; new native modules add their own tests (pixel pipeline, measurement, engine
-  protocol) as they land.
-* **build** (matrix ubuntu / macos / windows): `cargo build --locked` proves the app
-  compiles where it ships. Separate rust-cache keys per lane (two lanes sharing a key race
-  and GitHub keeps only the first save).
+  protocol) as they land. From P3, the lane also fetches the pinned Pdfium build
+  (`bblanchon/pdfium-binaries`, release `chromium/7881`, `pdfium-linux-x64.tgz` → `lib/libpdfium.so`)
+  into the runner's workspace and exports `MAREAEDER_PDFIUM_DIR` plus
+  `MAREAEDER_REQUIRE_PDFIUM=1`: the engine's tests then run against a real PDFium instead of
+  skipping, and the variable turns a missing library from a silent skip into a failure —
+  a lane that passes because the engine was absent proves nothing. The download is cached by
+  build number, so warm runs pay nothing for it.
+* **Engine tests without a library.** Every test that needs Pdfium checks availability first
+  and returns early with a printed note when the library is absent (a contributor on a clean
+  machine still gets green tests); `MAREAEDER_REQUIRE_PDFIUM=1` upgrades that skip to a
+  failure inside CI. The fixture they open is a hand-authored, byte-stable PDF committed
+  under `tests/fixtures/` — three pages, a text run, a bookmark, a link — so the assertions
+  can be exact (page count, page 1's size, a match for a known word, a chapter title).
+* **build** (matrix ubuntu / macos / windows): `cargo build --locked` proves the app compiles
+  where it ships, and `mareader --smoke` boots the whole app state in-process — settings, the
+  library blob, both surfaces built as widget trees — and exits 0. No window is opened and no
+  window server is needed, which is the point: the lane proves the app *starts* on the three
+  systems it ships to without asking a runner for a display. The smoke list is the app's own
+  shape, so a phase that adds a surface without adding it there fails the lane that exists to
+  notice. Separate rust-cache keys per lane (two lanes sharing a key race and GitHub keeps
+  only the first save).
 * **lockfile bootstrap**: the first runs generate `Cargo.lock` and upload it as an
   artifact; it is committed back and the lanes switch to `--locked`.
+
+* **The smoke lane's coverage is the app's own shape**: it boots the state (settings, library)
+  and builds the surfaces in-process, and reports whether the surface list it was handed is
+  complete — so a phase that adds a surface to the app without adding it to the smoke list
+  fails the lane that exists to notice. No feature gymnastics are involved: the smoke path is
+  a flag on the same binary every other lane builds, because an app whose *store* half is
+  behind a feature is an app two builds disagree about. The Linux lanes need no GTK headers:
+  `rfd`'s default backends on Linux are the XDG portal (pure-Rust `zbus` at build time, the
+  system's own dialog at run time) and wayland, and the installed system deps stay the winit
+  pair (`libxkbcommon-dev`, `libwayland-dev`) plus `pkg-config`.
 
 `release.yml` (tags `v*`): resolve version → build per OS → fetch the pinned PDFium
 release for the target → lay binary + sidecar (+ assets) into an archive → publish a
@@ -565,3 +712,26 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   PDFium service and bind strategy, the open pipeline, and the first
   reading surface the marks, covers and kept reading data all wait
   on.
+* **P3 — in flight, 3a.** The engine has landed: `pdfium-render` 0.9.4 binds the
+  shared library at run time through `MAREAEDER_PDFIUM`/`MAREAEDER_PDFIUM_DIR`,
+  beside the executable and its `lib`/`bin`, then the working directory's same three,
+  then the system's loader — and a machine with no Pdfium gets a sentence naming
+  every place that was looked rather than a crash. Binding is process-global, so the
+  engine's own thread owns it: it starts on the first request, loads one document at
+  a time inside the borrow that owns it, and answers a plain request/event protocol —
+  a session stamp on every message, and a `FrameKey` (page, whole device pixels) on
+  every raster, so a frame for a page the reader has left is dropped where it lands
+  and a frame for the page on screen is kept and stretched until its replacement
+  arrives. Text extraction flips Pdfium's per-character boxes into the reader's own
+  space and groups them into runs with the same seams pdf.js split at. The reading
+  surface itself: the open pipeline (the shelf's rows, a drop, a re-open on boot)
+  gate the address, settle the row, read the resume point before the engine is asked
+  for anything and clamp it to the book that actually opened; the status ladder
+  `Idle → Opening → Ready/Error` paints a placeholder sheet in the meantime; page 1
+  arrives as a real raster at the startup fit (the reader's own `FitDims`, byte-for-
+  byte the web app's fit arithmetic, resolved once at the seed so the first frame
+  lands where the fit is going); page turns come from the bar's pill, the arrow keys
+  and PageUp/PageDown, land on the sheet's own box even where the book changes shape,
+  and report the new position so the library's rows keep it; and leaving flush the
+  read point into the rows the same `rows_for_read` rule names, with the shelf's own
+  record of the name and author written the moment the document answers.

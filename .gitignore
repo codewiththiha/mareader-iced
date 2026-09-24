@@ -3,9 +3,11 @@
 **/*.rs.bk
 
 # The PDFium sidecar a dev checkout drops next to the binary; the release
-# pipeline fetches its own pinned copy and never commits one.
-libpdfium*
-pdfium*
+# pipeline fetches its own pinned copy and never commits one. Anchored to the
+# repository root on purpose: an unanchored `pdfium*` also swallows
+# `src/platform/pdfium.rs`, which is a source file the build needs.
+/libpdfium*
+/pdfium*
 
 # OS noise
 .DS_Store

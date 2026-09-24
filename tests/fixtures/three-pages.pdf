@@ -1,0 +1,97 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R 11 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 7 0 R /Annots [15 0 R 16 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 8 0 R >>
+endobj
+5 0 obj
+<< /Type /Outlines /First 9 0 R /Last 12 0 R /Count 2 >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+7 0 obj
+<< /Length 68 >>
+stream
+0 0 0 rg
+72 636 240 10 re f
+BT
+/F1 24 Tf
+72 700 Td
+(Mareader) Tj
+ET
+
+endstream
+endobj
+8 0 obj
+<< /Length 40 >>
+stream
+BT
+/F1 24 Tf
+72 700 Td
+(page two) Tj
+ET
+
+endstream
+endobj
+9 0 obj
+<< /Title (Chapter One) /Parent 5 0 R /Next 12 0 R /First 14 0 R /Last 14 0 R /Count 1 /Dest [3 0 R /Fit] >>
+endobj
+10 0 obj
+<< /Title (Three Pages) /Author (Mareader) /Producer (make_three_pages.py) >>
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 13 0 R /Rotate 90 >>
+endobj
+12 0 obj
+<< /Title (Chapter Two) /Parent 5 0 R /Prev 9 0 R /Dest [11 0 R /Fit] >>
+endobj
+13 0 obj
+<< /Length 29 >>
+stream
+0 0 0 rg
+72 620 100 100 re f
+
+endstream
+endobj
+14 0 obj
+<< /Title (Section One) /Parent 9 0 R /Dest [4 0 R /Fit] >>
+endobj
+15 0 obj
+<< /Type /Annot /Subtype /Link /Rect [72 620 300 660] /Border [0 0 0] /Dest [4 0 R /Fit] >>
+endobj
+16 0 obj
+<< /Type /Annot /Subtype /Link /Rect [72 560 300 600] /Border [0 0 0] /A << /S /URI /URI (https://example.com/mareader) >> >>
+endobj
+xref
+0 17
+0000000000 65535 f 
+0000000015 00000 n 
+0000000080 00000 n 
+0000000150 00000 n 
+0000000300 00000 n 
+0000000426 00000 n 
+0000000498 00000 n 
+0000000568 00000 n 
+0000000686 00000 n 
+0000000776 00000 n 
+0000000900 00000 n 
+0000000994 00000 n 
+0000001133 00000 n 
+0000001222 00000 n 
+0000001302 00000 n 
+0000001378 00000 n 
+0000001486 00000 n 
+trailer
+<< /Size 17 /Root 1 0 R /Info 10 0 R >>
+startxref
+1628
+%%EOF

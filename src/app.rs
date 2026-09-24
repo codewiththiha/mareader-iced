@@ -61,6 +61,7 @@ use crate::library::duplicate::{self, BookCopy, Duplicated, DupPlan, TreePlan};
 use crate::library::{self, bar, menus};
 use crate::library::reveal::{self, Reveal};
 use crate::platform::{dialogs, fs, progress, store};
+use crate::reader;
 use crate::route::Route;
 use crate::storage;
 use crate::theme::{self, fade, mix, wash, Tokens};
@@ -88,6 +89,57 @@ pub fn run() -> iced::Result {
         .subscription(Mareader::subscription)
         .window(window_settings())
         .run()
+}
+
+/// The boot proof: build the whole app state and both surfaces, report what
+/// was built, and return without opening a window.
+///
+/// This is what CI's build lane runs on every OS (`mareader --smoke`). It is
+/// deliberately the app's own shape rather than a bespoke list: the surfaces it
+/// builds are the routes the app has, so a phase that adds one without adding
+/// it here fails the lane that exists to notice. Nothing here needs a display,
+/// a window server, or a PDF engine — which is the point, because the lane
+/// proves the app *starts* on machines that have none of them.
+pub fn smoke() -> iced::Result {
+    let (mut state, _boot) = Mareader::boot();
+    let mut built: Vec<&str> = Vec::new();
+
+    // Both routes, built as widget trees. Setting the route and calling the
+    // same `view` the runtime calls is the whole check: a panic in layout
+    // arithmetic, a broken token, a missing icon — anything the shelf or the
+    // reading surface does while being built — lands here.
+    for (route, name) in [(Route::Library, "shelf"), (Route::Reader, "reader")] {
+        state.route = route;
+        let _surface = state.view();
+        built.push(name);
+    }
+
+    // The reading surface with a document under it: the ladder's `Opening`
+    // state is what a reader sees the moment they open a book, and it is the
+    // one state whose placeholders and waiting lines only exist between the ask
+    // and the answer.
+    // The document step is a struct literal rather than a door of its own:
+    // the open the reader runs on is exactly this — an address, no row, and
+    // the first page — and a shortcut here would be a second place to keep
+    // the shape of an open.
+    let effects = state.reader.update(
+        reader::Message::Open(reader::Open {
+            path: PathBuf::from("smoke.pdf"),
+            book_id: None,
+            row_title: None,
+            resume: 1,
+        }),
+        Instant::now(),
+    );
+    // Nothing is written: an open that has not answered records no read, and
+    // `apply_reader_effects` is what owns every write there is.
+    let _ = state.apply_reader_effects(effects);
+    state.route = Route::Reader;
+    let _opening = state.view();
+    built.push("reader (opening)");
+
+    println!("mareader --smoke: booted; surfaces built: {}", built.join(", "));
+    Ok(())
 }
 
 /// Which of the bar's panels is open, if any.
@@ -649,9 +701,11 @@ pub struct Mareader {
     import_opts: FolderOpts,
     /// The app-global toast slot.
     toasts: ToastHost,
-    /// The document the reader route is showing for — remembered in the
-    /// settings' `last_path` the moment the gate admits it.
-    open_document: Option<PathBuf>,
+    /// The reading surface: the open document, the viewer's geometry and the
+    /// engine behind them. Alive from boot, but it loads no Pdfium until the
+    /// first document is opened, so a run that never reads a PDF never touches
+    /// the engine at all.
+    reader: reader::Reader,
     /// The filesystem runs in flight: folder walks, their store batches,
     /// and the loose-file runs. One dock pill per run.
     runs: Vec<FsRun>,
@@ -686,6 +740,8 @@ pub enum Message {
     Tick(Instant),
     /// The titlebar's own business.
     Chrome(titlebar::Message),
+    /// Everything the reading surface can be told.
+    Reader(reader::Message),
     /// Stand on another level of the library.
     Navigate(String),
     /// The search pill's text changed.
@@ -881,14 +937,15 @@ pub enum Message {
     ImportProgress(ImportProgress),
     /// Cycle the appearance base and persist the settings.
     CycleAppearance,
-    /// The reader route handed the screen back to the shelf.
-    BackToShelf,
 }
 
 impl Mareader {
     fn boot() -> (Self, Task<Message>) {
         let settings = storage::load_settings();
         let tokens = Tokens::for_base(settings.appearance.base);
+        // The reading surface, built before the state that owns it: it seeds
+        // its viewer from the settings, and starts no engine yet.
+        let reader = reader::Reader::new(&settings);
         let mut state = Self {
             window: None,
             maximized: false,
@@ -927,7 +984,7 @@ impl Mareader {
             import_opts: FolderOpts::default(),
             settings,
             toasts: ToastHost::default(),
-            open_document: None,
+            reader,
             runs: Vec::new(),
             queued_ask: None,
             verifying: false,
@@ -936,6 +993,11 @@ impl Mareader {
         // The grid reports its first fit against the window the app opens
         // in; the Resized event confirms it.
         state.report_auto_fit();
+        // The reading surface hears the size the window opens with, so a book
+        // opened before the first resize is rasterised for the window the
+        // reader is actually looking at.
+        let opening = state.viewport;
+        let _ = state.reader_resize(opening);
         (state, window::oldest().map(Message::WindowDiscovered))
     }
 
@@ -959,6 +1021,20 @@ impl Mareader {
                 Task::batch([scale, self.start_measure_pass()])
             }
             Message::WindowEvent(id, event) => self.window_event(id, event),
+            // The reading surface answers everything itself except where the
+            // app's own route is concerned: `Close` is the reader letting the
+            // document go, and standing back on the shelf is the app's answer
+            // to it.
+            Message::Reader(reader::Message::Close) => {
+                let effects = self.reader.update(reader::Message::Close, now);
+                self.route = Route::Library;
+                self.menu = None;
+                self.apply_reader_effects(effects)
+            }
+            Message::Reader(message) => {
+                let effects = self.reader.update(message, now);
+                self.apply_reader_effects(effects)
+            }
             Message::Maximized(maximized) => {
                 self.maximized = maximized;
                 Task::none()
@@ -1403,7 +1479,10 @@ impl Mareader {
                 else {
                     return Task::none();
                 };
-                self.open_document_path(path)
+                // The id rides along: a book of its own resumes where its own
+                // reader left off, and the menu row the reader pressed named
+                // which book they meant.
+                self.open_row(Some(id), path)
             }
             Message::CardHover(hovered) => {
                 if let Some(id) = &hovered {
@@ -1641,11 +1720,6 @@ impl Mareader {
                 self.apply_appearance();
                 self.persist_settings()
             }
-            Message::BackToShelf => {
-                self.route = Route::Library;
-                self.menu = None;
-                Task::none()
-            }
         }
     }
 
@@ -1664,7 +1738,7 @@ impl Mareader {
             window::Event::Resized(size) => {
                 self.viewport = size;
                 self.report_auto_fit();
-                Task::none()
+                self.reader_resize(size)
             }
             // A regained focus owes the library its two automatic
             // measurements — unless the focus is the app's own picker
@@ -1692,6 +1766,116 @@ impl Mareader {
     /// page geometry snaps to — at open and on every rescale.
     fn set_scale_factor(&mut self, factor: f32) {
         pdf_core::pixel_grid::set_device_pixel_ratio(f64::from(factor));
+        // The reading surface re-rasterises on the new grid: a page drawn for a
+        // 1× screen must not be stretched by the compositor on a 1.5× panel.
+        let effects = self
+            .reader
+            .update(reader::Message::Scale(f64::from(factor)), Instant::now());
+        let _ = self.apply_reader_effects(effects);
+    }
+
+    /// The window's new size, to the reading surface. The chrome is an overlay,
+    /// so the reading area is the window itself and nothing is subtracted.
+    fn reader_resize(&mut self, size: Size) -> Task<Message> {
+        let effects = self
+            .reader
+            .update(reader::Message::Resized(size), Instant::now());
+        self.apply_reader_effects(effects)
+    }
+
+    /// The reader's reports, written: a read goes into the library blob and the
+    /// disk, a sentence into the toast slot. The reader never touches either —
+    /// it says what happened, and the app owns every byte that lands.
+    fn apply_reader_effects(&mut self, effects: Vec<reader::Effect>) -> Task<Message> {
+        let mut wrote = false;
+        let mut created: Option<String> = None;
+        for effect in effects {
+            match effect {
+                reader::Effect::Record(read) => {
+                    let address = read.path.to_string_lossy().into_owned();
+                    // A PDF's resume point is a page and a page count: it never
+                    // inherits the fraction a reflowable book left in the same
+                    // slot.
+                    let point = book::ReadPoint {
+                        page: read.page,
+                        num_pages: read.num_pages,
+                        fraction: None,
+                    };
+                    let landed = match read.book_id.as_deref() {
+                        // The reader named a row: an id is the only thing that
+                        // tells two rows of one address apart, and it is what
+                        // distinguishes an independent book from a shared one.
+                        Some(id) => book::record_read_row(
+                            &mut self.library.books,
+                            id,
+                            &address,
+                            read.title,
+                            read.author,
+                            point,
+                            now_ms(),
+                        ),
+                        None => book::record_read(
+                            &mut self.library.books,
+                            &address,
+                            read.title,
+                            read.author,
+                            point,
+                            now_ms(),
+                        ),
+                    };
+                    // A book the library did not know joins it as a linked row
+                    // at the front of "All", wearing a placeholder fingerprint
+                    // and carrying the name the document gave. It is measured
+                    // on the way past, exactly as a freshly imported file is:
+                    // otherwise a watched folder would keep refusing to rescan
+                    // it until the next launch.
+                    if let Some(book) = landed {
+                        created = Some(book.path().to_string());
+                    }
+                    wrote = true;
+                }
+                reader::Effect::Progress(read) => {
+                    let address = read.path.to_string_lossy().into_owned();
+                    // The same rows the progress effect wrote in the web app:
+                    // the reader's own book when it named one, every shared row
+                    // at the address otherwise. Nothing is created here — a
+                    // page turn is not a moment to add books to a library —
+                    // and nothing but the position is touched.
+                    for index in book::rows_for_read(
+                        &self.library.books,
+                        read.book_id.as_deref(),
+                        &address,
+                    ) {
+                        if let Some(book) = self
+                            .library
+                            .books
+                            .get_mut(index)
+                            .and_then(book::Row::as_book_mut)
+                        {
+                            book.page = read.page.clamp(1, read.num_pages.max(1));
+                            book.fraction = None;
+                        }
+                    }
+                    wrote = true;
+                }
+                reader::Effect::Toast(tone, sentence) => {
+                    self.toasts.show(tone, sentence, Instant::now());
+                }
+            }
+        }
+        let mut tasks = vec![];
+        if wrote {
+            tasks.push(self.persist_library());
+        }
+        if let Some(address) = created {
+            // The one measurement an open owes a row it just created: its
+            // fingerprint, so the library stops holding a placeholder.
+            tasks.push(Task::perform(
+                async move { fs::check_paths(std::slice::from_ref(&address)) },
+                Message::ChecksDone,
+            ));
+        }
+        Task::batch(tasks)
     }
 
     /// A view fact changed: close the menu that changed it and persist the
@@ -1809,12 +1993,15 @@ impl Mareader {
         // Resolved to an owned answer first: the resolve borrows the blob,
         // and the acts that follow borrow the app.
         enum Tap {
-            Open(PathBuf),
+            Open { id: String, path: PathBuf },
             Shelf(String),
             Nothing,
         }
         let tap = match book::find_row(&self.library.books, id) {
-            Some(book::Row::Book(book)) => Tap::Open(PathBuf::from(book.path())),
+            Some(book::Row::Book(book)) => Tap::Open {
+                id: book.id.clone(),
+                path: PathBuf::from(book.path()),
+            },
             // A link opens onto the shelf it points at — when it still
             // points at one.
             Some(book::Row::Link { target, .. }) if library_core::id::is_shelf(target) => {
@@ -1829,7 +2016,7 @@ impl Mareader {
             }
         };
         match tap {
-            Tap::Open(path) => self.open_document_path(path),
+            Tap::Open { id, path } => self.open_row(Some(id), path),
             Tap::Shelf(shelf) => {
                 self.navigate_to(shelf);
                 Task::none()
@@ -2744,19 +2931,113 @@ impl Mareader {
         }
     }
 
-    /// Admit a document through the gate, remember it, and route to the
-    /// reader — the shape of the web app's open flow, with the reading
-    /// surface itself landing alongside the engines.
+    /// Admit a document through the gate, remember it, and read it — the
+    /// shape of the web app's open flow: the address is gated first, the
+    /// library's row for it is settled second, and only then is the engine
+    /// asked for anything.
     fn open_document_path(&mut self, path: PathBuf) -> Task<Message> {
+        self.open_row(None, path)
+    }
+
+    /// The same door, told *which* row the reader meant. An id is what keeps a
+    /// book the reader imported privately from resuming at the page a shared
+    /// copy of the same file left behind.
+    ///
+    /// The web app's open flow, in the order it ran it: the gate first, the
+    /// row second, the resume point third — read *before* the engine is asked
+    /// for anything, so a progress write from the book that is still open
+    /// cannot overwrite the page this open begins at.
+    fn open_row(&mut self, book_id: Option<String>, path: PathBuf) -> Task<Message> {
         let address = path.to_string_lossy().into_owned();
+
+        // A row the library already knows is dead does not open onto a
+        // document at all. The web app answers a click on a missing book with
+        // the Find-again question, which keeps the row, its shelves and its
+        // page exactly as they are; until that sheet lands, the honest answer
+        // is a sentence rather than a reader standing on a file that is not
+        // there.
+        if let Some(book) = book_id
+            .as_deref()
+            .and_then(|id| book::find_by_id(&self.library.books, id))
+            .filter(|book| book.path() == address)
+            .filter(|book| book.missing)
+        {
+            let name = book.title();
+            self.toasts.show(
+                Tone::Error,
+                format!(
+                    "{name} is not where the library last saw it. Rescan the folder it \
+                     lived in and the shelf will point the book at its new home.",
+                ),
+                Instant::now(),
+            );
+            return Task::none();
+        }
+
+        // Which row answers for this address: the one the reader named when
+        // they named one, else a *shared* row at the address. A book of its
+        // own is the reader's private instance of the file, and an open that
+        // arrived as nothing but an address has not said it meant that one — a
+        // drop must never hijack a private book's resume point.
+        let row = book_id
+            .as_deref()
+            .and_then(|id| book::find_by_id(&self.library.books, id))
+            .filter(|book| book.path() == address)
+            .or_else(|| {
+                book::book_rows(&self.library.books)
+                    .find(|book| book.path() == address && !book.independent)
+            });
+
+        // The address is gated after the row is settled, so a book the library
+        // knows is asked the sharper question first: is the file readable at
+        // all? A file that is gone is the missing-book gate's news, not this
+        // one's.
         if let Err(error) = fs::ensure_readable_document(&address) {
             self.toasts.show(Tone::Error, error, Instant::now());
             return Task::none();
         }
+
+        // The row the open ends up belonging to, and the name it wears: the
+        // reader's own pick when they picked one, else the shared row that
+        // answers for the address.
+        let settled = row.map(|book| book.id.clone());
+        // The row's *display* name, not its raw title: the library answers with
+        // the name the file was imported under when the row carries none of its
+        // own, and that is what keeps a stored copy from introducing itself by
+        // the `source.pdf` it lives at.
+        let row_title = row.map(Book::title);
+
+        // The resume point, through the ported rule — read with the SETTLED
+        // row, not the one the caller named, because that is the order the web
+        // app read it in: a drop of a file whose first row at the address is a
+        // private book resumes where the shared copy's reader left off, not
+        // where the private copy's did.
+        let (resume, _fraction) =
+            book::resume_point(&self.library.books, settled.as_deref(), &address);
+        let open = reader::Open {
+            path,
+            book_id: settled,
+            row_title,
+            // A PDF's resume point is a page and nothing else: no stream
+            // position rides along, whatever a reflowable book left in the
+            // slot.
+            resume,
+        };
         self.settings.last_path = Some(address);
-        self.open_document = Some(path);
+        self.open_book(open)
+    }
+
+    /// Hand a document to the reading surface and stand on the reader route.
+    /// The reading position the library remembers travels in with it, so the
+    /// engine can be asked for the right page the first time.
+    fn open_book(&mut self, open: reader::Open) -> Task<Message> {
+        let effects = self
+            .reader
+            .update(reader::Message::Open(open), Instant::now());
         self.route = Route::Reader;
-        self.persist_settings()
+        self.menu = None;
+        let writes = self.apply_reader_effects(effects);
+        Task::batch([self.persist_settings(), writes])
     }
 
     // ── The boot-and-focus measurements ─────────────────────────────────
@@ -5933,7 +6214,7 @@ impl Mareader {
                     effect: answer.as_ref().map(|(effect, _)| effect),
                 },
             ),
-            Route::Reader => reader_surface(self.tokens, self.open_document.as_deref()),
+            Route::Reader => self.reader.view(self.tokens).map(Message::Reader),
         };
 
         let mut layers: Vec<Element<'_, Message>> = vec![content];
@@ -6045,6 +6326,15 @@ impl Mareader {
             Route::Reader => (None, None, Vec::new()),
         };
 
+        // The bar's centre: the document's own name while a book is open, else
+        // the app's. Borrowed rather than built — the element the bar returns
+        // outlives this function's locals, so the name has to come from the
+        // state it belongs to.
+        let title: &str = match self.route {
+            Route::Reader if self.reader.document.is_open() => self.reader.name(),
+            _ => self.route.title(),
+        };
+
         titlebar::view(
             &self.titlebar,
             titlebar::ViewContext {
@@ -6052,7 +6342,7 @@ impl Mareader {
                 route: self.route,
                 maximized: self.maximized,
                 factor,
-                title: self.route.title(),
+                title,
                 left,
                 center,
                 right,
@@ -6476,13 +6766,17 @@ impl Mareader {
         popover::popover(self.tokens, rows, SELECT_POP_W)
     }
 
+    /// The window's own title: the same rule the bar's centre follows, owned
+    /// because this is what the OS asks for.
+    ///
+    /// The reader route hands the name to the document — the web app's
+    /// floating label — so the window says what is being read rather than what
+    /// the app is. A stored copy's name comes from its row, which is why this
+    /// asks the reader rather than the file name.
     fn title(&self) -> String {
-        match (self.route, &self.open_document) {
-            (Route::Reader, Some(path)) => path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| Route::Reader.title().to_owned()),
-            _ => Route::Library.title().to_owned(),
+        match self.route {
+            Route::Reader if self.reader.document.is_open() => self.reader.name().to_owned(),
+            _ => self.route.title().to_owned(),
         }
     }
 
@@ -6497,6 +6791,10 @@ impl Mareader {
     fn subscription(&self) -> Subscription<Message> {
         let now = Instant::now();
         let mut subscriptions = vec![event::listen_with(on_event)];
+        // The engine's answers. One engine lives for the whole run, so the
+        // recipe is a constant in the tree rather than something a route
+        // builds and tears down.
+        subscriptions.push(self.reader.subscription().map(Message::Reader));
         // Frames flow only while something is in motion: the reveal
         // animating, a hide waiting out its grace, or a toast waiting out
         // its stamp. An idle window subscribes to nothing and costs no
@@ -6727,6 +7025,26 @@ fn on_event(event: iced::Event, status: event::Status, id: window::Id) -> Option
             ..
         }) if matches!(status, event::Status::Ignored) => {
             Some(if modifiers.shift() { Message::ShiftEnter } else { Message::EnterPressed })
+        }
+        // The page turns, and they come last on purpose: `Escape` and `Enter`
+        // are matched above, and a key this arm declines falls through to the
+        // same `None` every unhandled key does. A focused field keeps its own
+        // arrows — that is what the status guard says — so the reader hears
+        // only the keys the fields have no use for.
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
+            if matches!(status, event::Status::Ignored) =>
+        {
+            let step = match key {
+                keyboard::Key::Named(keyboard::key::Named::ArrowLeft)
+                | keyboard::Key::Named(keyboard::key::Named::PageUp) => -1,
+                keyboard::Key::Named(keyboard::key::Named::ArrowRight)
+                | keyboard::Key::Named(keyboard::key::Named::PageDown) => 1,
+                _ => 0,
+            };
+            // Both directions are one message, so the surface's own turn logic
+            // — the clamp at either end of the book, and the fit that follows a
+            // differently sized sheet — stays the only place a turn is decided.
+            (step != 0).then_some(Message::Reader(reader::Message::Turn(step)))
         }
         _ => None,
     }
@@ -7214,42 +7532,6 @@ fn window_settings() -> window::Settings {
     }
 
     settings
-}
-
-/// The reader route until the engines land: the document's name, the fact
-/// that it is remembered, and the way back.
-fn reader_surface(tokens: Tokens, document: Option<&Path>) -> Element<'static, Message> {
-    let name = document
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "the document".to_owned());
-    container(
-        column![
-            icon(IconName::Type, 40, tokens.accent),
-            text(name).size(18).color(tokens.ink),
-            text("Selected, remembered, and safe — the reading surfaces land with the engines.")
-                .size(13)
-                .color(tokens.muted),
-            button(text("Back to the shelf").size(13).color(tokens.ink))
-                .padding(Padding { top: 8.0, right: 14.0, bottom: 8.0, left: 14.0 })
-                .style(move |_, status| titlebar::ghost_button_style(tokens, 1.0, status))
-                .on_press(Message::BackToShelf),
-        ]
-        .align_x(Alignment::Center)
-        .spacing(12)
-        .width(Length::Shrink),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .padding(Padding {
-        top: platform::TITLE_BAR_H,
-        right: 0.0,
-        bottom: 0.0,
-        left: 0.0,
-    })
-    .into()
 }
 
 /// The ghost's box: the web layer's own 9rem cover at A4 proportion
