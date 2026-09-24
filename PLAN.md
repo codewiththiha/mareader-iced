@@ -475,7 +475,55 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   write, marks the tree that rode along as hand-placed, lets the folder's map
   go of the departed zone, names the copies as promised, and seats what landed
   through the very gesture the screen wrapped; a shelf whose books the store
-  refused entire stays where it was, with its own sentence. Next: the
-  import-side collision sheets (a merged folder's per-file ask, a covered
-  file, the folder-name collision, the already-imported note) and the reveal's
-  own light.
+  refused entire stays where it was, with its own sentence. The import's
+  book questions have arrived on the same sheet: one kind per question —
+  the name collision, the folder's merge, the covered ground and the
+  library's own copy elsewhere — and the screen, the words and the answers
+  all dispatch on it. A loose file inside a tree the library reads in
+  place, or one whose content the library already holds, now raises the
+  two-answer question instead of landing silently beside its twin: import
+  a copy of one's own here, or go to the one the reader has. A file whose
+  name the level holds raises the name question the moves ride, and its
+  three answers now cover the import's own half — "add as new" rides a
+  single-file copy through the store, minted under the name the sheet
+  showed, "make link" files a pointer at the row that is there, and
+  "already imported" navigates to it. The questions ride their run's plan
+  and are asked only once the copies have landed, because a sheet answered
+  mid-flight would land beside a ghost. The merged folder's per-file
+  question is described and answered here too — two names, three answers,
+  a twin of one linked file withholding "as new" on both the sheet and
+  the write, the merge healing the measurement only when the arriving
+  file IS the row's file, the replace seating the copy in the purged
+  row's slot — and waits on the walk's own screen to raise it. The batch
+  has its switch: the apply-to-all row, shown only while questions of the
+  sheet's own kind wait, sends one answer down the queue to every twin
+  question and stops at the first different shape. The import's walk now
+  answers the gate in front of it: a folder whose name the root level
+  already holds is a question before it is an import, asked with the
+  words the web's own sheet speaks — a stored arrival hearing the level's
+  own three answers, a read-at-place one hearing the pointer and the
+  merge, because a second read of one ground is the one thing the family
+  gate exists to prevent. The answers decide what the walk is for: *show
+  it* opens the shelf that is here; *make link* files a pointer at the
+  root without a second shelf; *merge* threads a plan through the run so
+  the folder files into the shelf the level already held — its root rung
+  re-anchored onto that shelf, scanned tree minting fresh rungs under it,
+  and every file named the shelf already held asked one question at a
+  time down the import's own compact sheet; *as new* mints the walk a
+  fresh row under the counter name, so a second run of one ground never
+  spends the first run's answers; and *replace* sweeps the shelf's own
+  rows out through the removal's own pass first, so the copies land in
+  the names the shelves showed. Ground a tree still reads is the one case
+  the bound walk cannot take: its copies land beside the tree, unbound —
+  a scan-and-copy run with no ledger behind it, one card and no row of
+  its own, the tree's shelved family stepping out of the way it never
+  entered — while the rung folders' group answer cuts the same chain a
+  bound walk would under the shelf the run mints for them. The replaced
+  shelf's books leave through the same sweep, the answered ground never
+  races a run that already holds it, and the queued ask behind a root now
+  remembers the whole intent rather than only the ground. "Already
+  imported" and the reveal's scroll-and-flash light land with them —
+  today the web's reveal is the native app says which way, not how the
+  way was lit. Next: the walk's already-imported note and the reveal's
+  own light, then the loose-run relinks (the restored books' returns)
+  and the copy-link answer's preserve-the-tree lane.

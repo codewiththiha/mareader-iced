@@ -26,7 +26,7 @@ use iced::{
 
 use library_core::blob::LibraryBlob;
 use library_core::book::{self, Book, Fingerprint, Origin};
-use library_core::conflict::Placement;
+use library_core::conflict::{self, Arrival, Placement};
 use library_core::folder::{
     self as folder_ops, rel_under, FolderMode, FolderOpts, Tombstone, WatchedFolder,
     MIN_SIZE_CEIL, MIN_SIZE_FLOOR,
@@ -53,7 +53,7 @@ use crate::library::drag::{
     drop_effect, fold_items, fold_preview, Band, DragPayload, DropEffect, DropQuery,
     DropTargetKind, FoldPreview,
 };
-use crate::library::conflicts::{self, ConflictAsk};
+use crate::library::conflicts::{self, ConflictAsk, ShelfConflictAsk};
 use crate::library::departure::{
     self, CopyAnswer, CopyAsk, CopyWork, ReturnPath, RowMove, ShelfDeparture, ShelfSeam,
 };
@@ -248,6 +248,9 @@ enum Sheet {
     /// A level that already holds the arriving name: the question, and the
     /// arrival the answer places.
     Conflict { ask: ConflictAsk },
+    /// A folder whose name the root level already holds: asked before the
+    /// walk, because the answer decides what the walk is for.
+    ShelfConflict { ask: ShelfConflictAsk },
 }
 
 /// Which question a folder run answers; a boolean at the signature could
@@ -315,7 +318,13 @@ struct FsRun {
 /// decide the size of every stage.
 enum Stage {
     /// A folder walk is in flight.
-    Walking { root: String, opts: FolderOpts, asked: Asked },
+    Walking { root: String, opts: FolderOpts, asked: Asked, plan: RootPlan },
+    /// The scan half of an unbound copy run: the ground walked once more,
+    /// with no ledger behind it.
+    CopiesScan { root: String, opts: FolderOpts, dest: CopiesDest },
+    /// The store half of an unbound copy run: the copes the landing files
+    /// beside the ground's standing tree.
+    Copies { work: Box<CopiesWork> },
     /// The store is copying a folder import's additions; the walk's answer
     /// waits in the plan.
     Storing { plan: Box<WalkPlan> },
@@ -393,6 +402,51 @@ struct WalkPlan {
     adds: Vec<(String, FoundFile)>,
     /// The moves the ledger healed: book id to its new address.
     relinks: Vec<(String, String)>,
+    /// The per-file questions a merge owes, asked only once the landing is
+    /// done — a file asked about must not stand among the landed rows.
+    asks: Vec<ConflictAsk>,
+}
+
+/// The walk's own root answer: *as new* names the tree something else and
+/// continues from a fresh row, so the old row keeps answering its shelf;
+/// *merge* files the new scans into the shelf that already holds the name.
+#[derive(Clone, Debug, Default)]
+struct RootPlan {
+    rename: Option<String>,
+    into: Option<String>,
+}
+
+/// The unbound copy run's seat: the run ground the tree's family reads, but
+/// whose copies are the library's own rather than a second read of the
+/// ground.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CopiesDest {
+    /// Spliced right behind the shelf whose name the arrival collided with:
+    /// a copy appended to the end of the level is a shelf the reader has to
+    /// go and find.
+    NewShelf { name: String, after: Option<String> },
+    /// The *replace*'s target, whose books the sweep has just taken out.
+    Into { shelf_id: String },
+}
+
+/// A copy run's plan, queued past the scan: the files still owed copies,
+/// each wearing the id it lands as, and the run's own answers.
+struct CopiesWork {
+    /// The ground the run walked: its claim, its label.
+    root: String,
+    dest: CopiesDest,
+    opts: FolderOpts,
+    pending: Vec<PendingCopy>,
+}
+
+/// What waits behind a held root: everything the deferred run owes to start
+/// again — the picked ground, the sheet answers it walked, and how the
+/// reader meant the books held. A re-pick waits whole where a focus walk
+/// waits politely.
+#[derive(Clone)]
+enum QueuedImport {
+    Walk(PathBuf, FolderOpts, RootPlan),
+    Copies { dir: PathBuf, opts: FolderOpts, dest: CopiesDest },
 }
 
 /// One loose file queued for the store: the id it lands as, the finding, and
@@ -408,10 +462,18 @@ struct FilesPlan {
     /// The level the pick lands its books on, when one is standing.
     target: Option<String>,
     pending: Vec<PendingCopy>,
-    /// Files the library already held, counted for the toast.
-    already: usize,
-    /// Covered files restored as their folder's linked books, counted too.
+    /// Covered files restored as their folder's linked books, counted for
+    /// the toast.
     restored: usize,
+    /// The questions the screens raised, riding along so they are asked
+    /// only once the copies have landed: a sheet answered while its own
+    /// copy is still in flight would land beside a ghost.
+    asks: Vec<ConflictAsk>,
+    /// The folder ledger an answered file settles when its copy comes
+    /// home — the answer's own placement record, absent for a pick's run.
+    settle: Option<(String, Fingerprint)>,
+    /// The slot the answered file takes, when an answer named one.
+    index: Option<usize>,
 }
 
 /// One copy's landing: the address it stored at and the measurement of its
@@ -509,6 +571,10 @@ pub struct Mareader {
     /// in flight owe two answers, and an answered sheet stays up while the
     /// queue lasts.
     conflict_waiting: Vec<ConflictAsk>,
+    /// The apply-to-all switch's state, reset every time a new question
+    /// takes the sheet: a batch is a promise made per question, not a mood
+    /// the reader left switched on.
+    apply_all: bool,
     /// The import sheet's options. They outlive the sheet: a second folder
     /// is usually imported the same way as the first.
     import_opts: FolderOpts,
@@ -523,7 +589,7 @@ pub struct Mareader {
     /// An explicit import waiting for a focus walk of the same folder to
     /// release it: an ask outranks a rescan, but never races its ledger
     /// write.
-    queued_ask: Option<(PathBuf, FolderOpts)>,
+    queued_ask: Option<QueuedImport>,
     /// Whether the boot-and-focus measure pass is in flight.
     verifying: bool,
     /// The id the next filesystem run wears. Progress beats carry it, so
@@ -650,9 +716,15 @@ pub enum Message {
     /// The copy sheet's own answer: buy the copies and finish the gesture,
     /// finish it without them, or leave everything as it is.
     AnswerCopy(CopyAnswer),
-    /// The name question's own answer: which of the offered placements the
-    /// reader meant.
-    AnswerPlacement(Placement),
+    /// The question sheet's own answer: which of the offered placements
+    /// the reader meant, and whether the switch behind the answers sends
+    /// the same one to every waiting question of this sheet's kind.
+    AnswerPlacement(Placement, bool),
+    /// The folder question's own answer: which of the offers decides what
+    /// the walk is for.
+    AnswerShelf(Placement),
+    /// The apply-to-all switch's own click.
+    ToggleApplyAll,
     /// A cell was tapped. One message for every cell: the app decides what
     /// a tap means — a membership while choosing, an open otherwise.
     CardTap(String),
@@ -694,6 +766,8 @@ pub enum Message {
     /// A folder walk finished: the run's id, and the documents it found or
     /// the advice the walk answers with.
     ScanDone(u64, Result<Vec<FoundFile>, String>),
+    /// The copy run's scan answer: what the ground held.
+    CopiesScanned(u64, Result<Vec<FoundFile>, String>),
     /// A folder import's store batch finished: one answer per requested
     /// copy.
     CopiesDone(u64, Vec<StoreResult>),
@@ -772,6 +846,7 @@ impl Mareader {
             context: None,
             sheet: None,
             conflict_waiting: Vec::new(),
+            apply_all: false,
             import_opts: FolderOpts::default(),
             settings,
             toasts: ToastHost::default(),
@@ -1068,19 +1143,79 @@ impl Mareader {
                     CopyAnswer::Copy => self.copy_and_finish(ask),
                 }
             }
-            Message::AnswerPlacement(choice) => {
-                let Some(Sheet::Conflict { ask }) = self.sheet.take() else {
+            Message::AnswerPlacement(choice, all) => {
+                let Some(Sheet::Conflict { mut ask }) = self.sheet.take() else {
                     return Task::none();
                 };
-                // A move whose arrival names no row has nothing to write:
-                // the row went while the sheet was up.
-                if ask.arrival.moving.is_none() && !ask.arrival.is_import() {
+                let mut tasks: Vec<Task<Message>> = Vec::new();
+                loop {
+                    // A move whose arrival names no row has nothing to
+                    // write: the row went while the sheet was up.
+                    if ask.arrival.moving.is_some() || ask.arrival.is_import() {
+                        let task = match &ask.kind {
+                            conflicts::AskKind::FolderMerge { .. } => {
+                                self.apply_folder_merge(&ask, choice)
+                            }
+                            _ => self.apply_placement(&ask, choice),
+                        };
+                        tasks.push(task);
+                    }
                     self.advance_conflict();
+                    if !all {
+                        break;
+                    }
+                    // The switch's contract: the same answer goes to every
+                    // waiting question of this sheet's kind, and a question
+                    // of another kind keeps its own sheet and its own
+                    // answers.
+                    let Some(Sheet::Conflict { ask: next }) = self.sheet.take() else {
+                        break;
+                    };
+                    let same = (ask.kind.is_two_answer() && next.kind.is_two_answer())
+                        || (ask.kind.is_folder_merge() && next.kind.is_folder_merge());
+                    if !same {
+                        self.sheet = Some(Sheet::Conflict { ask: next });
+                        break;
+                    }
+                    ask = next;
+                }
+                match tasks.len() {
+                    0 => Task::none(),
+                    1 => tasks.pop().unwrap_or_else(Task::none),
+                    _ => Task::batch(tasks),
+                }
+            }
+            Message::AnswerShelf(placement) => {
+                let Some(Sheet::ShelfConflict { ask }) = self.sheet.take() else {
+                    return Task::none();
+                };
+                if !conflicts::shelf_offers(&ask).contains(&placement) {
                     return Task::none();
                 }
-                let task = self.apply_placement(&ask, choice);
-                self.advance_conflict();
-                task
+                match placement {
+                    Placement::Open => {
+                        // The web's light — the scroll-to and the flash —
+                        // waits on the grid's scroll-to; navigation is the
+                        // reveal's load-bearing half.
+                        self.shelf = shelf::find(&self.library.shelves, &ask.existing_id)
+                            .and_then(|each| each.parent.clone())
+                            .unwrap_or_else(|| ALL_SHELF.to_string());
+                        Task::none()
+                    }
+                    Placement::LinkOnly => self.link_to_existing(&ask),
+                    Placement::Merge => self.begin_folder_walk(
+                        PathBuf::from(&ask.root),
+                        ask.opts.clone(),
+                        Asked::Explicitly,
+                        RootPlan { rename: None, into: Some(ask.existing_id.clone()) },
+                    ),
+                    Placement::KeepBoth => self.copies_beside_tree_run(ask),
+                    Placement::Replace => self.replace_with_tree(ask),
+                }
+            }
+            Message::ToggleApplyAll => {
+                self.apply_all = !self.apply_all;
+                Task::none()
             }
             Message::SheetSave => self.save_sheet(),
             Message::SheetImportFormat(format) => {
@@ -1357,6 +1492,7 @@ impl Mareader {
                 None => Task::none(),
             },
             Message::ScanDone(task, result) => self.scan_done(task, result, now),
+            Message::CopiesScanned(task, result) => self.copies_scanned(task, result, now),
             Message::CopiesDone(task, results) => self.copies_done(task, results),
             Message::FilesChecked(task, checks) => self.files_checked(task, checks),
             Message::FilesCopied(task, results) => self.files_copied(task, results),
@@ -2123,6 +2259,7 @@ impl Mareader {
                 self.conflict_waiting.clear();
                 Task::none()
             }
+            Sheet::ShelfConflict { .. } => Task::none(),
             Sheet::Import { root, ground } => {
                 let opts = self.import_opts.clone();
                 let root_str = root.to_string_lossy().into_owned();
@@ -2140,12 +2277,49 @@ impl Mareader {
                 // mint a second instance of itself, and removed books come
                 // back wherever in the tree they stood. The walk's own
                 // shelf map seats the pick on the shelf it named.
-                let walk_root = if opts.mode().reads_in_place() {
-                    self.covered_tree_root(&root_str).map_or(root, PathBuf::from)
-                } else {
-                    root
-                };
-                let walk = self.begin_folder_walk(walk_root, opts, Asked::Explicitly);
+                if opts.mode().reads_in_place()
+                    && let Some(tree_root) = self.covered_tree_root(&root_str)
+                {
+                    let walk = self.begin_folder_walk(
+                        PathBuf::from(tree_root),
+                        opts,
+                        Asked::Explicitly,
+                        RootPlan::default(),
+                    );
+                    return Task::batch([persisted, walk]);
+                }
+                // A folder whose name the root level already holds is a
+                // question before it is an import — two shelves of one name
+                // are two doors a reader cannot tell apart. A shelf the
+                // arriving folder's own row named is a continuation: the
+                // same question, the sheet's own words.
+                let incoming = paths::dir_label(&root_str);
+                if let Some(existing_id) =
+                    conflict::collide_shelf(&self.library.shelves, None, &incoming)
+                {
+                    let own = self
+                        .library
+                        .folders
+                        .iter()
+                        .find(|f| f.root == root_str)
+                        .and_then(|f| f.shelf_map.get("").cloned())
+                        .is_some_and(|root_rung| root_rung == existing_id);
+                    let existing_name = shelf::find(&self.library.shelves, &existing_id)
+                        .map(|each| each.name.clone())
+                        .unwrap_or_else(|| incoming.clone());
+                    self.sheet = Some(Sheet::ShelfConflict {
+                        ask: ShelfConflictAsk {
+                            incoming_name: incoming,
+                            existing_id,
+                            existing_name,
+                            root: root_str,
+                            opts,
+                            own,
+                        },
+                    });
+                    return persisted;
+                }
+                let walk = self.begin_folder_walk(root, opts, Asked::Explicitly, RootPlan::default());
                 Task::batch([persisted, walk])
             }
         }
@@ -2452,7 +2626,7 @@ impl Mareader {
         if on {
             Task::batch([
                 persisted,
-                self.begin_folder_walk(PathBuf::from(root), opts, Asked::OnFocus),
+                self.begin_folder_walk(PathBuf::from(root), opts, Asked::OnFocus, RootPlan::default()),
             ])
         } else {
             persisted
@@ -2531,7 +2705,12 @@ impl Mareader {
             .collect();
         let mut walks = Vec::with_capacity(watched.len());
         for (root, opts) in watched {
-            walks.push(self.begin_folder_walk(PathBuf::from(root), opts, Asked::OnFocus));
+            walks.push(self.begin_folder_walk(
+                PathBuf::from(root),
+                opts,
+                Asked::OnFocus,
+                RootPlan::default(),
+            ));
         }
         Task::batch(walks)
     }
@@ -2544,13 +2723,19 @@ impl Mareader {
     /// root is claimed for the length of the run — an ask outranks a
     /// rescan and queues behind it, and a second ask is told the first is
     /// still running.
-    fn begin_folder_walk(&mut self, dir: PathBuf, opts: FolderOpts, asked: Asked) -> Task<Message> {
+    fn begin_folder_walk(
+        &mut self,
+        dir: PathBuf,
+        opts: FolderOpts,
+        asked: Asked,
+        plan: RootPlan,
+    ) -> Task<Message> {
         let root = dir.to_string_lossy().into_owned();
         match self.root_claim(&root) {
             Claim::Free => {}
             Claim::HeldByWalk => {
                 if asked == Asked::Explicitly {
-                    self.queued_ask = Some((dir, opts));
+                    self.queued_ask = Some(QueuedImport::Walk(dir, opts, plan));
                 }
                 return Task::none();
             }
@@ -2575,7 +2760,7 @@ impl Mareader {
             sink: Arc::clone(&sink),
             rx,
             latest: None,
-            stage: Stage::Walking { root: root.clone(), opts: opts.clone(), asked },
+            stage: Stage::Walking { root: root.clone(), opts: opts.clone(), asked, plan },
         });
         let task_name = task.to_string();
         Task::perform(
@@ -2584,20 +2769,280 @@ impl Mareader {
         )
     }
 
+    /// The scan start of an unbound copy run: one walk of the ground, one
+    /// card, no row to answer to — the standing tree's claims are beside
+    /// the copies, never under them.
+    fn begin_copies_run(&mut self, dir: PathBuf, opts: FolderOpts, dest: CopiesDest) -> Task<Message> {
+        let root = dir.to_string_lossy().into_owned();
+        match self.root_claim(&root) {
+            Claim::Free => {}
+            Claim::HeldByWalk => {
+                self.queued_ask = Some(QueuedImport::Copies { dir, opts, dest });
+                return Task::none();
+            }
+            Claim::HeldByAsk => {
+                self.toasts.show(
+                    Tone::Info,
+                    format!("{} is already being imported.", paths::dir_label(&root)),
+                    Instant::now(),
+                );
+                return Task::none();
+            }
+        }
+        let label = paths::dir_label(&root);
+        let (sink, rx) = progress::channel();
+        self.next_task += 1;
+        let task = self.next_task;
+        self.runs.push(FsRun {
+            task,
+            label,
+            sink: Arc::clone(&sink),
+            rx,
+            latest: None,
+            stage: Stage::CopiesScan { root: root.clone(), opts: opts.clone(), dest },
+        });
+        let task_name = task.to_string();
+        Task::perform(
+            async move { fs::scan(&task_name, &root, &opts, &sink) },
+            move |result| Message::CopiesScanned(task, result),
+        )
+    }
+
+    /// The unbound walk's scan answer: heal the rows the ground reads
+    /// beside the tree, then owe every quieter file a copy of its own — the
+    /// ledger's table says which, and the batch rides the run's own card.
+    fn copies_scanned(
+        &mut self,
+        task: u64,
+        result: Result<Vec<FoundFile>, String>,
+        now: Instant,
+    ) -> Task<Message> {
+        let Some(ix) = self.runs.iter().position(|run| run.task == task) else {
+            return Task::none();
+        };
+        let Stage::CopiesScan { root, opts, dest } = &self.runs[ix].stage else {
+            return Task::none();
+        };
+        let (root, opts, dest) = (root.clone(), opts.clone(), dest.clone());
+        let found = match result {
+            Ok(found) => found,
+            Err(error) => {
+                self.runs.remove(ix);
+                self.toasts.show(Tone::Error, error, now);
+                return self.release_root(&root);
+            }
+        };
+        let stamp = now_ms();
+        // Everything but the copy the library already made, one book per
+        // fingerprint, off the ledger's own pure table; the heal reads the
+        // copy paths again against the tree beside it.
+        let registry = ledger::registry_of(&self.library.books);
+        let copy_paths = ledger::copy_over_paths(&found, &registry, &self.library.books);
+        let mut adds = ledger::unbound_copies(&found, &registry, &self.library.books);
+        let mut healed = 0usize;
+        // A file at an address the library already reads is that book,
+        // whatever the two fingerprints say.
+        adds.retain(|file| {
+            if copy_paths.contains(&file.path) {
+                return true;
+            }
+            match book::book_rows_mut(&mut self.library.books).find(|b| b.path() == file.path) {
+                Some(existing) => {
+                    existing.heal(file.fp);
+                    healed += 1;
+                    false
+                }
+                None => true,
+            }
+        });
+        if adds.is_empty() {
+            self.runs.remove(ix);
+            self.toasts.show(
+                Tone::Info,
+                format!("Everything in “{}” is already in the library", paths::dir_label(&root)),
+                now,
+            );
+            if healed > 0 {
+                return Task::batch([self.persist_library(), self.release_root(&root)]);
+            }
+            return self.release_root(&root);
+        }
+        let pending: Vec<PendingCopy> = adds
+            .into_iter()
+            .map(|file| PendingCopy {
+                book_id: library_core::id::next_id(stamp),
+                file,
+                title: None,
+            })
+            .collect();
+        let requests: Vec<BookFileRequest> = pending
+            .iter()
+            .map(|each| BookFileRequest {
+                from: each.file.path.clone(),
+                id: each.book_id.clone(),
+            })
+            .collect();
+        let sink = Arc::clone(&self.runs[ix].sink);
+        let task_name = task.to_string();
+        self.runs[ix].stage = Stage::Copies {
+            work: Box::new(CopiesWork { root, dest, opts, pending }),
+        };
+        Task::perform(
+            async move { store::store_books(&task_name, &requests, &sink) },
+            move |results| Message::CopiesDone(task, results),
+        )
+    }
+
+    /// The unbound copies' landing: every file lands as the library's own —
+    /// its own measurement, its source's fingerprint free — on the seat the
+    /// run's answer minted, and the tree beside reads on untouched.
+    fn copies_run_done(&mut self, work: CopiesWork, results: Vec<StoreResult>) -> Task<Message> {
+        let (copies, failure) = partition_store_results(results);
+        let stamp = now_ms();
+        let mut landed_ids: Vec<(String, String)> = Vec::new();
+        let mut root_shelf: Option<String> = None;
+        let mut rungs: HashMap<String, String> = HashMap::new();
+        for item in &work.pending {
+            let Some((store_path, measured)) = copies.get(&item.book_id) else {
+                continue;
+            };
+            let independent =
+                book::book_rows(&self.library.books).any(|each| each.path() == item.file.path);
+            let mut minted = Book::new(
+                item.book_id.clone(),
+                item.file.fp,
+                item.file.admitted_format(),
+                Origin::Stored { src: Some(item.file.path.clone()), store: store_path.clone() },
+                stamp,
+            );
+            minted.independent = independent;
+            minted.adopt_measurement(*measured);
+            let placed_id = minted.id.clone();
+            self.library.books.push(book::Row::Book(minted));
+            // The seat each copy lands on, resolved in batch order before
+            // any write: the root shelf is minted once, and a grouped run
+            // cuts each file's rung under it.
+            let on_shelf =
+                root_shelf.get_or_insert_with(|| self.copies_dest_shelf(&work.dest, stamp)).clone();
+            let seat = if work.opts.groups {
+                self.copies_rung_shelf(&work.root, &on_shelf, &mut rungs, item.file.subfolder(), stamp)
+            } else {
+                on_shelf
+            };
+            landed_ids.push((placed_id, seat));
+        }
+        let landed = landed_ids.len();
+        for (book_id, seat) in &landed_ids {
+            if let Some(home) = shelf::find_mut(&mut self.library.shelves, seat) {
+                shelf::shelf_add(home, book_id);
+            }
+        }
+        let persist = if landed > 0 { self.persist_library() } else { Task::none() };
+        if landed > 0 {
+            self.toasts.show(
+                Tone::Info,
+                format!(
+                    "Imported {} from “{}”",
+                    lib_text::plural(landed, "book", "books"),
+                    paths::dir_label(&work.root)
+                ),
+                Instant::now(),
+            );
+        }
+        if let Some(error) = failure {
+            self.toasts.show(Tone::Error, error, Instant::now());
+        }
+        // Navigate to the shelf the run minted or emptied — the web's light
+        // waits on the grid's scroll-to, documented beside the reveal's
+        // other half; the way there rides first.
+        let reveal = match &work.dest {
+            CopiesDest::Into { shelf_id } => Some(shelf_id.clone()),
+            _ => root_shelf,
+        };
+        if let Some(seat) = reveal {
+            self.shelf = shelf::find(&self.library.shelves, &seat)
+                .and_then(|each| each.parent.clone())
+                .unwrap_or_else(|| ALL_SHELF.to_string());
+        }
+        let release = self.release_root(&work.root);
+        Task::batch([persist, release])
+    }
+
+    /// The unbound run's root shelf, minted on first use: spliced behind
+    /// the shelf the collision named, or the *replace*'s emptied target.
+    fn copies_dest_shelf(&mut self, dest: &CopiesDest, stamp: u64) -> String {
+        match dest {
+            CopiesDest::Into { shelf_id } => shelf_id.clone(),
+            CopiesDest::NewShelf { name, after } => {
+                let id = library_core::id::next_shelf_id(stamp);
+                let at = after
+                    .as_deref()
+                    .and_then(|after| self.library.shelves.iter().position(|s| s.id == after))
+                    .map_or(self.library.shelves.len(), |at| at + 1);
+                self.library.shelves.insert(
+                    at,
+                    shelf::Shelf::virtual_shelf(id.clone(), name.clone(), None),
+                );
+                id
+            }
+        }
+    }
+
+    /// The bound walk's chain rule on a local map instead of a ledger's: an
+    /// unbound run owes no row, so its rungs live only until the landing
+    /// files them onto `shelves`. A folder that does not group has no
+    /// rungs.
+    fn copies_rung_shelf(
+        &mut self,
+        root: &str,
+        dest_shelf: &str,
+        rungs: &mut HashMap<String, String>,
+        key: &str,
+        stamp: u64,
+    ) -> String {
+        let dir = root.to_string();
+        let mut parent = dest_shelf.to_string();
+        for rung in folder_ops::key_chain(key) {
+            if rung.is_empty() {
+                continue;
+            }
+            if let Some(id) = rungs.get(rung) {
+                parent = id.clone();
+                continue;
+            }
+            let id = library_core::id::next_shelf_id(stamp);
+            // The rung's name is its directory's own label, the way a bound
+            // walk names the rungs its files mint.
+            let name =
+                rung.rsplit('/').next().filter(|label| !label.is_empty()).unwrap_or(&dir).to_string();
+            self.library
+                .shelves
+                .push(shelf::Shelf::virtual_shelf(id.clone(), name, Some(parent.clone())));
+            rungs.insert(rung.to_string(), id.clone());
+            parent = id;
+        }
+        parent
+    }
+
     /// Who holds a root right now, if anyone — the runs and the queued ask
     /// behind them.
     fn root_claim(&self, root: &str) -> Claim {
-        if self
-            .queued_ask
-            .as_ref()
-            .is_some_and(|(dir, _)| dir.to_string_lossy() == root)
-        {
+        if self.queued_ask.as_ref().is_some_and(|queued| {
+            let held = match queued {
+                QueuedImport::Walk(dir, _, _) | QueuedImport::Copies { dir, .. } => {
+                    dir.to_string_lossy()
+                }
+            };
+            held.as_ref() == root
+        }) {
             return Claim::HeldByAsk;
         }
         for run in &self.runs {
             let holds = match &run.stage {
-                Stage::Walking { root: held, .. } => held == root,
+                Stage::Walking { root: held, .. }
+                | Stage::CopiesScan { root: held, .. } => held == root,
                 Stage::Storing { plan } => plan.folder.root == root,
+                Stage::Copies { work } => work.root == root,
                 Stage::Measuring { .. }
                 | Stage::Copying { .. }
                 | Stage::Restoring { .. }
@@ -2616,7 +3061,9 @@ impl Mareader {
                 | Stage::Restoring { .. }
                 | Stage::RestoreCopying { .. }
                 | Stage::Duplicating { .. }
-                | Stage::Departing { .. } => false,
+                | Stage::Departing { .. }
+                | Stage::CopiesScan { .. }
+                | Stage::Copies { .. } => false,
             };
             return if focus_walk { Claim::HeldByWalk } else { Claim::HeldByAsk };
         }
@@ -2627,8 +3074,11 @@ impl Mareader {
     /// now — the release the queued ask was promised.
     fn release_root(&mut self, root: &str) -> Task<Message> {
         match self.queued_ask.take() {
-            Some((dir, opts)) if dir.to_string_lossy() == root => {
-                self.begin_folder_walk(dir, opts, Asked::Explicitly)
+            Some(QueuedImport::Walk(dir, opts, plan)) if dir.to_string_lossy() == root => {
+                self.begin_folder_walk(dir, opts, Asked::Explicitly, plan)
+            }
+            Some(QueuedImport::Copies { dir, opts, dest }) if dir.to_string_lossy() == root => {
+                self.begin_copies_run(dir, opts, dest)
             }
             Some(other) => {
                 self.queued_ask = Some(other);
@@ -2650,8 +3100,10 @@ impl Mareader {
         let Some(ix) = self.runs.iter().position(|run| run.task == task) else {
             return Task::none();
         };
-        let (root, opts, asked) = match &self.runs[ix].stage {
-            Stage::Walking { root, opts, asked } => (root.clone(), opts.clone(), *asked),
+        let (root, opts, asked, plan) = match &self.runs[ix].stage {
+            Stage::Walking { root, opts, asked, plan } => {
+                (root.clone(), opts.clone(), *asked, plan.clone())
+            }
             _ => return Task::none(),
         };
         let found = match result {
@@ -2666,14 +3118,14 @@ impl Mareader {
                 return self.release_root(&root);
             }
         };
-        self.plan_folder_walk(ix, task, &root, opts, asked, found)
+        self.plan_folder_walk(ix, task, &root, opts, asked, plan, found)
     }
 
     /// The diff stage: everything between the walk's raw findings and the
     /// landing. Decides against the ledger the crate owns — tombstones
     /// first, then the registry, then the rung's tracking answer — and
     /// writes nothing but the folder's own row.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn plan_folder_walk(
         &mut self,
         ix: usize,
@@ -2681,6 +3133,7 @@ impl Mareader {
         root: &str,
         opts: FolderOpts,
         asked: Asked,
+        plan: RootPlan,
         found: Vec<FoundFile>,
     ) -> Task<Message> {
         let stamp = now_ms();
@@ -2689,12 +3142,20 @@ impl Mareader {
         // is how a reader would otherwise get back every book they deleted
         // last week.
         let standing = self.library.folders.iter().find(|folder| folder.root == root).cloned();
-        let mut folder = standing.clone().unwrap_or_else(|| {
+        // The *as new* run owes a fresh row beside the old one: placements
+        // and quiet logs key off the row id, so a second run of one ground
+        // cannot spend the first run's answers.
+        let fresh_row = plan.rename.is_some() || standing.is_none();
+        let mut folder = if plan.rename.is_some() {
             WatchedFolder::new(library_core::id::next_folder_id(stamp), root, opts.clone())
-        });
+        } else {
+            standing.clone().unwrap_or_else(|| {
+                WatchedFolder::new(library_core::id::next_folder_id(stamp), root, opts.clone())
+            })
+        };
         folder.opts = opts;
         if folder.mode().reads_in_place() {
-            if standing.is_none() {
+            if fresh_row {
                 // A fresh row's watch is the sheet's switch, at the root;
                 // `set_tracking` keeps the tree and the legacy flag agreed.
                 folder.set_tracking("", folder.opts.watch);
@@ -2704,6 +3165,17 @@ impl Mareader {
             }
         }
         folder.prune_shelf_map(&self.library.shelves);
+        // The level it joins is the rung it files under from now on: the
+        // merge's root rung is that shelf, which makes the answer a promise
+        // the next scan keeps.
+        if let Some(into) = &plan.into {
+            folder.shelf_map.insert(String::new(), into.clone());
+        }
+        // An *as new* answer owes a tree of its own: every rung mints fresh
+        // under the counter-named root.
+        if plan.rename.is_some() {
+            folder.shelf_map.clear();
+        }
 
         let registry = ledger::registry_of(&self.library.books);
         ledger::prune_tombstones(&mut folder, &registry);
@@ -2732,8 +3204,44 @@ impl Mareader {
         let mut seen: HashSet<Fingerprint> = HashSet::new();
         adds.retain(|file| seen.insert(file.fp));
 
+        // A merge's new arrivals land on a rung the level already held: the
+        // per-file question rides the arrival itself, asked once.
+        let mut asks: Vec<ConflictAsk> = Vec::new();
+        if let Some(into) = plan.into.clone() {
+            adds.retain(|file| {
+                let key = folder.shelf_key(file);
+                let target = match if key.is_empty() {
+                    Some(into.clone())
+                } else {
+                    folder.shelf_map.get(&key).cloned()
+                } {
+                    Some(target) => target,
+                    None => return true,
+                };
+                let arrival = Arrival::import(file.clone(), target, None);
+                match conflict::collide(&self.library.books, &self.library.shelves, &arrival) {
+                    Some(existing) => {
+                        let existing_name = conflicts::existing_name_of(
+                            &self.library.books,
+                            &existing,
+                            &arrival,
+                        );
+                        asks.push(ConflictAsk::folder_merge(
+                            arrival,
+                            existing,
+                            existing_name,
+                            folder.mode(),
+                            folder.id.clone(),
+                        ));
+                        false
+                    }
+                    None => true,
+                }
+            });
+        }
+
         let root_name = paths::dir_label(root);
-        if adds.is_empty() && relinks.is_empty() {
+        if adds.is_empty() && relinks.is_empty() && asks.is_empty() {
             // Nothing to do. A quiet walk leaves no trace beyond the row's
             // stamp; an ask still owes the reader the news.
             folder.scanned_ms = stamp;
@@ -2759,20 +3267,23 @@ impl Mareader {
         // The root rung's name, deduped against the shelves standing — two
         // doors of one name are two doors a reader cannot tell apart. A
         // continuation keeps the shelf the map already names.
-        let planned_root = (!folder.shelf_map.contains_key("")).then(|| {
-            let names: HashSet<String> =
-                self.library.shelves.iter().map(|each| each.name.clone()).collect();
-            if names.contains(&root_name) {
-                book::duplicate_title(&root_name, &names)
-            } else {
-                root_name.clone()
-            }
-        });
+        let planned_root = match plan.rename.clone() {
+            Some(name) => Some(name),
+            None => (!folder.shelf_map.contains_key("")).then(|| {
+                let names: HashSet<String> =
+                    self.library.shelves.iter().map(|each| each.name.clone()).collect();
+                if names.contains(&root_name) {
+                    book::duplicate_title(&root_name, &names)
+                } else {
+                    root_name.clone()
+                }
+            }),
+        };
         let adds: Vec<(String, FoundFile)> = adds
             .into_iter()
             .map(|file| (library_core::id::next_id(stamp), file))
             .collect();
-        let plan = WalkPlan { folder, asked, root_name, planned_root, adds, relinks };
+        let plan = WalkPlan { folder, asked, root_name, planned_root, adds, relinks, asks };
 
         if plan.folder.mode().copies_files() {
             // The store batch rides the run's own channel: the pill the
@@ -2817,6 +3328,7 @@ impl Mareader {
                 let release = self.release_root(&root);
                 Task::batch([outcome, release])
             }
+            Stage::Copies { work } => self.copies_run_done(*work, results),
             Stage::Duplicating { work } => self.duplicates_done(*work, results),
             Stage::Departing { work } => self.departing_done(*work, results),
             _ => Task::none(),
@@ -3678,6 +4190,7 @@ impl Mareader {
         let first = asks.remove(0);
         self.conflict_waiting.extend(asks);
         self.sheet = Some(Sheet::Conflict { ask: first });
+        self.apply_all = false;
     }
 
     /// The next question of the queue, when the slot is free: an answered
@@ -3690,6 +4203,7 @@ impl Mareader {
         }
         let ask = self.conflict_waiting.remove(0);
         self.sheet = Some(Sheet::Conflict { ask });
+        self.apply_all = false;
     }
 
     /// What dropping this question means: the conflict sheet's close — its
@@ -3735,18 +4249,340 @@ impl Mareader {
             .unwrap_or_else(|| ALL_SHELF.to_string());
     }
 
-    /// "As new": a moved row is renamed and then moved — the rename is what
-    /// frees the collision, and a move that did not rename would ask the
-    /// same question again on the way in. The import's file answer lands
-    /// through the import's own screen.
+    /// "As new": a moved row is renamed and then moved — the rename is
+    /// what frees the collision, and a move that did not rename would ask
+    /// the same question again on the way in. An import's file answer rides
+    /// the single-file copy: made and measured before the row is promised,
+    /// minted under the name the sheet showed.
     fn as_new(&mut self, ask: &ConflictAsk) -> Task<Message> {
-        let Some(row_id) = ask.arrival.moving.clone() else {
+        let name = conflicts::minted_name(&self.library.books, &self.library.shelves, ask);
+        if let Some(row_id) = ask.arrival.moving.clone() {
+            conflicts::rename_row(&mut self.library.books, &row_id, &name);
+            self.move_row(&row_id, &ask.arrival.shelf_id, ask.arrival.index, false);
+            return self.persist_library();
+        }
+        let Some(file) = ask.arrival.file.clone() else {
             return Task::none();
         };
-        let name = conflicts::minted_name(&self.library.books, &self.library.shelves, ask);
-        conflicts::rename_row(&mut self.library.books, &row_id, &name);
-        self.move_row(&row_id, &ask.arrival.shelf_id, ask.arrival.index, false);
+        self.land_stored_copy(
+            file,
+            Some(name),
+            ask.arrival.shelf_id.clone(),
+            ask.arrival.index,
+            None,
+        )
+    }
+
+    /// One file's ride through the store: a copy, a measurement, a landing
+    /// — the answers that promise a library copy of their own ride this, so
+    /// a copy that fails leaves the shelf untouched and the ledger
+    /// unmarked.
+    fn land_stored_copy(
+        &mut self,
+        file: FoundFile,
+        name: Option<String>,
+        shelf_id: String,
+        index: Option<usize>,
+        settle: Option<(String, Fingerprint)>,
+    ) -> Task<Message> {
+        let stamp = now_ms();
+        let book_id = library_core::id::next_id(stamp);
+        let label = paths::file_name(&file.path);
+        let request = BookFileRequest { from: file.path.clone(), id: book_id.clone() };
+        let plan = FilesPlan {
+            target: (shelf_id != ALL_SHELF).then_some(shelf_id),
+            pending: vec![PendingCopy { book_id, file, title: name }],
+            restored: 0,
+            asks: Vec::new(),
+            settle,
+            index,
+        };
+        let (sink, rx) = progress::channel();
+        self.next_task += 1;
+        let task = self.next_task;
+        self.runs.push(FsRun {
+            task,
+            label,
+            sink: Arc::clone(&sink),
+            rx,
+            latest: None,
+            stage: Stage::Copying { plan: Box::new(plan) },
+        });
+        let task_name = task.to_string();
+        let requests = vec![request];
+        Task::perform(
+            async move { store::store_books(&task_name, &requests, &sink) },
+            move |results| Message::FilesCopied(task, results),
+        )
+    }
+
+    /// A linked row at the file's own address: what a read-at-place folder
+    /// lands for an answered file, on the shelf and in the slot the gesture
+    /// meant, wearing the name the answer minted when it minted one. The
+    /// web's kept reading data riding a returning file waits on the marks
+    /// store.
+    fn land_file(
+        &mut self,
+        file: &FoundFile,
+        name: Option<String>,
+        shelf_id: &str,
+        index: Option<usize>,
+    ) -> String {
+        let stamp = now_ms();
+        // A row already reading the source address makes this row its own
+        // book: independent, with its own marks and place.
+        let independent =
+            book::book_rows(&self.library.books).any(|each| each.path() == file.path);
+        let mut minted = Book::new(
+            library_core::id::next_id(stamp),
+            file.fp,
+            file.admitted_format(),
+            Origin::Linked { src: file.path.clone() },
+            stamp,
+        );
+        minted.title = name;
+        minted.independent = independent;
+        let placed = minted.id.clone();
+        self.library.books.push(book::Row::Book(minted));
+        // The root has no member list, so the placement write is skipped.
+        if shelf_id != ALL_SHELF
+            && let Some(home) = shelf::find_mut(&mut self.library.shelves, shelf_id)
+        {
+            shelf::place(&mut home.books, &placed, index);
+        }
+        placed
+    }
+
+    /// The pointer answer: one row at the root that says where the folder
+    /// already is, named for the level's own truth.
+    fn link_to_existing(&mut self, ask: &ShelfConflictAsk) -> Task<Message> {
+        let stamp = now_ms();
+        self.library.books.push(book::Row::Link {
+            id: library_core::id::next_id(stamp),
+            name: ask.existing_name.clone(),
+            target: ask.existing_id.clone(),
+            added_ms: stamp,
+        });
+        self.toasts.show(
+            Tone::Info,
+            format!("Linked to {}.", ask.existing_name),
+            Instant::now(),
+        );
         self.persist_library()
+    }
+
+    /// The *as new* answer: a fresh named tree of one's own. Ground a tree
+    /// still reads is the one case the bound walk cannot take — the copies
+    /// are unbound, filed beside the tree rather than into its ledger.
+    fn copies_beside_tree_run(&mut self, ask: ShelfConflictAsk) -> Task<Message> {
+        // The library names the shelf something new, once, at the click the
+        // sheet promised: the name the reader does not take on faith.
+        let name = library_core::conflict::next_shelf_name(
+            &self.library.shelves,
+            None,
+            &ask.incoming_name,
+        );
+        let stands_in_place =
+            self.library.folders.iter().any(|f| f.root == ask.root && f.mode().reads_in_place());
+        if !ask.opts.mode().copies_files() || !stands_in_place {
+            return self.begin_folder_walk(
+                PathBuf::from(&ask.root),
+                ask.opts.clone(),
+                Asked::Explicitly,
+                RootPlan { rename: Some(name), into: None },
+            );
+        }
+        self.begin_copies_run(
+            PathBuf::from(&ask.root),
+            ask.opts.clone(),
+            CopiesDest::NewShelf { name, after: Some(ask.existing_id.clone()) },
+        )
+    }
+
+    /// The *replace* answer: the books the level's shelf holds leave the
+    /// library through the removal's own sweep, and the folder's copies
+    /// take the shelf. The claim check and the sweep run in one step: a run
+    /// already walking the ground refuses before anything is removed.
+    fn replace_with_tree(&mut self, ask: ShelfConflictAsk) -> Task<Message> {
+        let root_str = ask.root.clone();
+        if self.root_claim(&root_str) != Claim::Free {
+            self.toasts.show(
+                Tone::Info,
+                format!("{} is already being imported.", paths::dir_label(&root_str)),
+                Instant::now(),
+            );
+            return Task::none();
+        }
+        let own_in_place = ask.own
+            && self
+                .library
+                .folders
+                .iter()
+                .any(|f| f.root == root_str && f.mode().reads_in_place());
+        if own_in_place {
+            // The tree's linked rows go out through the same pass a removal
+            // walks: the copies land in the names the shelves showed, and a
+            // copy that came home to one of its shelves stays.
+            let placed = self
+                .library
+                .folders
+                .iter()
+                .find(|f| f.root == root_str && f.mode().reads_in_place())
+                .map(|f| f.placed.clone())
+                .unwrap_or_default();
+            let doomed = if placed.is_empty() {
+                Vec::new()
+            } else {
+                ledger::linked_rows_of(&self.library.books, &placed)
+            };
+            for id in doomed {
+                self.purge_row(&id);
+            }
+            return self.begin_folder_walk(
+                PathBuf::from(&root_str),
+                ask.opts.clone(),
+                Asked::Explicitly,
+                RootPlan::default(),
+            );
+        }
+        let doomed: Vec<String> =
+            shelf::members_of(&self.library.books, &self.library.shelves, &ask.existing_id)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+        for id in doomed {
+            self.purge_row(&id);
+        }
+        if ask.opts.mode().copies_files()
+            && self.library.folders.iter().any(|f| f.root == root_str && f.mode().reads_in_place())
+        {
+            // The unbound run files the copies into the shelf the sweep
+            // just emptied and leaves the tree's ledger alone.
+            return self.begin_copies_run(
+                PathBuf::from(&root_str),
+                ask.opts.clone(),
+                CopiesDest::Into { shelf_id: ask.existing_id.clone() },
+            );
+        }
+        self.begin_folder_walk(
+            PathBuf::from(&root_str),
+            ask.opts.clone(),
+            Asked::Explicitly,
+            RootPlan { rename: None, into: Some(ask.existing_id.clone()) },
+        )
+    }
+
+    /// Record the placement and spend the removal that was holding the
+    /// file out — the two ledger writes a walk makes for its files, made
+    /// here because an answer landed this one after a walk raised the
+    /// question.
+    fn settle_ledger(&mut self, folder_id: Option<&str>, fp: Fingerprint) {
+        let Some(folder_id) = folder_id else {
+            return;
+        };
+        if let Some(folder) = folder_ops::find_mut(&mut self.library.folders, folder_id) {
+            ledger::restore_deleted(folder, &fp);
+            folder.mark_placed(fp);
+        }
+    }
+
+    /// The answered file's landing: a read-at-place folder's answer links
+    /// the file where the gesture meant it, and a copying folder's answer
+    /// rides the single-file copy, settling the folder's ledger when that
+    /// copy comes home.
+    fn land_answer_file(
+        &mut self,
+        ask: &ConflictAsk,
+        file: FoundFile,
+        name: Option<String>,
+        index: Option<usize>,
+    ) -> Task<Message> {
+        let (mode, folder_id) = match &ask.kind {
+            conflicts::AskKind::FolderMerge { mode, folder_id } => {
+                (*mode, Some(folder_id.as_str()))
+            }
+            _ => return Task::none(),
+        };
+        let shelf_id = ask.arrival.shelf_id.clone();
+        if mode.reads_in_place() {
+            self.land_file(&file, name, &shelf_id, index);
+            self.settle_ledger(folder_id, file.fp);
+            // The web's cover backfill waits on the engines, documented
+            // where the covers land.
+            return self.persist_library();
+        }
+        let settle = folder_id.map(|id| (id.to_string(), file.fp));
+        self.land_stored_copy(file, name, shelf_id, index, settle)
+    }
+
+    /// The compact per-file answers: keep the row that is here, seat this
+    /// file in its place, or keep both under a name of its own — *go and
+    /// look* is not among them, because the reader is importing the folder,
+    /// so going to look is not an answer to a file inside it.
+    fn apply_folder_merge(&mut self, ask: &ConflictAsk, answer: Placement) -> Task<Message> {
+        let answer = self.withhold_keep_both_from_a_twin(ask, answer);
+        // Every answer this sheet offers is about one arriving file.
+        let Some(file) = ask.arrival.file.clone() else {
+            return Task::none();
+        };
+        match answer {
+            Placement::KeepBoth => {
+                let name =
+                    conflicts::minted_name(&self.library.books, &self.library.shelves, ask);
+                self.land_answer_file(ask, file, Some(name), None)
+            }
+            Placement::Replace => {
+                let slot = conflicts::member_slot(
+                    &self.library.shelves,
+                    &ask.arrival.shelf_id,
+                    &ask.existing_id,
+                );
+                self.purge_row(&ask.existing_id);
+                self.land_answer_file(ask, file, None, slot)
+            }
+            // The measurement only travels with the answer when the
+            // arriving file IS the row's file, which a re-import of one
+            // folder always is. A different folder's namesake is another
+            // content wearing one name.
+            Placement::Merge => {
+                if self.is_the_same_file(&ask.existing_id, &file.path)
+                    && let Some(book::Row::Book(existing)) =
+                        book::find_row_mut(&mut self.library.books, &ask.existing_id)
+                {
+                    existing.heal(file.fp);
+                }
+                self.settle_ledger(ask.kind.folder_id(), file.fp);
+                self.persist_library()
+            }
+            Placement::Open | Placement::LinkOnly => Task::none(),
+        }
+    }
+
+    /// The sheet already withholds *keep both* from a twin; this is the
+    /// write side of the same rule, because apply-to-all can carry an
+    /// answer to a question whose sheet never offered it.
+    fn withhold_keep_both_from_a_twin(
+        &self,
+        ask: &ConflictAsk,
+        answer: Placement,
+    ) -> Placement {
+        if answer != Placement::KeepBoth {
+            return answer;
+        }
+        if ask.kind.reads_in_place()
+            && let Some(file) = ask.arrival.file.as_ref()
+            && self.is_the_same_file(&ask.existing_id, &file.path)
+        {
+            Placement::Merge
+        } else {
+            answer
+        }
+    }
+
+    /// Whether the row the question found reads the very file that is
+    /// arriving.
+    fn is_the_same_file(&self, existing_id: &str, path: &str) -> bool {
+        book::find_by_id(&self.library.books, existing_id).is_some_and(|each| each.path() == path)
     }
 
     /// "Make link": the row the reader was holding goes, the pointers at it
@@ -3968,7 +4804,8 @@ impl Mareader {
         plan: WalkPlan,
         copies: Option<CopyMap>,
     ) -> Task<Message> {
-        let WalkPlan { mut folder, asked, root_name, planned_root, adds, relinks, .. } = plan;
+        let WalkPlan { mut folder, asked, root_name, planned_root, adds, relinks, asks, .. } =
+            plan;
         let stamp = now_ms();
         let mut placed = 0usize;
         let mut relinked = 0usize;
@@ -4089,6 +4926,11 @@ impl Mareader {
                 Instant::now(),
             );
         }
+        // The merge's questions are raised over the landed tree, never
+        // beside ghosts.
+        if !asks.is_empty() {
+            self.raise_conflict(asks);
+        }
         persist
     }
 
@@ -4116,7 +4958,7 @@ impl Mareader {
             }
         }
 
-        let found: Vec<FoundFile> = checks.iter().filter_map(found_from_check).collect();
+        let mut found: Vec<FoundFile> = checks.iter().filter_map(found_from_check).collect();
         if found.is_empty() {
             self.runs.remove(ix);
             self.toasts.show(
@@ -4128,15 +4970,15 @@ impl Mareader {
         }
 
         let stamp = now_ms();
-        let mut already = 0usize;
+        let shelf_id = target.clone().unwrap_or_else(|| ALL_SHELF.to_string());
         let mut restored = 0usize;
-        let mut pending: Vec<PendingCopy> = Vec::new();
 
-        for file in found {
-            // A file a read-at-place tree holds is that folder's business
-            // first: a row already reading the address is counted and filed
-            // here, and a removal the tree logged comes back as the tree's
-            // own linked book.
+        // A file a read-at-place tree holds is that folder's business
+        // first: a row already reading the address raises the folder's
+        // two-answer question, and a removal the tree logged comes back as
+        // the tree's own linked book.
+        let mut covered_asks: Vec<ConflictAsk> = Vec::new();
+        found.retain(|file| {
             let covering = self
                 .library
                 .folders
@@ -4144,49 +4986,74 @@ impl Mareader {
                 .filter(|folder| folder.mode().reads_in_place())
                 .find(|folder| rel_under(&file.path, &folder.root).is_some())
                 .map(|folder| folder.id.clone());
-            if let Some(folder_id) = covering {
-                let held_at_address = book::book_rows(&self.library.books)
-                    .find(|each| each.path() == file.path)
-                    .map(|each| each.id.clone());
-                if let Some(row_id) = held_at_address {
-                    already += 1;
-                    if let Some(target) = &target
-                        && let Some(home) = shelf::find_mut(&mut self.library.shelves, target)
-                    {
-                        shelf::shelf_add(home, &row_id);
-                    }
-                    changed = true;
-                    continue;
-                }
-                let stone = folder_ops::find(&self.library.folders, &folder_id)
-                    .and_then(|folder| ledger::find_tombstone(folder, &file.fp).cloned());
-                let placed_by_folder = folder_ops::find(&self.library.folders, &folder_id)
-                    .is_some_and(|folder| folder.placed.contains(&file.fp));
-                if stone.is_some() || placed_by_folder {
-                    self.restore_covered(&file, &folder_id, stone.as_ref(), stamp);
-                    restored += 1;
-                    changed = true;
-                    continue;
-                }
+            let Some(folder_id) = covering else {
+                return true;
+            };
+            let held_at_address = book::book_rows(&self.library.books)
+                .find(|each| each.path() == file.path)
+                .map(|each| each.id.clone());
+            if let Some(row_id) = held_at_address {
+                let existing_name = book::find_row(&self.library.books, &row_id)
+                    .map(|row| row.display_name())
+                    .unwrap_or_else(|| file.rel.clone());
+                covered_asks.push(ConflictAsk::covered(
+                    Arrival::import(file.clone(), shelf_id.clone(), None),
+                    row_id,
+                    existing_name,
+                    folder_id,
+                ));
+                return false;
             }
-            // Content the library already holds is content the reader
-            // already has, wherever it is filed: counted, and filed here
-            // when a shelf is standing. A row whose address died is no
-            // answer — the copy lands beside it. (The conflict sheet's
-            // questions land with the duplicates work; until then the
-            // placement is the answer.)
-            if let Some(held) = ledger::existing_for(&self.library.books, file.fp)
-                && !held.missing
-            {
-                already += 1;
-                if let Some(target) = &target
-                    && let Some(home) = shelf::find_mut(&mut self.library.shelves, target)
-                {
-                    shelf::shelf_add(home, &held.row_id);
-                }
+            let stone = folder_ops::find(&self.library.folders, &folder_id)
+                .and_then(|folder| ledger::find_tombstone(folder, &file.fp).cloned());
+            let placed_by_folder = folder_ops::find(&self.library.folders, &folder_id)
+                .is_some_and(|folder| folder.placed.contains(&file.fp));
+            if stone.is_some() || placed_by_folder {
+                self.restore_covered(file, &folder_id, stone.as_ref(), stamp);
+                restored += 1;
                 changed = true;
-                continue;
+                return false;
             }
+            true
+        });
+
+        // Content the library already holds is content the reader already
+        // has, wherever it is filed: the two-answer question asks whether
+        // the drop meant a second instance or the one they have. A row
+        // whose address died is no answer — the copy lands beside it.
+        let mut held_asks: Vec<ConflictAsk> = Vec::new();
+        found.retain(|file| {
+            let Some(held) = ledger::existing_for(&self.library.books, file.fp) else {
+                return true;
+            };
+            if held.missing {
+                return true;
+            }
+            let existing_name = book::find_row(&self.library.books, &held.row_id)
+                .map(|row| row.display_name())
+                .unwrap_or_else(|| file.rel.clone());
+            held_asks.push(ConflictAsk::already_have(
+                Arrival::import(file.clone(), shelf_id.clone(), None),
+                held.row_id.clone(),
+                existing_name,
+            ));
+            false
+        });
+
+        // Every file whose name the level already holds is a question
+        // rather than a placement; a twin on another shelf is not one.
+        let arrivals: Vec<Arrival> = found
+            .iter()
+            .map(|file| Arrival::import(file.clone(), shelf_id.clone(), None))
+            .collect();
+        let (clean, name_asks) =
+            conflicts::screen(&self.library.books, &self.library.shelves, arrivals);
+
+        let mut pending: Vec<PendingCopy> = Vec::new();
+        for arrival in &clean {
+            let Some(file) = arrival.file.clone() else {
+                continue;
+            };
             // A removal any folder logged against this content is spent by
             // the explicit ask: the name it remembered rides onto the copy.
             let title = self.lift_stone_for(&file.fp);
@@ -4196,6 +5063,9 @@ impl Mareader {
                 title,
             });
         }
+        let mut asks = covered_asks;
+        asks.extend(held_asks);
+        asks.extend(name_asks);
 
         if pending.is_empty() {
             self.runs.remove(ix);
@@ -4205,9 +5075,8 @@ impl Mareader {
                     format!("{} came back", lib_text::plural(restored, "book", "books")),
                     Instant::now(),
                 );
-            } else if already > 0 {
-                self.toasts.show(Tone::Info, "Already in the library", Instant::now());
             }
+            self.raise_conflict(asks);
             return if changed { self.persist_library() } else { Task::none() };
         }
 
@@ -4218,7 +5087,14 @@ impl Mareader {
         let sink = Arc::clone(&self.runs[ix].sink);
         let task_name = task.to_string();
         self.runs[ix].stage = Stage::Copying {
-            plan: Box::new(FilesPlan { target, pending, already, restored }),
+            plan: Box::new(FilesPlan {
+                target,
+                pending,
+                restored,
+                asks,
+                settle: None,
+                index: None,
+            }),
         };
         Task::perform(
             async move { store::store_books(&task_name, &requests, &sink) },
@@ -4292,7 +5168,7 @@ impl Mareader {
         let Stage::Copying { plan } = run.stage else {
             return Task::none();
         };
-        let FilesPlan { target, pending, already, restored } = *plan;
+        let FilesPlan { target, pending, restored, asks, settle, index } = *plan;
         let (copies, failure) = partition_store_results(results);
         let stamp = now_ms();
 
@@ -4325,30 +5201,37 @@ impl Mareader {
             && let Some(home) = shelf::find_mut(&mut self.library.shelves, target)
         {
             for placed_id in &placements {
-                shelf::place(&mut home.books, placed_id, None);
+                shelf::place(&mut home.books, placed_id, index);
             }
+        }
+        // The answer's own ledger write, spent only when the copy it
+        // waited for actually landed.
+        if landed > 0
+            && let Some((folder_id, fp)) = settle
+        {
+            self.settle_ledger(Some(&folder_id), fp);
         }
 
         let added = landed + restored;
-        if added > 0 || already > 0 {
+        if added > 0 {
             let persist = self.persist_library();
             if let Some(error) = failure {
                 self.toasts.show(Tone::Error, error, Instant::now());
-            } else if added > 0 {
+            } else {
                 let line = if target.is_some() {
                     format!("Added {} to this shelf", lib_text::plural(added, "book", "books"))
                 } else {
                     format!("Added {}", lib_text::plural(added, "book", "books"))
                 };
                 self.toasts.show(Tone::Info, line, Instant::now());
-            } else {
-                self.toasts.show(Tone::Info, "Already in the library", Instant::now());
             }
+            self.raise_conflict(asks);
             return persist;
         }
         if let Some(error) = failure {
             self.toasts.show(Tone::Error, error, Instant::now());
         }
+        self.raise_conflict(asks);
         Task::none()
     }
 
@@ -5112,7 +5995,48 @@ impl Mareader {
                     &self.library.shelves,
                     &self.library.folders,
                     ask,
-                    self.conflict_waiting.len(),
+                    &self.conflict_waiting,
+                );
+                let apply_all = self.apply_all;
+                let choices = spec
+                    .choices
+                    .iter()
+                    .map(|choice| {
+                        sheet::choice_row(
+                            self.tokens,
+                            choice.label,
+                            choice.note.clone(),
+                            Message::AnswerPlacement(choice.placement, apply_all),
+                        )
+                    })
+                    .collect();
+                let mut body = Column::new().spacing(10);
+                body = body.push(text(spec.subtitle.clone()).size(12).color(self.tokens.muted));
+                body = body.push(text(spec.question.clone()).size(12).color(self.tokens.muted));
+                body = body.push(sheet::choice_group(self.tokens, choices));
+                // Rendered only when questions are actually waiting — a
+                // switch offering to answer nothing is a control that lies
+                // about its reach.
+                if spec.apply_all && spec.waiting > 0 {
+                    body = body.push(apply_all_row(self.tokens, spec.waiting, apply_all));
+                }
+                sheet::panel_owned(
+                    self.tokens,
+                    sheet::CONFLICT_W,
+                    spec.heading.clone(),
+                    body.into(),
+                    vec![sheet::cancel_button(self.tokens, "Cancel", Message::SheetCancel)],
+                )
+            }
+            Sheet::ShelfConflict { ask } => {
+                // Asked before the walk rather than after it: the answers
+                // name a run rather than a placement, so the sheet renders
+                // the same chrome and routes its rows down a second lane.
+                let spec = conflicts::describe_shelf(
+                    &self.library.books,
+                    &self.library.shelves,
+                    &self.library.folders,
+                    ask,
                 );
                 let choices = spec
                     .choices
@@ -5122,7 +6046,7 @@ impl Mareader {
                             self.tokens,
                             choice.label,
                             choice.note.clone(),
-                            Message::AnswerPlacement(choice.placement),
+                            Message::AnswerShelf(choice.placement),
                         )
                     })
                     .collect();
@@ -5251,6 +6175,7 @@ impl Mareader {
 
 /// Who holds a folder's root: the claim question a second run asks before
 /// it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Claim {
     Free,
     /// A focus walk holds it; an ask queues behind the walk's release.
@@ -5603,9 +6528,10 @@ fn run_line(run: &FsRun) -> String {
             | Stage::Departing { .. } => {
                 format!("Copying “{}”…", run.label)
             }
-            Stage::Walking { .. } | Stage::Storing { .. } => {
+            Stage::Walking { .. } | Stage::Storing { .. } | Stage::CopiesScan { .. } => {
                 format!("Scanning “{}”…", run.label)
             }
+            Stage::Copies { .. } => format!("Copying “{}”…", run.label),
         },
     }
 }
@@ -5616,6 +6542,57 @@ fn run_line(run: &FsRun) -> String {
 /// one governs it: the notes speak the rung's own promise then, not the
 /// whole import's.
 #[allow(clippy::too_many_lines)]
+/// The "apply to all" row: one switch that gives every waiting question of
+/// the same kind the answer being clicked.
+fn apply_all_row(tokens: Tokens, waiting: usize, on: bool) -> Element<'static, Message> {
+    let knob = button(
+        text(if on { "On" } else { "Off" })
+            .size(12)
+            .color(if on { tokens.ink } else { tokens.muted }),
+    )
+    .padding(Padding { top: 5.0, right: 14.0, bottom: 5.0, left: 14.0 })
+    .style(move |_, status| {
+        let background = if on {
+            tokens.accent_soft
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => wash(tokens.line, 0.45),
+                _ => Color::TRANSPARENT,
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            border: Border {
+                color: if on { tokens.accent } else { tokens.line },
+                width: 1.0,
+                radius: 999.0.into(),
+            },
+            text_color: if on { tokens.ink } else { tokens.muted },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    })
+    .on_press(Message::ToggleApplyAll);
+    container(
+        row![
+            container(
+                text(format!("Apply to all {}", waiting + 1)).size(12).color(tokens.muted)
+            )
+            .width(Length::Fill),
+            knob,
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
+    .style(move |_| container::Style {
+        border: Border { color: tokens.line, width: 1.0, radius: 10.0.into() },
+        ..container::Style::default()
+    })
+    .into()
+}
+
 fn import_sheet(
     tokens: Tokens,
     root: &Path,
