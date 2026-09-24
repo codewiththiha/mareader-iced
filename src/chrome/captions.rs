@@ -18,7 +18,7 @@ use iced::{Alignment, Background, Color, Element, Length};
 use super::icons::{icon, IconName};
 use super::platform::{Os, GNOME_BUTTON_D, WIN_CAPTION_W};
 use super::titlebar::{Message, WindowAction};
-use crate::theme::{fade, Tokens};
+use crate::theme::{wash, Tokens};
 
 /// The cluster for a platform: nothing on macOS, squares on Windows,
 /// circles on GNOME.
@@ -64,7 +64,7 @@ fn win_button<'a, M: Clone + 'a>(
     is_close: bool,
     chrome: fn(Message) -> M,
 ) -> Button<'a, M> {
-    button(icon(glyph, 12, fade(tokens.ink, factor)))
+    button(icon(glyph, 12, wash(tokens.ink, factor)))
         .width(WIN_CAPTION_W)
         .height(Length::Fill)
         .padding(0)
@@ -80,16 +80,16 @@ fn win_style(tokens: Tokens, factor: f32, status: button::Status, is_close: bool
     let (background, text_color) = match (is_close, hovered) {
         (true, true) => (Some(WIN_CLOSE_RED), Color::WHITE),
         (_, true) => (
-            Some(fade(
+            Some(wash(
                 match status {
                     button::Status::Pressed => tokens.line,
                     _ => tokens.surface,
                 },
                 factor,
             )),
-            fade(tokens.ink, factor),
+            wash(tokens.ink, factor),
         ),
-        (_, false) => (None, fade(tokens.ink, factor)),
+        (_, false) => (None, wash(tokens.ink, factor)),
     };
     button::Style {
         background: background.map(Background::Color),
@@ -127,7 +127,7 @@ fn gnome_button<'a, M: Clone + 'a>(
     action: WindowAction,
     chrome: fn(Message) -> M,
 ) -> Button<'a, M> {
-    button(icon(glyph, 12, fade(tokens.ink, factor)))
+    button(icon(glyph, 12, wash(tokens.ink, factor)))
         .width(GNOME_BUTTON_D)
         .height(GNOME_BUTTON_D)
         .padding(0)
@@ -136,19 +136,19 @@ fn gnome_button<'a, M: Clone + 'a>(
 }
 
 fn gnome_style(tokens: Tokens, factor: f32, status: button::Status) -> button::Style {
-    let wash = match status {
+    let backdrop = match status {
         button::Status::Hovered => Some(Color { a: 0.16 * factor, ..tokens.ink }),
         button::Status::Pressed => Some(Color { a: 0.24 * factor, ..tokens.ink }),
         _ => Some(Color { a: 0.08 * factor, ..tokens.ink }),
     };
     button::Style {
-        background: wash.map(Background::Color),
+        background: backdrop.map(Background::Color),
         border: iced::Border {
             color: Color::TRANSPARENT,
             width: 0.0,
             radius: (GNOME_BUTTON_D / 2.0).into(),
         },
-        text_color: fade(tokens.ink, factor),
+        text_color: wash(tokens.ink, factor),
         shadow: iced::Shadow::default(),
         snap: false,
     }

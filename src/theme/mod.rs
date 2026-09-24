@@ -120,7 +120,7 @@ pub fn build(tokens: Tokens, base: BaseMode) -> Theme {
             primary: tokens.accent,
             success: hex(0x16_a3_4a),
             warning: tokens.match_current,
-            danger: hex(0xdc_26_26),
+            danger: DANGER,
         },
     )
 }
@@ -128,12 +128,6 @@ pub fn build(tokens: Tokens, base: BaseMode) -> Theme {
 /// The application backdrop: the paper the whole window is written on.
 pub fn application_style(tokens: Tokens) -> Style {
     Style { background_color: tokens.paper, text_color: tokens.ink }
-}
-
-/// Fade a colour toward transparent — the titlebar's reveal paints every
-/// one of its colours through it.
-pub fn fade(color: Color, factor: f32) -> Color {
-    Color { a: color.a * factor.clamp(0.0, 1.0), ..color }
 }
 
 /// Blend two colours, `t` of the way from `from` to `to` — iced has no
@@ -150,8 +144,9 @@ pub fn mix(from: Color, to: Color, t: f32) -> Color {
     }
 }
 
-/// Wash a colour to a fraction of its alpha over transparency — the
-/// `line/60`, `surface/40` family the CSS paints with slash notation.
+/// A colour at a fraction of its own alpha — the CSS slash notation
+/// (`line/60`, `surface/40`) the web app painted with, and the reveal's own
+/// fade. One helper, because the two operations were the same one.
 pub fn wash(color: Color, alpha: f32) -> Color {
     Color { a: color.a * alpha.clamp(0.0, 1.0), ..color }
 }

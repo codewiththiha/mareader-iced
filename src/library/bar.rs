@@ -32,7 +32,7 @@ use crate::chrome::icons::{icon, IconName};
 use crate::chrome::platform;
 use crate::chrome::titlebar::ghost_button_style;
 use crate::library::fold::{self, FoldPlan};
-use crate::theme::{fade, wash, Tokens};
+use crate::theme::{wash, Tokens};
 use crate::ui::menu::{self as popover, PanelSize};
 
 /// The crumb's ink at rest, weighted for the level it names.
@@ -62,7 +62,7 @@ fn crumb_button(
     message: Message,
     hover_id: String,
 ) -> Element<'static, Message> {
-    let color = fade(if current { tokens.ink } else { tokens.muted }, factor);
+    let color = wash(if current { tokens.ink } else { tokens.muted }, factor);
     // crumb_label owns its answer: no borrow of `label` reaches the tree.
     let mut face = text(crumb_label(label)).size(13).color(color);
     if current {
@@ -90,14 +90,14 @@ fn armed<'a>(
     let cell: Element<'a, Message> = if hot {
         stack![
             container(inner).style(move |_| container::Style {
-                background: Some(Background::Color(fade(wash(tokens.accent, 0.12), factor))),
+                background: Some(Background::Color(wash(wash(tokens.accent, 0.12), factor))),
                 border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 6.0.into() },
                 ..container::Style::default()
             }),
             container(
                 container(Space::new().width(Length::Fill).height(2.0)).style(move |_| {
                     container::Style {
-                        background: Some(Background::Color(fade(tokens.accent, factor))),
+                        background: Some(Background::Color(wash(tokens.accent, factor))),
                         ..container::Style::default()
                     }
                 }),
@@ -140,7 +140,7 @@ pub fn breadcrumb<'a>(
     // A fresh element per gap: `Element` is not `Clone`, and a closure is
     // the honest spelling of "the same separator, again".
     let separator = |tokens: Tokens, factor: f32| -> Element<'a, Message> {
-        container(icon(IconName::Next, 13, fade(tokens.muted, factor)))
+        container(icon(IconName::Next, 13, wash(tokens.muted, factor)))
             .padding(Padding { top: 0.0, right: 2.0, bottom: 0.0, left: 2.0 })
             .into()
     };
@@ -192,8 +192,8 @@ pub fn breadcrumb<'a>(
                 text(crumb_label(&crumb.name))
                     .size(13)
                     .font(MEDIUM)
-                    .color(fade(tokens.ink, factor)),
-                icon(IconName::ChevronDown, 11, fade(tokens.muted, factor)),
+                    .color(wash(tokens.ink, factor)),
+                icon(IconName::ChevronDown, 11, wash(tokens.muted, factor)),
             ]
             .spacing(4)
             .align_y(Alignment::Center),
@@ -223,7 +223,7 @@ fn ellipsis(tokens: Tokens, factor: f32, open: bool) -> Element<'static, Message
     let face = button(icon(
         IconName::More,
         14,
-        fade(if open { tokens.ink } else { tokens.muted }, factor),
+        wash(if open { tokens.ink } else { tokens.muted }, factor),
     ))
     .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 4.0 })
     .style(move |_, status| ghost_button_style(tokens, factor, status))
@@ -336,11 +336,11 @@ fn rename_field(tokens: Tokens, draft: &str, factor: f32) -> Element<'static, Me
         .width(176.0)
         .padding(Padding { top: 3.0, right: 8.0, bottom: 3.0, left: 8.0 })
         .style(move |_theme, _status| text_input::Style {
-            background: Background::Color(fade(wash(tokens.paper, 0.9), factor)),
-            border: Border { color: fade(tokens.accent, factor), width: 1.0, radius: 6.0.into() },
+            background: Background::Color(wash(wash(tokens.paper, 0.9), factor)),
+            border: Border { color: wash(tokens.accent, factor), width: 1.0, radius: 6.0.into() },
             icon: tokens.muted,
-            placeholder: fade(tokens.muted, factor),
-            value: fade(tokens.ink, factor),
+            placeholder: wash(tokens.muted, factor),
+            value: wash(tokens.ink, factor),
             selection: tokens.accent_soft,
         });
     input.into()
@@ -367,17 +367,17 @@ pub fn search<'a>(
             background: Background::Color(Color::TRANSPARENT),
             border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 0.0.into() },
             icon: Color::TRANSPARENT,
-            placeholder: fade(tokens.muted, factor),
-            value: fade(tokens.ink, factor),
+            placeholder: wash(tokens.muted, factor),
+            value: wash(tokens.ink, factor),
             selection: tokens.accent_soft,
         });
 
-    let mut face = row![icon(IconName::Search, 15, fade(tokens.muted, factor)), input]
+    let mut face = row![icon(IconName::Search, 15, wash(tokens.muted, factor)), input]
         .spacing(8)
         .align_y(Alignment::Center);
     if !query.is_empty() {
         face = face.push(
-            button(icon(IconName::Close, 12, fade(tokens.muted, factor)))
+            button(icon(IconName::Close, 12, wash(tokens.muted, factor)))
                 .padding(4.0)
                 .style(move |_, status| ghost_button_style(tokens, factor, status))
                 .on_press(Message::Query(String::new())),
@@ -389,8 +389,8 @@ pub fn search<'a>(
         .max_width(576.0)
         .padding(Padding { top: 6.0, right: 12.0, bottom: 6.0, left: 12.0 })
         .style(move |_| container::Style {
-            background: Some(Background::Color(fade(wash(tokens.surface, 0.70), factor))),
-            border: Border { color: fade(tokens.line, factor), width: 1.0, radius: 999.0.into() },
+            background: Some(Background::Color(wash(wash(tokens.surface, 0.70), factor))),
+            border: Border { color: wash(tokens.line, factor), width: 1.0, radius: 999.0.into() },
             ..container::Style::default()
         })
         .into()

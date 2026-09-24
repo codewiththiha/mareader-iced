@@ -26,7 +26,7 @@ use super::captions;
 use super::icons::{icon, IconName};
 use super::platform::{self, Os};
 use crate::route::Route;
-use crate::theme::{fade, Tokens};
+use crate::theme::{wash, Tokens};
 
 /// What the bar can be asked to do.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -215,7 +215,7 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
     // default until then.
     let pinned = state.pinned(route);
     let center_slot: Element<'a, M> = center.unwrap_or_else(|| {
-        container(text(title).size(13).color(fade(tokens.ink, factor)))
+        container(text(title).size(13).color(wash(tokens.ink, factor)))
             .width(Length::Fill)
             .center_x(Length::Fill)
             .into()
@@ -231,7 +231,7 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
     let pin = button(icon(
         IconName::Pin,
         14,
-        fade(if pinned { tokens.accent } else { tokens.muted }, factor),
+        wash(if pinned { tokens.accent } else { tokens.muted }, factor),
     ))
     .padding(7.0)
     .style(move |_, status| ghost_button_style(tokens, factor, status))
@@ -261,7 +261,7 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
 fn bar_style(tokens: Tokens, factor: f32) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color { a: 0.92 * factor, ..tokens.paper })),
-        border: Border { color: fade(tokens.line, factor), width: 1.0, radius: 0.0.into() },
+        border: Border { color: wash(tokens.line, factor), width: 1.0, radius: 0.0.into() },
         shadow: Shadow {
             color: Color { a: 0.10 * factor, ..Color::BLACK },
             offset: Vector::new(0.0, 4.0),
@@ -277,9 +277,9 @@ pub(crate) fn ghost_button_style(
     factor: f32,
     status: button::Status,
 ) -> button::Style {
-    let wash = match status {
-        button::Status::Hovered => Some(fade(tokens.surface, factor)),
-        button::Status::Pressed => Some(fade(tokens.line, factor)),
+    let backdrop = match status {
+        button::Status::Hovered => Some(wash(tokens.surface, factor)),
+        button::Status::Pressed => Some(wash(tokens.line, factor)),
         _ => None,
     };
     let ink = match status {
@@ -287,9 +287,9 @@ pub(crate) fn ghost_button_style(
         _ => tokens.ink,
     };
     button::Style {
-        background: wash.map(Background::Color),
+        background: backdrop.map(Background::Color),
         border: iced::Border { color: Color::TRANSPARENT, width: 0.0, radius: 6.0.into() },
-        text_color: fade(ink, factor),
+        text_color: wash(ink, factor),
         shadow: Shadow::default(),
         snap: false,
     }

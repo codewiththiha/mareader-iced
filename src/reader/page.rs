@@ -34,7 +34,7 @@ use super::zoom::{self, Command};
 use super::{DocStatus, Message, Reader};
 use crate::chrome::icons::{IconName, icon};
 use crate::chrome::titlebar;
-use crate::theme::{Tokens, fade};
+use crate::theme::{Tokens, wash};
 
 /// The surface.
 pub(super) fn view(reader: &Reader, tokens: Tokens) -> Element<'_, Message> {
@@ -248,7 +248,7 @@ fn bottom_bar<'a>(reader: &'a Reader, tokens: Tokens) -> Element<'a, Message> {
         left: 7.0,
     })
     .style(move |_| container::Style {
-        background: Some(Background::Color(fade(tokens.surface, 0.96))),
+        background: Some(Background::Color(wash(tokens.surface, 0.96))),
         border: Border {
             color: tokens.line,
             width: 1.0,
