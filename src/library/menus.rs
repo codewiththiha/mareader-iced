@@ -568,27 +568,36 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
 /// The columns row: the label, the Auto pill, and the round steppers around
 /// the count. Stepping pins the count off whatever auto-fit last measured;
 /// Auto hands it back.
+/// What the columns stepper shows and offers. Auto reads as a dash and pins
+/// the count the flow is showing on its first press, so both steps are live;
+/// a pinned count is dead at the end of its range.
+struct ColumnsStep {
+    face: String,
+    down: bool,
+    up: bool,
+}
+
+fn columns_step(columns: Option<u8>, auto_fit: u8) -> ColumnsStep {
+    let auto = columns.is_none();
+    let effective = columns.unwrap_or(auto_fit);
+    ColumnsStep {
+        face: if auto { "–".to_string() } else { effective.to_string() },
+        down: auto || effective > COLUMNS_MIN,
+        up: auto || effective < COLUMNS_MAX,
+    }
+}
+
 fn columns_row<'a>(tokens: Tokens, view: &'a LibraryView) -> Element<'a, Message> {
     let auto = view.columns.is_none();
-    let effective = view.columns.unwrap_or(view.auto_fit);
-    let value = if auto { "–".to_string() } else { effective.to_string() };
-
-    let minus = if auto || effective > COLUMNS_MIN {
-        Some(Message::StepColumns(-1))
-    } else {
-        None
-    };
-    let plus = if auto || effective < COLUMNS_MAX {
-        Some(Message::StepColumns(1))
-    } else {
-        None
-    };
+    let step = columns_step(view.columns, view.auto_fit);
+    let minus = step.down.then_some(Message::StepColumns(-1));
+    let plus = step.up.then_some(Message::StepColumns(1));
 
     let face = row![
         container(text("Columns").size(13).color(tokens.ink)).width(Length::Fill),
         menu::toggle(tokens, None, "Auto", auto, if auto { None } else { Some(Message::AutoColumns) }),
         menu::stepper_button(tokens, IconName::Minus, minus),
-        container(text(value).size(12).color(tokens.ink))
+        container(text(step.face).size(12).color(tokens.ink))
             .width(20.0)
             .center_x(Length::Fill),
         menu::stepper_button(tokens, IconName::Plus, plus),
@@ -713,4 +722,29 @@ pub fn level_menu(
     }
 
     (menu::popover(tokens, rows, CONTEXT_W), size.size())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_shows_a_dash_and_leaves_both_steps_live() {
+        let step = columns_step(None, 5);
+        assert_eq!(step.face, "–", "the count is the flow's, not the reader's");
+        assert!(step.down && step.up, "the first press pins what the flow was showing");
+    }
+
+    #[test]
+    fn a_pinned_count_offers_only_the_step_it_can_take() {
+        let floor = columns_step(Some(COLUMNS_MIN), 5);
+        assert_eq!(floor.face, COLUMNS_MIN.to_string());
+        assert!(!floor.down && floor.up, "nothing below the floor to offer");
+
+        let ceiling = columns_step(Some(COLUMNS_MAX), 5);
+        assert!(!ceiling.up && ceiling.down, "nothing above the ceiling to offer");
+
+        let between = columns_step(Some(COLUMNS_MIN + 1), 5);
+        assert!(between.down && between.up);
+    }
 }

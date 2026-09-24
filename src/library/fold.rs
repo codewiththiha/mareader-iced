@@ -143,6 +143,17 @@ pub fn split_by_counts<T>(chain: Vec<T>, counts: &[usize]) -> Vec<Vec<T>> {
     rows
 }
 
+/// The elided crumbs packed for the panel's budget: how many go on each row,
+/// and the widths those rows are measured from. The panel's box and the rows
+/// it draws both read this one packing, so the two cannot disagree about how
+/// tall it stands.
+pub fn pack_elided(plan: &FoldPlan, budget: f32) -> (Vec<usize>, Vec<f64>) {
+    let widths: Vec<f64> =
+        plan.widths[1..=plan.split].iter().map(|width| f64::from(*width)).collect();
+    let counts = pack_rows(&widths, f64::from(budget));
+    (counts, widths)
+}
+
 /// Never one: a single elided level costs a hover to reach and the same bar
 /// width as showing it, so the ellipsis earns its slot from two levels up.
 fn elide_at(len: usize) -> usize {
@@ -157,7 +168,7 @@ fn elide_at(len: usize) -> usize {
 /// Beyond the depth gate, the smallest split (never exactly one — the rule
 /// [`elide_at`] keeps) whose ellipsis and kept crumbs fit the cluster's live
 /// box; 0 when the whole chain already fits.
-pub fn choose_split(widths: &[f64], available: f64, len: usize) -> usize {
+fn choose_split(widths: &[f64], available: f64, len: usize) -> usize {
     if len < FOLD_MIN_DEPTH {
         return 0;
     }
@@ -347,4 +358,21 @@ mod tests {
         assert_eq!(rows[1][0].id, "s2");
         assert_eq!(rows[2][0].id, "s4");
     }
+    #[test]
+    fn the_elided_half_of_a_plan_is_what_the_panel_packs() {
+        let plan = FoldPlan {
+            widths: vec![ELLIPSIS_PX, 40.0, 40.0, 40.0, 40.0],
+            chain: vec![
+                Crumb { id: "a".into(), name: "A".into() },
+                Crumb { id: "b".into(), name: "B".into() },
+                Crumb { id: "c".into(), name: "C".into() },
+                Crumb { id: "d".into(), name: "D".into() },
+            ],
+            split: 2,
+        };
+        let (counts, widths) = pack_elided(&plan, 400.0);
+        assert_eq!(widths, vec![40.0, 40.0], "the shown crumbs are the panel's business");
+        assert_eq!(counts.iter().sum::<usize>(), 2, "every elided crumb takes a slot");
+    }
+
 }
