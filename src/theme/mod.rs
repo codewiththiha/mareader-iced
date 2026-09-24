@@ -212,3 +212,90 @@ impl Elevation {
 pub fn wash(color: Color, alpha: f32) -> Color {
     Color { a: color.a * alpha.clamp(0.0, 1.0), ..color }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shadow_of(rung: Elevation) -> Shadow {
+        rung.shadow()
+    }
+
+    /// The rungs that sit on something — a pill, a badge, a page — against the
+    /// ones that float over the app. A rung is not a continuous scale (the
+    /// port's numbers were tuned per surface and `Hover` is wider than `Page`),
+    /// so what holds is the families' order, not every step.
+    const INLINE: [Elevation; 7] = [
+        Elevation::Thumb,
+        Elevation::Badge,
+        Elevation::Bar,
+        Elevation::Pill,
+        Elevation::Hover,
+        Elevation::Page,
+        Elevation::Ring(Color::WHITE),
+    ];
+    const FLOATING: [Elevation; 4] =
+        [Elevation::Float, Elevation::Plate, Elevation::Toast, Elevation::Sheet];
+
+    #[test]
+    fn the_floating_rungs_are_wider_than_the_inline_ones() {
+        let widest_inline = INLINE
+            .iter()
+            .map(|rung| shadow_of(*rung).blur_radius)
+            .fold(0.0_f32, f32::max);
+        for rung in FLOATING {
+            assert!(
+                shadow_of(rung).blur_radius >= widest_inline,
+                "{rung:?} floats but casts less than an inline rung"
+            );
+        }
+    }
+
+    #[test]
+    fn the_quietest_and_the_highest_are_where_the_names_say() {
+        let quietest = shadow_of(Elevation::Thumb);
+        for rung in INLINE.iter().chain(FLOATING.iter()) {
+            let other = shadow_of(*rung);
+            assert!(quietest.blur_radius <= other.blur_radius, "Thumb is not the quietest");
+            assert!(quietest.color.a <= other.color.a, "Thumb is not the faintest");
+        }
+        for rung in INLINE.iter().chain(FLOATING.iter()) {
+            let other = shadow_of(*rung);
+            assert!(
+                other.blur_radius <= shadow_of(Elevation::Sheet).blur_radius,
+                "the sheet is not the highest surface"
+            );
+        }
+    }
+
+    #[test]
+    fn the_titlebar_keeps_its_weight() {
+        // The reveal scales the bar's shadow with its own factor, so a hidden
+        // bar draws nothing and a full one draws the rung above.
+        let hidden = shadow_of(Elevation::Chrome(0.0));
+        let shown = shadow_of(Elevation::Chrome(1.0));
+        assert_eq!(hidden.blur_radius, 0.0);
+        assert_eq!(hidden.color.a, 0.0);
+        assert!(shown.blur_radius > hidden.blur_radius);
+        assert!(shown.color.a > hidden.color.a);
+    }
+
+    #[test]
+    fn the_ring_wears_the_colour_it_is_given() {
+        let mark = Color::from_rgb(1.0, 0.0, 0.0);
+        let shadow = shadow_of(Elevation::Ring(mark));
+        assert_eq!(shadow.offset.y, 0.0, "a ring does not drop");
+        assert_eq!(shadow.color.r, mark.r);
+        assert!(shadow.color.a < mark.a, "the ring is a wash of the mark");
+    }
+
+    #[test]
+    fn wash_clamps_both_ends() {
+        let ink = Color::from_rgba(0.2, 0.3, 0.4, 0.5);
+        assert_eq!(wash(ink, 1.0), ink);
+        assert_eq!(wash(ink, 2.0).a, ink.a, "an over-one factor is clamped");
+        assert_eq!(wash(ink, -1.0).a, 0.0, "a negative factor is clamped");
+        assert!((wash(ink, 0.5).a - 0.25).abs() < 1e-6);
+        assert_eq!(wash(ink, 0.5).r, ink.r, "only the alpha moves");
+    }
+}
