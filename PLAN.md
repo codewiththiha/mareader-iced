@@ -434,12 +434,19 @@ because a bookshelf that cannot find a book it has lost is the one thing P2 prom
 not yet delivered.
 
 * **The refactor queue.** The codebase review (`review/`, outside the repo) lands its findings as
-  small refactor passes rather than a big rewrite, and keeps the plan as the record: each pass is
-  one CI-green commit, taken between phases so the reader work is never interrupted mid-feature.
-  Passes 1–4 (the theme's one alpha helper and one home for the wall clock, the dead shell
-  weight, one title rule; the `Cow` menu rows; `theme::Elevation`; the `chrome::desktop` /
-  `platform::os` seam) are in. The queue's remaining entries — `app.rs`'s split and its
-  dispatch, the dialog controls, `ghost_button_style`'s home — follow the same shape.
+    small refactor passes rather than a big rewrite, and keeps the plan as the record: each pass is
+    one CI-green commit, taken between phases so the reader work is never interrupted mid-feature.
+    Passes 1–7 are in — the theme's one alpha helper and one home for the wall clock, the dead
+    shell weight and one title rule; the `Cow` menu rows; `theme::Elevation` and its rules; the
+    `chrome::desktop` / `platform::os` seam; the floating-geometry helpers; the control
+    vocabulary's shared tests; the ghost button's one home, with its eight callers rewired — and
+    the review has begun on the library surface, file by file: the shelf's cell module is now the
+    kit plus one file per cell (the paths stay `card::book_card` and its neighbours), and the
+    grid's cell arithmetic has one home that the metrics, the layout, the fit report and the view
+    all read instead of re-deriving. The queue's remaining entries — `app.rs`'s split and its
+    dispatch, the chrome's tests — follow the same shape. The dialog controls closed as no
+    change: the three filled buttons the review suspected of one recipe are three looks, each with
+    a single call site.
 * **3g — The paper seam.** The render-queue priorities and cancellations under a zoom
   gesture (one lane, two priorities; a superseded render is dropped before the raster, not
   after), the memory ceilings (drop-on-close, the thumbnail LRU, the frame cache), and the
@@ -739,7 +746,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   PDFium service and bind strategy, the open pipeline, and the first
   reading surface the marks, covers and kept reading data all wait
   on.
-* **P3 — 3a and 3b shipped (plus four refactor passes); 3c (the scrolling modes) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
+* **P3 — 3a and 3b shipped (plus seven refactor passes); 3c (the scrolling modes) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
   shared library at run time through `MAREAEDER_PDFIUM`/`MAREAEDER_PDFIUM_DIR`,
   beside the executable and its `lib`/`bin`, then the working directory's same three,
   then the system's loader — and a machine with no Pdfium gets a sentence naming
