@@ -33,8 +33,8 @@ use reader_core::zoom_math::FitMode;
 use super::zoom::{self, Command};
 use super::{DocStatus, Message, Reader};
 use crate::chrome::icons::{IconName, icon};
-use crate::chrome::titlebar;
 use crate::theme::{Elevation, Tokens, wash};
+use crate::ui::buttons;
 
 /// The surface.
 pub(super) fn view(reader: &Reader, tokens: Tokens) -> Element<'_, Message> {
@@ -133,7 +133,7 @@ fn error_card<'a>(reader: &'a Reader, tokens: Tokens) -> Element<'a, Message> {
                 bottom: 8.0,
                 left: 14.0,
             })
-            .style(move |_, status| titlebar::ghost_button_style(tokens, 1.0, status))
+            .style(move |_, status| buttons::ghost(tokens, 1.0, status))
             .on_press(Message::Close),
     ]
     .align_x(Alignment::Center)
@@ -300,7 +300,7 @@ fn bar_button<'a>(
                 snap: false,
             };
         }
-        titlebar::ghost_button_style(tokens, 1.0, status)
+        buttons::ghost(tokens, 1.0, status)
     })
     .on_press_maybe(enabled.then_some(on_press))
     .into()

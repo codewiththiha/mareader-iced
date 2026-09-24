@@ -20,7 +20,7 @@
 use iced::animation::Animation;
 use iced::time::{Duration, Instant};
 use iced::widget::{button, container, mouse_area, row, stack, text, Row, Space};
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point};
 
 use super::captions;
 use super::icons::{icon, IconName};
@@ -28,6 +28,7 @@ use super::desktop;
 use crate::platform::Os;
 use crate::route::Route;
 use crate::theme::{wash, Elevation, Tokens};
+use crate::ui::buttons;
 
 /// What the bar can be asked to do.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,7 +236,7 @@ pub fn view<'a, M: Clone + 'a>(state: &Titlebar, ctx: ViewContext<'a, M>) -> Ele
         wash(if pinned { tokens.accent } else { tokens.muted }, factor),
     ))
     .padding(7.0)
-    .style(move |_, status| ghost_button_style(tokens, factor, status))
+    .style(move |_, status| buttons::ghost(tokens, factor, status))
     .on_press(chrome(Message::TogglePin));
 
     let right_pad = match os {
@@ -268,26 +269,3 @@ fn bar_style(tokens: Tokens, factor: f32) -> container::Style {
     }
 }
 
-/// A ghost button: nothing at rest, a surface wash under the pointer.
-pub(crate) fn ghost_button_style(
-    tokens: Tokens,
-    factor: f32,
-    status: button::Status,
-) -> button::Style {
-    let backdrop = match status {
-        button::Status::Hovered => Some(wash(tokens.surface, factor)),
-        button::Status::Pressed => Some(wash(tokens.line, factor)),
-        _ => None,
-    };
-    let ink = match status {
-        button::Status::Disabled => tokens.muted,
-        _ => tokens.ink,
-    };
-    button::Style {
-        background: backdrop.map(Background::Color),
-        border: iced::Border { color: Color::TRANSPARENT, width: 0.0, radius: 6.0.into() },
-        text_color: wash(ink, factor),
-        shadow: Shadow::default(),
-        snap: false,
-    }
-}

@@ -30,7 +30,7 @@ use library_core::text as lib_text;
 use crate::app::{MenuKind, Message};
 use crate::chrome::icons::{icon, IconName};
 use crate::chrome::desktop;
-use crate::chrome::titlebar::ghost_button_style;
+use crate::ui::buttons;
 use crate::library::fold::{self, FoldPlan};
 use crate::theme::{wash, Tokens};
 use crate::ui::menu::{self as popover, PanelSize};
@@ -70,7 +70,7 @@ fn crumb_button(
     }
     let button = button(container(face).max_width(160.0))
         .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
-        .style(move |_, status| ghost_button_style(tokens, factor, status))
+        .style(move |_, status| buttons::ghost(tokens, factor, status))
         .on_press(message);
     armed(tokens, factor, hot, button.into(), hover_id)
 }
@@ -199,7 +199,7 @@ pub fn breadcrumb<'a>(
             .align_y(Alignment::Center),
         )
         .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
-        .style(move |_, status| ghost_button_style(tokens, factor, status))
+        .style(move |_, status| buttons::ghost(tokens, factor, status))
         .on_press(Message::ToggleMenu(MenuKind::Shelf));
         items.push(armed(
             tokens,
@@ -226,7 +226,7 @@ fn ellipsis(tokens: Tokens, factor: f32, open: bool) -> Element<'static, Message
         wash(if open { tokens.ink } else { tokens.muted }, factor),
     ))
     .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 4.0 })
-    .style(move |_, status| ghost_button_style(tokens, factor, status))
+    .style(move |_, status| buttons::ghost(tokens, factor, status))
     .on_press(Message::EllipsisPressed);
     mouse_area(face)
         .on_enter(Message::EllipsisHover(true))
@@ -282,7 +282,7 @@ pub fn ellipsis_panel(
                     .max_width(128.0),
             )
             .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
-            .style(move |_, status| ghost_button_style(tokens, 1.0, status))
+            .style(move |_, status| buttons::ghost(tokens, 1.0, status))
             .on_press(Message::PanelCrumb(crumb.id.clone()));
             line = line.push(armed(
                 tokens,
@@ -379,7 +379,7 @@ pub fn search<'a>(
         face = face.push(
             button(icon(IconName::Close, 12, wash(tokens.muted, factor)))
                 .padding(4.0)
-                .style(move |_, status| ghost_button_style(tokens, factor, status))
+                .style(move |_, status| buttons::ghost(tokens, factor, status))
                 .on_press(Message::Query(String::new())),
         );
     }

@@ -64,6 +64,7 @@ use crate::reader;
 use crate::route::Route;
 use crate::storage;
 use crate::theme::{self, mix, wash, Elevation, Tokens};
+use crate::ui::buttons;
 use crate::ui::menu as popover;
 use crate::ui::sheet;
 use crate::ui::toast::{ToastHost, Tone};
@@ -6302,13 +6303,13 @@ impl Mareader {
                     if self.drag.is_some() { self.hovered_crumb.as_deref() } else { None };
                 let view_trigger = button(icon(IconName::More, 15, wash(self.tokens.ink, factor)))
                     .padding(7.0)
-                    .style(move |_, status| titlebar::ghost_button_style(self.tokens, factor, status))
+                    .style(move |_, status| buttons::ghost(self.tokens, factor, status))
                     .on_press(Message::ToggleMenu(MenuKind::View));
                 let appearance =
                     button(icon(appearance_glyph(self.settings.appearance.base), 15, wash(self.tokens.ink, factor)))
                         .padding(7.0)
                         .style(move |_, status| {
-                            titlebar::ghost_button_style(self.tokens, factor, status)
+                            buttons::ghost(self.tokens, factor, status)
                         })
                         .on_press(Message::CycleAppearance);
                 (
