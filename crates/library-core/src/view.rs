@@ -81,14 +81,6 @@ impl Default for LibraryView {
 }
 
 impl LibraryView {
-    /// The value the grid's `--lib-cols` property takes, spelled once so the CSS and the control cannot drift.
-    pub fn columns_token(&self) -> String {
-        match self.columns {
-            Some(n) => n.to_string(),
-            None => "auto-fill".to_string(),
-        }
-    }
-
     /// Auto is a real target: the first press pins the count the flow is showing, so only the list layout kills the stepper.
     pub fn columns_enabled(&self) -> bool {
         !self.is_list()
@@ -149,7 +141,6 @@ mod tests {
         assert_eq!(v.cover, CoverFit::Fit);
         assert_eq!(v.sort, SortKey::Manual);
         assert!(v.sort_asc);
-        assert_eq!(v.columns_token(), "auto-fill");
         assert!(
             v.columns_enabled(),
             "Auto is a count the stepper can step from"
@@ -192,7 +183,6 @@ mod tests {
     #[test]
     fn a_pinned_count_steps_inside_its_range() {
         let mut v = LibraryView { columns: Some(6), ..Default::default() };
-        assert_eq!(v.columns_token(), "6");
         assert!(v.columns_enabled());
         v.step_columns(1);
         assert_eq!(v.columns, Some(7));
@@ -202,7 +192,6 @@ mod tests {
         assert_eq!(v.columns, Some(COLUMNS_MAX));
         v.auto_columns();
         assert_eq!(v.columns, None);
-        assert_eq!(v.columns_token(), "auto-fill");
     }
 
     #[test]
@@ -214,7 +203,6 @@ mod tests {
         v.report_auto_fit(6);
         assert_eq!(v.auto_fit, 6);
         assert_eq!(v.columns, None, "Auto still owns the layout");
-        assert_eq!(v.columns_token(), "auto-fill");
         v.report_auto_fit(4);
         assert_eq!(v.auto_fit, 4, "and it keeps following the window");
         assert_eq!(v.columns, None);
@@ -230,7 +218,6 @@ mod tests {
             Some(8),
             "the first + pins what Auto was showing and steps from there"
         );
-        assert_eq!(v.columns_token(), "8");
         v.step_columns(-2);
         assert_eq!(v.columns, Some(6), "and from then on it steps the pin");
         v.step_columns(-99);

@@ -352,14 +352,38 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
     rows.push(menu::separator(tokens));
     size = size.row(menu::SEP_H);
 
-    let (remove_label, remove_message) = match row {
-        Row::Book { .. } => ("Remove from library", Message::AskRemoveRow(row_id_of(row))),
-        Row::Link { .. } => ("Remove link", Message::AskRemoveRow(row_id_of(row))),
-    };
-    rows.push(menu::danger_item(None, remove_label, remove_message));
+    let (label, message) = removal_row(row);
+    rows.push(menu::danger_item(None, label, message));
     size = size.row(menu::ROW_H);
 
     (menu::popover(tokens, rows, CONTEXT_W), size.size())
+}
+
+/// The removal row a row's own shape asks for: a link is a pointer rather
+/// than a book, and the question says which of the two it is about to drop.
+fn removal_row(row: &Row) -> (&'static str, Message) {
+    let label = if matches!(row, Row::Link { .. }) {
+        "Remove link"
+    } else {
+        "Remove from library"
+    };
+    (label, Message::AskRemoveRow(row_id_of(row)))
+}
+
+/// The selection row's face: a level holding a selection is offered the way
+/// out of it, one holding none the way in.
+struct SelectionRow {
+    icon: IconName,
+    label: &'static str,
+    message: Message,
+}
+
+fn selection_row(selecting: bool) -> SelectionRow {
+    if selecting {
+        SelectionRow { icon: IconName::Undo, label: "Clear selection", message: Message::ClearSelection }
+    } else {
+        SelectionRow { icon: IconName::Check, label: "Select all", message: Message::SelectAll }
+    }
 }
 
 fn row_id_of(row: &Row) -> String {
@@ -712,12 +736,8 @@ pub fn level_menu(
     size = size.row(menu::ROW_H);
 
     if anything {
-        let (icon, label, message) = if selecting {
-            (IconName::Undo, "Clear selection", Message::ClearSelection)
-        } else {
-            (IconName::Check, "Select all", Message::SelectAll)
-        };
-        rows.push(menu::item(tokens, Some(icon), label, None, false, Some(message)));
+        let face = selection_row(selecting);
+        rows.push(menu::item(tokens, Some(face.icon), face.label, None, false, Some(face.message)));
         size = size.row(menu::ROW_H);
     }
 
@@ -727,6 +747,8 @@ pub fn level_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use library_core::testkit;
 
     #[test]
     fn auto_shows_a_dash_and_leaves_both_steps_live() {
@@ -746,5 +768,17 @@ mod tests {
 
         let between = columns_step(Some(COLUMNS_MIN + 1), 5);
         assert!(between.down && between.up);
+    }
+    #[test]
+    fn the_removal_row_says_what_leaves() {
+        let link = testkit::link("l1", "Dune", "s1");
+        assert_eq!(removal_row(&link).0, "Remove link", "a pointer, not a book");
+        assert_eq!(removal_row(&testkit::row_at("b1", "Dune")).0, "Remove from library");
+    }
+
+    #[test]
+    fn the_selection_row_offers_the_other_end() {
+        assert_eq!(selection_row(true).label, "Clear selection");
+        assert_eq!(selection_row(false).label, "Select all");
     }
 }
