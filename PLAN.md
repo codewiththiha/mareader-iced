@@ -809,6 +809,11 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   numbers) and the OS identity moved to `platform::{Os, os()}`, so `platform` means the
   OS layer only and `platform::fs` no longer reaches into the chrome for a fact about
   the machine it is already running on.
+  The god file itself then went: `app.rs` is `src/app/` — eighteen modules under a frozen
+  `Message`/`update`/`view` surface, the largest 799 lines — and `walk.rs` followed, the folder
+  walk now `app/walk/{mod,plan,claim,rungs,checks,run,watch}.rs`: the plan, the root claim, the
+  rungs, the checks and the one filesystem run each in their own file, the dwell and geometry
+  constants on the reader that is their only reason to exist.
   Zoom is the web app's pipeline, ported whole into `reader/zoom.rs` and wired to one
   owner: `Command` (Step / Refit / Constrain / Follow) resolved against the window, the
   mode and the sheet under the reader's eyes; the three scales kept apart — `desired`,
