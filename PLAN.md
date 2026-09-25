@@ -750,7 +750,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   PDFium service and bind strategy, the open pipeline, and the first
   reading surface the marks, covers and kept reading data all wait
   on.
-* **P3 — 3a and 3b shipped (plus seven refactor passes); 3c (the scrolling modes) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
+* **P3 — 3a, 3b and 3c shipped (plus seven refactor passes); 3d (the sidebar) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
   shared library at run time through `MAREAEDER_PDFIUM`/`MAREAEDER_PDFIUM_DIR`,
   beside the executable and its `lib`/`bin`, then the working directory's same three,
   then the system's loader — and a machine with no Pdfium gets a sentence naming
@@ -773,6 +773,26 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   and report the new position so the library's rows keep it; and leaving flush the
   read point into the rows the same `rows_for_read` rule names, with the shelf's own
   record of the name and author written the moment the document answers.
+  And 3c opened the whole book at once: the continuous strip mounts on the ported
+  windowing (`virtual-list`'s own `Strip` — one extent per page at the live scale, the
+  fixed chrome between them, a window kept to a screenful of read-ahead and about one
+  page either side of it, nothing off screen built), and a book reads in all four
+  modes: the column, the horizontal strip whose pages are inset by the reader's margin
+  rather than gapped and which centres the page it lands on, the paginated single, and
+  the spread. Opening or flipping into a strip mounts it on the page the reader is on
+  and aims the scroll, re-posting the aim until the surface answers — a post to a
+  widget that is not built yet is nothing, so the cover over the open holds the posts
+  until the resume page has painted, and the mount lands on the reader's page rather
+  than on page one walking down to it. A turn within two viewports glides the strip,
+  so the pages it passes are asked for as they come into view; a longer jump lands at
+  once, aimed rather than shouted because one post can be clamped away by a surface
+  that has just changed size; and a zoom holds the point under the middle of the
+  window across the new geometry, because the pages scale and the chrome does not. The
+  reader's own scroll is theirs: the surface's reports decide the page once they have
+  gone quiet for twelve frames, every progress write goes through one door a turn or a
+  jump has usually already been through, and a wheel notch — which iced hands to the
+  axis it points at, so a horizontal strip never hears it — is translated by the app
+  into the reader's own step along that strip.
   Refactor passes run between 3b and 3c, ahead of that queue, one CI-green commit each.
   The queue's own record lives in `review/` (outside the repo); what has landed there:
   the library's cell kit was split out of `card.rs`, the grid's cell arithmetic now has
