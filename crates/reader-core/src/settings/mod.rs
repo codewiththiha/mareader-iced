@@ -45,12 +45,9 @@ pub use gloss::{default_custom_gloss, default_gloss_opacity, is_hex6, GlossColor
 /// persisted knobs live.
 pub use pdf_paper::PaperArea;
 
+/// The key the web app filed these settings under. The native loader writes
+/// `settings.json`; the name survives because the blob's schema is the same.
 pub const SETTINGS_KEY: &str = "mareader.settings.v1";
-
-/// The key this one replaced when the app was still named `pdf-reader`. Read
-/// once by [`crate::settings`] readers that find no blob under the current
-/// key; never written, so a reader who downgrades still finds what they saved.
-pub const RETIRED_SETTINGS_KEY: &str = "pdfreader.settings.v1";
 
 /// `serde(default)` for the flags that were on before they were a switch.
 pub(crate) fn on_true() -> bool { true }

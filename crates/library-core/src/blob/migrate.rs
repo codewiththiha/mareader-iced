@@ -13,11 +13,10 @@ use crate::view::LibraryView;
 
 use super::LibraryBlob;
 
-/// The previous schema's key — one book per row, no links. Read once on a
-/// load that finds no `v3`, then left in place so a downgrade still sees the
-/// library it wrote.
+/// The web app's key for the `v2` library — one book per row, no links.
 pub const V2_KEY: &str = "pdfreader.library.v2";
 
+/// The web app's key for the `v1` row list.
 pub const LEGACY_KEY: &str = "pdfreader.library.v1";
 
 /// The `v2` library: same shelves and folders, one [`Book`] per row.

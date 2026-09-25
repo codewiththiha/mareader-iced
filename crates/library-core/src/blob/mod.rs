@@ -15,16 +15,9 @@ use crate::view::LibraryView;
 
 pub mod migrate;
 
-/// The library's localStorage key. A new `v3` key rather than a schema edit
-/// under `v2`: the list changed from books to [`Row`]s, and a `v2` blob this
-/// build cannot parse must not be overwritten by the default before
-/// [`migrate::migrate_v2`] has read it.
+/// The key the web app filed the library under. Kept for the record: the
+/// native loader writes `library.json`, not localStorage.
 pub const LIBRARY_KEY: &str = "mareader.library.v3";
-
-/// The `v3` key as the pre-rebrand build wrote it. Same schema as
-/// [`LIBRARY_KEY`], so it is read as-is rather than migrated; kept so a
-/// reader who downgrades still finds the library the older build wrote.
-pub const RETIRED_LIBRARY_KEY: &str = "pdfreader.library.v3";
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
