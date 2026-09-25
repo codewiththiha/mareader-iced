@@ -7,6 +7,15 @@
 //! indents rather than recurses, and a page change only needs the last entry
 //! whose page is at or before it.
 
+/// The deepest level the panel will indent. Deeper headings still appear, at
+/// the cap — a chapter the reader can see is worth more than a clean tree.
+const MAX_OUTLINE_DEPTH: u32 = 5;
+
+/// Clamp a raw depth into the range the panel draws.
+pub fn clamp_depth(depth: u32) -> u32 {
+    depth.min(MAX_OUTLINE_DEPTH)
+}
+
 /// One chapter of the open document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutlineNode {
@@ -19,17 +28,6 @@ impl OutlineNode {
     pub fn new(title: impl Into<String>, page: u32, depth: u32) -> Self {
         Self { title: title.into(), page, depth }
     }
-}
-
-/// The deepest level the panel will indent. Deeper headings still appear, at
-/// the cap — a chapter the reader can see is worth more than a clean tree.
-const MAX_OUTLINE_DEPTH: u32 = 5;
-
-/// Clamp a raw depth into the range the panel draws. A negative-looking depth
-/// (an outline that numbers its levels from 1) is normalised by the caller
-/// that knows its own convention; this only guards the far end.
-pub fn clamp_depth(depth: u32) -> u32 {
-    depth.min(MAX_OUTLINE_DEPTH)
 }
 
 /// The entry the reader is currently inside (the sidebar highlight and the

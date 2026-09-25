@@ -41,17 +41,6 @@ pub fn source_path(items_root: &str, book_id: &str, ext: &str) -> String {
     join(&item_dir(items_root, book_id), &file)
 }
 
-/// The extension a migrated source keeps in its new name: every supported
-/// extension lower-cased. `None` for one the registry does not know, which
-/// keeps its old name rather than being renamed into something no reader can
-/// open.
-pub fn migrated_ext(ext: &str) -> Option<&'static str> {
-    match crate::scan::store_dir(ext) {
-        "other" => None,
-        dir => Some(dir),
-    }
-}
-
 /// Drop trailing separators so a join never produces `root//child`. Both
 /// separators are trimmed: a store root arrives from the host's path API.
 fn trim_sep(path: &str) -> &str {
@@ -173,19 +162,9 @@ mod tests {
     }
 
     #[test]
-    fn a_migrated_copy_is_named_after_its_pipeline_not_its_source() {
-        assert_eq!(migrated_ext("pdf"), Some("pdf"));
-        assert_eq!(migrated_ext("TXT"), Some("text"));
-        assert_eq!(migrated_ext("markdown"), Some("markdown"));
-        assert_eq!(migrated_ext("mdown"), Some("markdown"));
-        assert_eq!(migrated_ext("epub"), None);
-        assert_eq!(migrated_ext(""), None);
-    }
-
-    #[test]
     fn a_migrated_address_is_the_item_path_under_its_new_name() {
         let root = "/app/Library";
-        let ext = migrated_ext("pdf").expect("a known format");
+        let ext = "pdf"; // the source's own extension, lower-cased
         assert_eq!(
             source_path(&items_root(root), ID, ext),
             format!("/app/Library/items/{ID}/source.pdf")

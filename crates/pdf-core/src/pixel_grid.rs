@@ -63,12 +63,6 @@ pub fn snap_px(v: f64) -> f64 {
     snap_to(v, device_pixel_ratio())
 }
 
-/// One device pixel, expressed in logical px. Used by the no-gap layout to overlap
-/// neighbouring pages by the smallest amount the compositor can resolve.
-pub fn one_device_px() -> f64 {
-    1.0 / device_pixel_ratio()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{device_pixel_ratio, snap_px, snap_to};

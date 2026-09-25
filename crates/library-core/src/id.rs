@@ -27,12 +27,6 @@ pub fn next_folder_id(now_ms: u64) -> String {
     new_folder_id(now_ms, next_seq())
 }
 
-/// Import-run ids for the dock. The `t` prefix keeps them out of the
-/// book/shelf/folder namespaces the ledger and shelves key by.
-pub fn next_task_id(now_ms: u64) -> String {
-    format!("t{now_ms:x}-{}", next_seq())
-}
-
 /// One tested "has enough time passed" rule shared by the app's cooldowns (a
 /// rescan per focus, a picker's just-closed grace). Not a static: the caller
 /// owns where the cooldown lives, this type only owns the rule.
@@ -140,16 +134,6 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), first.len(), "4096 ids in one tick, all distinct");
-    }
-
-    #[test]
-    fn a_task_id_is_never_a_book_shelf_or_folder_id() {
-        let now = 1_700_000_000_000;
-        let task = next_task_id(now);
-        assert!(task.starts_with('t'), "the prefix is the namespace: {task}");
-        assert!(!is_shelf(&task));
-        // Two runs minted in one millisecond still get two cards.
-        assert_ne!(next_task_id(now), next_task_id(now));
     }
 
     #[test]

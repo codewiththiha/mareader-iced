@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::book::{Book, Fingerprint, Origin, Row};
 use crate::folder::{FolderOpts, WatchedFolder};
-use crate::scan::FoundFile;
 use crate::shelf::{Shelf, ShelfKind};
 use crate::shape::ShapeTree;
 use crate::tracking::TrackingTree;
@@ -175,13 +174,3 @@ pub fn watched_folder(id: &str, root: &str) -> WatchedFolder {
     }
 }
 
-/// A found Markdown file numbered `n`, whose `rel` is its own name.
-pub fn found_md(path: &str, n: u32) -> FoundFile {
-    FoundFile {
-        rel: path.rsplit('/').next().unwrap_or(path).to_string(),
-        path: path.to_string(),
-        ext: "md".to_string(),
-        size: u64::from(n),
-        fp: fp_n(n),
-    }
-}
