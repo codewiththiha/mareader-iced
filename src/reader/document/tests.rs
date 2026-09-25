@@ -9,6 +9,7 @@ use crate::reader::kit::{reader, reader_of, seeded, tick};
 use crate::reader::kit::open as kit_open;
 use iced::Size;
 use reader_core::settings::Settings;
+use reader_core::view::ViewMode;
 use reader_core::zoom_math::FitMode;
 fn open() -> Open {
     Open {
@@ -163,9 +164,10 @@ fn a_turn_before_the_book_is_ready_does_nothing() {
 }
 
 #[test]
-fn a_frame_for_another_page_is_not_painted() {
+fn a_raster_nobody_asked_for_is_dropped_where_it_lands() {
     let mut reader = reader();
     reader.viewer.container = Size::new(800.0, 1000.0);
+    reader.viewer.mode = ViewMode::Single;
     seeded(&mut reader, 3, 1);
     let (w, h) = reader.page_box_px();
     let stale = FrameKey::of_css(2, f64::from(w), f64::from(h), 1.0);
@@ -177,14 +179,15 @@ fn a_frame_for_another_page_is_not_painted() {
         pixels: vec![0, 0, 0, 0],
     });
     assert!(effects.is_empty());
-    assert!(reader.frame_here().is_none(), "the page on screen is still blank paper");
-    assert!(reader.frame.is_none(), "and the raster is not kept either");
+    assert!(reader.frame_here(2).is_none(), "the page is still blank paper");
+    assert!(reader.frame_here(1).is_none(), "and the raster is not kept either");
 }
 
 #[test]
 fn an_answer_from_a_session_the_reader_left_is_ignored() {
     let mut reader = reader();
     reader.viewer.container = Size::new(800.0, 1000.0);
+    reader.viewer.mode = ViewMode::Single;
     seeded(&mut reader, 3, 1);
     let stale = reader.session + 7;
     let key = FrameKey::of_css(1, 800.0, 1035.0, 1.0);
@@ -196,7 +199,7 @@ fn an_answer_from_a_session_the_reader_left_is_ignored() {
         pixels: vec![0, 0, 0, 0],
     });
     assert!(effects.is_empty());
-    assert!(reader.frame.is_none());
+    assert!(reader.frame_here(1).is_none());
 }
 
 #[test]
@@ -223,6 +226,9 @@ fn a_turn_onto_a_different_sheet_refits_when_the_setting_says_so() {
         title: None,
         author: None,
     });
+    // The cover over a fresh mount has its own cases; here the book is the
+    // subject.
+    reader.cover = None;
     assert!((reader.zoom.committed - 800.0 / 612.0).abs() < 1e-9);
     reader.turn(1);
     assert!(
@@ -259,6 +265,7 @@ fn a_turn_keeps_the_scale_when_the_reader_asked_it_to() {
         title: None,
         author: None,
     });
+    reader.cover = None;
     let scale = reader.zoom.committed;
     reader.turn(1);
     assert!(
@@ -298,7 +305,7 @@ fn the_blank_state_before_an_open_has_one_open_page() {
     // surface is built before the first answer arrives.
     let reader = reader();
     assert_eq!(reader.viewer.page, 1);
-    assert!(reader.frame_here().is_none());
+    assert!(reader.frame_here(1).is_none());
     let (w, h) = reader.page_box_px();
     assert!(w > 0.0 && h > 0.0);
     // Nothing is kit_open, so nothing names the reader's route: the bar falls

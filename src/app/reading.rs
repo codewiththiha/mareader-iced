@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 
 use iced::time::Instant;
+use iced::widget::{operation, scrollable};
 use iced::{Size, Task};
 use library_core::book::{self, Book};
+use reader_core::view::Axis;
 
 use crate::platform::{fs, now_ms};
 use crate::reader;
@@ -29,6 +31,7 @@ impl Mareader {
     pub(super) fn apply_reader_effects(&mut self, effects: Vec<reader::Effect>) -> Task<Message> {
         let mut wrote = false;
         let mut created: Option<String> = None;
+        let mut scrolls = Vec::new();
         for effect in effects {
             match effect {
                 reader::Effect::Record(read) => {
@@ -101,6 +104,18 @@ impl Mareader {
                 reader::Effect::Toast(tone, sentence) => {
                     self.toasts.show(tone, sentence, Instant::now());
                 }
+                reader::Effect::Scroll { axis, offset } => {
+                    // The strip is one widget with one name, and only the app can
+                    // post a command to a widget: the reader decides where its
+                    // own surface sits, and the operation that puts it there is
+                    // written here.
+                    let offset = offset as f32;
+                    let absolute = scrollable::AbsoluteOffset {
+                        x: (axis == Axis::Horizontal).then_some(offset),
+                        y: (axis == Axis::Vertical).then_some(offset),
+                    };
+                    scrolls.push(operation::scroll_to(reader::SCROLL_ID, absolute));
+                }
             }
         }
         let mut tasks = vec![];
@@ -115,6 +130,7 @@ impl Mareader {
                 Message::ChecksDone,
             ));
         }
+        tasks.extend(scrolls);
         Task::batch(tasks)
     }
 

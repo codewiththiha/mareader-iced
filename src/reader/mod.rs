@@ -6,14 +6,19 @@ mod document;
 mod page;
 mod viewer;
 mod zoom;
-pub use document::{DocStatus, Document};
+pub use document::Document;
 pub use viewer::Viewer;
 pub use zoom::Command;
 
 mod events;
 mod frame;
+mod keys;
+mod motion;
 mod moves;
 mod opening;
+mod scroll;
+mod strip;
+mod sync;
 mod update;
 
 pub use opening::*;
@@ -22,12 +27,19 @@ pub use update::*;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use frame::Frame;
+use frame::Frames;
+use motion::{Glide, Motion};
 use reader_core::settings::Settings;
 use reader_core::zoom_math::FitMode;
+use strip::{Anchor, PAGE_GAP, Strip};
+use sync::{HeldJump, Progress};
 use zoom::Zoom;
 
-use crate::formats::pdf::{Engine, FrameKey};
+use crate::formats::pdf::Engine;
+
+/// The id of the continuous strip's own scroller. The surface is the widget that
+/// answers a scroll command, and this is the one name the app needs to post one.
+pub(crate) const SCROLL_ID: &str = "reader-strip";
 
 /// The reader's whole state.
 pub struct Reader {
@@ -40,8 +52,23 @@ pub struct Reader {
     /// is measured from it, so the reader's clock is the app's own frame rate
     /// rather than a timer of its own.
     last_tick: Instant,
-    /// The page raster on screen, if any.
-    frame: Option<Frame>,
+    /// The page rasters on screen: one per mounted page.
+    frames: Frames,
+    /// The continuous strip, while a scrolling mode has a document open.
+    strip: Option<Strip>,
+    /// The jump a page turn owes the transaction that is moving the geometry.
+    held: HeldJump,
+    /// A position the strip has been told to sit at, until the surface agrees.
+    anchor: Option<Anchor>,
+    /// The eased jump a page turn is making, if one is running.
+    glide: Option<Glide>,
+    /// Which of the reader's own motions animate.
+    motion: Motion,
+    /// The reading position the app has been told, and the quiet a scroll-driven
+    /// change waits out before it is worth writing.
+    progress: Progress,
+    /// When the cover over a fresh mount went up, while it is still there.
+    cover: Option<Instant>,
     /// The engine worker, started by the first request it is given.
     engine: Engine,
     /// Whether the engine found a Pdfium library, once it has said. `None`
@@ -51,9 +78,6 @@ pub struct Reader {
     /// The session stamp: which open every message belongs to. Bumped by every
     /// open and every close.
     session: u64,
-    /// The raster the reader is waiting for, if any. A frame that answers any
-    /// other key is not the one the page on screen is waiting on.
-    awaiting: Option<FrameKey>,
 }
 
 /// Where the reader is, as the library wants to hear it: which row the open
@@ -87,7 +111,9 @@ impl Reader {
         let mut viewer = Viewer {
             fit: layout.default_fit,
             margin: layout.page_margin,
+            gap: if layout.no_gap { 0.0 } else { PAGE_GAP },
             auto_resize: layout.auto_resize,
+            auto_scale: layout.auto_scale,
             ..Viewer::default()
         };
         // `None` is not a startup fit: `sanitize` has already replaced a
@@ -100,12 +126,18 @@ impl Reader {
             document: Document::default(),
             viewer,
             zoom: Zoom::default(),
+            frames: Frames::default(),
+            strip: None,
+            held: HeldJump::default(),
+            anchor: None,
+            glide: None,
+            motion: Motion::from_settings(settings),
+            progress: Progress::default(),
+            cover: None,
             last_tick: Instant::now(),
-            frame: None,
             engine: Engine::new(),
             bound: None,
             session: 0,
-            awaiting: None,
         }
     }
 
@@ -146,6 +178,22 @@ impl Reader {
     /// The read, as the effect the caller asked for.
     pub(super) fn effect_of(&self, kind: fn(Read) -> Effect) -> Vec<Effect> {
         self.read().map(kind).into_iter().collect()
+    }
+
+    /// The reading position, as the progress report the app writes.
+    pub(super) fn progress_effect(&self) -> Vec<Effect> {
+        self.effect_of(Effect::Progress)
+    }
+
+    /// Tell the app where the reader is, if it does not already hold it: the one
+    /// door a progress write goes through, so a page reported on a turn, on a
+    /// jump and on a settled scroll is never written twice.
+    pub(super) fn report_progress(&mut self) -> Vec<Effect> {
+        if !self.progress.owes(self.viewer.page) {
+            return Vec::new();
+        }
+        self.progress.told(self.viewer.page);
+        self.progress_effect()
     }
 }
 

@@ -1,6 +1,8 @@
 //! The tween's clock: step it once per frame, and land it when it arrives.
 
-use super::{ease_out_cubic, Advanced, TWEEN_MS, Zoom};
+use reader_core::zoom_math::ease_out_cubic;
+
+use super::{Advanced, TWEEN_MS, Zoom};
 
 impl Zoom {
     /// One animation frame, `delta_ms` after the last.

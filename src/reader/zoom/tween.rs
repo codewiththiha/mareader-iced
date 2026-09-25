@@ -55,13 +55,6 @@ pub struct Advanced {
     pub committed: bool,
 }
 
-/// The tween's progress curve: covers ground early, decelerates onto the
-/// target instead of stopping dead on it — the web app's `ease_out_cubic`.
-pub(super) fn ease_out_cubic(t: f64) -> f64 {
-    let u = 1.0 - t.clamp(0.0, 1.0);
-    1.0 - u * u * u
-}
-
 impl Advanced {
     /// Nothing happened.
     pub const NONE: Self = Self {

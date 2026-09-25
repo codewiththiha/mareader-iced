@@ -37,8 +37,11 @@ impl Reader {
     /// waiting on an answer nobody is left to send.
     pub(super) fn begin_open(&mut self, open: Open) -> Vec<Effect> {
         self.session += 1;
-        self.awaiting = None;
-        self.frame = None;
+        self.frames.clear();
+        self.strip = None;
+        self.glide = None;
+        self.anchor = None;
+        self.cover = None;
         self.document.begin(&open);
         match self.bound.clone() {
             Some(Err(message)) => {
@@ -62,8 +65,17 @@ impl Reader {
         // Taken before the reset, which is what forgets the name of the book.
         let effects = self.effect_of(Effect::Record);
         self.session += 1;
-        self.awaiting = None;
-        self.frame = None;
+        // Everything that belonged to the book that just closed: its rasters,
+        // its strip, and whatever was moving on them.
+        self.frames.clear();
+        self.strip = None;
+        self.glide = None;
+        self.anchor = None;
+        self.held = super::sync::HeldJump::default();
+        self.cover = None;
+        // The ledger of what the app has been told went with the book; the
+        // close's own record carries the last page, and the next open seeds it.
+        self.progress = super::sync::Progress::default();
         self.document.reset();
         // Whatever was still moving belonged to the book that just closed;
         // a transition left open would keep asking for frames of a page

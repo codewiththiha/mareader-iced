@@ -34,6 +34,10 @@ pdf-core = { path = "crates/pdf-core" }
 # arithmetic the web app's popovers ran, ported verbatim.
 ui-geom = { path = "crates/ui-geom" }
 
+# The ported windowing: every page's extent, the mounted window and its
+# read-ahead budget — the arithmetic the continuous strip is laid out from.
+virtual-list = { path = "crates/virtual-list" }
+
 # The PDF engine. Pdfium is bound at RUN time — the crate ships no library and
 # the build needs no C toolchain — so where the library lives is a run-time
 # question the app answers itself (`src/platform/pdfium.rs`). `pdfium_latest`

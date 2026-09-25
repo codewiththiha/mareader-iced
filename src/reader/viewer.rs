@@ -36,26 +36,33 @@ pub struct Viewer {
     pub dpr: f64,
     /// The horizontal inset around a page, from the settings.
     pub margin: f64,
+    /// The fixed chrome between pages in the continuous column: the settings'
+    /// gap, zero when `no_gap` is on. It never scales with the pages.
+    pub gap: f64,
     /// Whether a page turn may move the scale: on, arriving at a differently
     /// sized sheet re-resolves the fit (the web app's `auto_resize`); off, a
     /// page turn touches nothing and a wide plate overflows and scrolls.
     pub auto_resize: bool,
+    /// Whether a mode flip may move the scale: on, a flip back into a paginated
+    /// mode takes the width fit (the web app's `auto_scale`); off, the flip
+    /// touches nothing and the reader's own scale is kept.
+    pub auto_scale: bool,
 }
 
 impl Default for Viewer {
     fn default() -> Self {
         Self {
             page: 1,
-            // One page at a time. The web app's default is the continuous
-            // strip, which arrives in 3c with the virtualizer it needs; until
-            // then the reading surface paints the page the reader is on, and
-            // every mode resolves through the same page host.
-            mode: ViewMode::Single,
+            // The continuous column, which is the web app's own default: a
+            // book opens into the whole document and the reader scrolls it.
+            mode: ViewMode::default(),
             fit: FitMode::Width,
             container: Size::new(0.0, 0.0),
             dpr: 1.0,
             margin: 0.0,
+            gap: crate::reader::strip::PAGE_GAP,
             auto_resize: true,
+            auto_scale: true,
         }
     }
 }
@@ -71,14 +78,15 @@ impl Viewer {
     /// The scale a fit mode wants right now, or the scale the caller measured
     /// from when no fit owns it or nothing can be measured yet.
     ///
-    /// A document opening straight into the continuous stream is the
-    /// exception, and the reason this answers `current` there: there is no page
-    /// to fit, the window *is* the page, and type size belongs to the
-    /// typography settings. The branch is dead until 3c turns the strip on, and
-    /// it is written now so the seed scale and the live refit cannot disagree
-    /// when it does.
+    /// Every mode resolves through it, the continuous column included: a page in
+    /// the strip is the same page, and the fit that owns the scale must answer
+    /// with the one number wherever the mode puts it. (A reflowable document is
+    /// the exception, and it is a fact about the DOCUMENT rather than the mode:
+    /// there is no page to fit, the window *is* the page, and type size belongs
+    /// to the typography settings. That branch arrives with the reflow
+    /// increments.)
     pub fn resolved_scale(&self, box_: PageBox, current: f64) -> f64 {
-        if self.mode == ViewMode::ScrollVertical || !self.measured() {
+        if !self.measured() {
             return clamp_scale(current);
         }
         match FitDims::from_geometry(self.mode, self.container, self.margin, box_) {
@@ -219,11 +227,12 @@ mod tests {
     }
 
     #[test]
-    fn the_stream_has_no_page_to_fit() {
-        // The continuous strip's scale is the reader's own; the window is the
-        // page. 3c turns this on.
+    fn the_column_fits_its_pages_like_any_other_mode() {
+        // The continuous strip resolves through the same fit: a page in the
+        // column is the same page, and the fit that owns the scale has to answer
+        // with one number wherever the mode puts it.
         let v = viewer(ViewMode::ScrollVertical, 1000.0, 800.0, 0.0);
-        assert!((v.resolved_scale(page(500.0, 700.0), 1.0) - 1.0).abs() < 1e-9);
+        assert!((v.resolved_scale(page(500.0, 700.0), 1.0) - 2.0).abs() < 1e-9);
     }
 
     #[test]

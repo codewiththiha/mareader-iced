@@ -1,6 +1,8 @@
 //! The iced events the app answers: the keyboard, the mouse and the window,
 //! read into messages.
 use iced::{event, keyboard, mouse, window};
+use reader_core::view::ViewMode;
+use reader_core::zoom_math::FitMode;
 
 use crate::reader;
 use super::message::Message;
@@ -25,6 +27,15 @@ pub(super) fn on_event(event: iced::Event, status: event::Status, id: window::Id
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
             Some(Message::PressEnded)
         }
+        // A wheel the surface did not take: a horizontal strip is the one place
+        // a vertical notch has nowhere to go, and the reader translates it. The
+        // scroller captures the events it moves on, so this arm hears only the
+        // ones it could not.
+        iced::Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { y, .. },
+        }) if matches!(status, event::Status::Ignored) => {
+            Some(Message::Reader(reader::Message::Wheel(-y)))
+        }
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(keyboard::key::Named::Escape),
             ..
@@ -38,45 +49,74 @@ pub(super) fn on_event(event: iced::Event, status: event::Status, id: window::Id
         }) if matches!(status, event::Status::Ignored) => {
             Some(if modifiers.shift() { Message::ShiftEnter } else { Message::EnterPressed })
         }
-        // The page turns and the zoom ladder, and they come last on purpose:
-        // `Escape` and `Enter` are matched above, and a key this arm declines
-        // falls through to the same `None` every unhandled key does. A focused
-        // field keeps its own keys — that is what the status guard says — so the
+        // The keys the reader answers, and they come last on purpose: `Escape`
+        // and `Enter` are matched above, and a key this arm declines falls
+        // through to the same `None` every unhandled key does. A focused field
+        // keeps its own keys — that is what the status guard says — so the
         // reader hears only what the fields have no use for.
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
             modifiers,
             ..
         }) if matches!(status, event::Status::Ignored) => {
-            // The zoom ladder's keys are the web app's own, and they are PLAIN
-            // presses there: with a modifier the key belongs to the window's
-            // shortcuts (⌘F, ⌘O, ⌘←/→) and the reader never sees it, so the
-            // same guard holds here.
-            let plain = !(modifiers.control() || modifiers.alt() || modifiers.logo());
-            if plain {
-                let zoom = match key.as_ref() {
-                    keyboard::Key::Character("+") | keyboard::Key::Character("=") => Some(1),
-                    keyboard::Key::Character("-") | keyboard::Key::Character("_") => Some(-1),
+            // The combos are the web app's own Cmd/Ctrl set, and the keys
+            // themselves are PLAIN presses there: with a modifier the key
+            // belongs to the window, and the reader never sees it.
+            if modifiers.control() || modifiers.logo() {
+                let chose = match key.as_ref() {
+                    keyboard::Key::Character("1") => {
+                        Some(reader::Message::Mode(ViewMode::Single))
+                    }
+                    keyboard::Key::Character("2") => {
+                        Some(reader::Message::Mode(ViewMode::ScrollVertical))
+                    }
+                    keyboard::Key::Character("0") => {
+                        Some(reader::Message::Fit(FitMode::Width))
+                    }
                     _ => None,
                 };
-                if let Some(dir) = zoom {
-                    return Some(Message::Reader(reader::Message::Zoom(reader::Command::Step(
-                        dir,
-                    ))));
-                }
+                return chose.map(Message::Reader);
             }
-            let step = match key {
-                keyboard::Key::Named(keyboard::key::Named::ArrowLeft)
-                | keyboard::Key::Named(keyboard::key::Named::PageUp) => -1,
-                keyboard::Key::Named(keyboard::key::Named::ArrowRight)
-                | keyboard::Key::Named(keyboard::key::Named::PageDown) => 1,
-                _ => 0,
+            if modifiers.alt() {
+                return None;
+            }
+            // The zoom ladder's keys are the web app's own.
+            let zoom = match key.as_ref() {
+                keyboard::Key::Character("+") | keyboard::Key::Character("=") => Some(1),
+                keyboard::Key::Character("-") | keyboard::Key::Character("_") => Some(-1),
+                _ => None,
             };
-            // Both directions are one message, so the surface's own turn logic
-            // — the clamp at either end of the book, and the fit that follows a
-            // differently sized sheet — stays the only place a turn is decided.
-            (step != 0).then_some(Message::Reader(reader::Message::Turn(step)))
+            if let Some(dir) = zoom {
+                return Some(Message::Reader(reader::Message::Zoom(reader::Command::Step(
+                    dir,
+                ))));
+            }
+            // Navigation goes to the reader WHOLE, key and modifiers together:
+            // an arrow turns a page in the paginated modes and nudges the strip
+            // in the continuous ones, and which one it means is a question about
+            // the mode — the reader's own, answered in one place.
+            navigation_key(&key).then_some(Message::Reader(reader::Message::Key {
+                key,
+                shift: modifiers.shift(),
+            }))
         }
         _ => None,
     }
+}
+
+/// Whether a plain keypress is one the reader's keymap has an opinion about:
+/// the arrows, the two page keys, and Space.
+fn navigation_key(key: &keyboard::Key) -> bool {
+    matches!(
+        key,
+        keyboard::Key::Named(
+            keyboard::key::Named::ArrowLeft
+                | keyboard::key::Named::ArrowRight
+                | keyboard::key::Named::ArrowUp
+                | keyboard::key::Named::ArrowDown
+                | keyboard::key::Named::PageUp
+                | keyboard::key::Named::PageDown
+                | keyboard::key::Named::Space
+        )
+    )
 }

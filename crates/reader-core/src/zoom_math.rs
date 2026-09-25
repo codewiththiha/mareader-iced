@@ -64,9 +64,28 @@ pub fn nearest_zoom(current: f64, dir: i32) -> f64 {
     ZOOM_STEPS[target_idx]
 }
 
+/// The reader's easing curve: covers ground early and decelerates onto the
+/// target instead of stopping dead on it. Shared by the zoom tween and the
+/// scroll glide, so the two motions read as one hand.
+pub fn ease_out_cubic(t: f64) -> f64 {
+    let u = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - u * u * u
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FitMode, MAX_SCALE, MIN_SCALE, clamp_scale, fit_scale, nearest_zoom};
+    use super::{FitMode, MAX_SCALE, MIN_SCALE, clamp_scale, ease_out_cubic, fit_scale, nearest_zoom};
+
+    #[test]
+    fn the_easing_lands_exactly_and_covers_ground_early() {
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+        // Past halfway at half the clock: the motion decelerates onto the end.
+        assert!(ease_out_cubic(0.5) > 0.5);
+        // Out-of-range input is a whole motion, not an extrapolation.
+        assert_eq!(ease_out_cubic(-2.0), 0.0);
+        assert_eq!(ease_out_cubic(9.0), 1.0);
+    }
 
     #[test]
     fn fit_uses_the_page_under_the_eyes_not_page_one() {

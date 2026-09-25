@@ -3,12 +3,16 @@
 
 use std::time::Instant;
 
+use iced::keyboard::Key;
 use iced::{Element, Size};
+
+use reader_core::view::{Axis, ViewMode};
 use reader_core::zoom_math::FitMode;
 
 use crate::formats::pdf::Event;
 use crate::theme::Tokens;
 use crate::ui::toast::Tone;
+use super::keys::{self, Nav};
 use super::page;
 use super::zoom::Command;
 use super::{Open, Read, Reader};
@@ -20,9 +24,23 @@ pub enum Message {
     Engine(Event),
     /// Read a document.
     Open(Open),
-    /// Step the page: `-1` back, `1` forward. The keyboard's arrows and the
-    /// bar's own buttons both speak it.
+    /// Step the page: `-1` back, `1` forward. The bar's own buttons and a
+    /// keypress in a paginated mode both speak it.
     Turn(i32),
+    /// A navigation key, as the reader's own keymap reads it: the same arrows
+    /// turn pages in the paginated modes and nudge the strip in the continuous
+    /// ones, so which one a key means is the reader's question and not the
+    /// window's.
+    Key { key: Key, shift: bool },
+    /// The strip's own report: where the surface it draws came to rest along the
+    /// axis the mode scrolls.
+    Scrolled(f64),
+    /// A wheel notch the surface did not take, in lines with down positive —
+    /// the convention every other scrolling surface answers to.
+    Wheel(f32),
+    /// The view mode was chosen — one page, a spread, the continuous column, the
+    /// horizontal strip.
+    Mode(ViewMode),
     /// The window moved. The reading area is the window: the chrome is an
     /// overlay, so nothing is subtracted.
     Resized(Size),
@@ -38,7 +56,7 @@ pub enum Message {
     /// untweened — a click answers where it lands instead of easing.
     Fit(FitMode),
     /// One animation frame: the app's frames subscription, alive exactly as
-    /// long as a transition is ([`Reader::needs_tick`]).
+    /// long as something is moving ([`Reader::needs_tick`]).
     Tick,
     /// The surface asked to leave for the shelf. Standing on the shelf is the
     /// app's business — the route is the app's — so the app answers this one by
@@ -60,6 +78,14 @@ pub enum Effect {
     Progress(Read),
     /// Tell the reader something went wrong.
     Toast(Tone, String),
+    /// Put the continuous strip where the reader asked for it. The surface is a
+    /// widget the reader owns the name of, and only the app can post a command
+    /// to a widget, so the position travels out as one of these.
+    Scroll {
+        /// The strip's own axis: the one it moves along.
+        axis: Axis,
+        offset: f64,
+    },
 }
 
 impl Reader {
@@ -71,21 +97,28 @@ impl Reader {
 
     /// One message, and what the app owes the world because of it.
     pub fn update(&mut self, message: Message, now: Instant) -> Vec<Effect> {
-        match message {
+        let mut effects = match message {
             Message::Engine(event) => self.on_event(event),
             Message::Open(open) => self.begin_open(open),
             Message::Turn(step) => self.turn(step),
+            Message::Key { key, shift } => self.nav(key, shift),
+            Message::Scrolled(along) => self.scrolled(along),
+            Message::Wheel(lines) => self.wheel(lines),
+            Message::Mode(mode) => {
+                self.set_mode(mode);
+                Vec::new()
+            }
             Message::Resized(size) => {
                 self.resize(size);
                 Vec::new()
             }
             Message::Scale(factor) => {
                 self.viewer.dpr = factor.max(0.1);
-                // Every page's device box moves with the display, so the frame
-                // on screen is re-rasterised on the new grid rather than scaled
-                // by the compositor: a 1.5× laptop panel would otherwise read
-                // text drawn for a 1× screen.
-                self.request_frame();
+                // Every page's device box moves with the display, so the rasters
+                // are re-asked on the new grid rather than scaled by the
+                // compositor: a 1.5× laptop panel would otherwise read text
+                // drawn for a 1× screen.
+                self.pump_frames();
                 Vec::new()
             }
             // The doors all ask for the tween: one press is one gesture, and a
@@ -104,17 +137,70 @@ impl Reader {
                 self.zoom_command(Command::Follow, false);
                 Vec::new()
             }
-            Message::Tick => {
-                let delta = now.saturating_duration_since(self.last_tick);
-                self.last_tick = now;
-                if self.zoom.advance(delta.as_secs_f64() * 1000.0).committed {
-                    // The transaction ended: the scale the rasters are drawn
-                    // for has moved, and the page is re-asked for at it.
-                    self.request_frame();
-                }
-                Vec::new()
-            }
+            Message::Tick => self.on_tick(now),
             Message::Close => self.close(),
+        };
+        // The strip is reconciled after EVERY message rather than from each arm:
+        // a mode, a fit, a scale and a window all move it, and the geometry
+        // compares its own inputs, so a message that moved none of them costs
+        // one comparison.
+        effects.extend(self.reflow());
+        effects
+    }
+
+    /// One animation frame: the moves that are running, in the order they depend
+    /// on each other.
+    fn on_tick(&mut self, now: Instant) -> Vec<Effect> {
+        let delta = now.saturating_duration_since(self.last_tick).as_secs_f64() * 1000.0;
+        self.last_tick = now;
+        // A cover that waited out its grace lifts here whatever the rasters did:
+        // a render that never arrives must not strand the reader on paper.
+        self.cover_expired(now);
+        let mut effects = self.glide_effect(delta);
+        let advanced = self.zoom.advance(delta);
+        if advanced.moved {
+            // The transaction moved the scale the pages are drawn at, so the
+            // strip follows it on the same frame — the web app's actuator, which
+            // was the only owner of layout rescaling and ran on every frame of a
+            // zoom.
+            effects.extend(self.reflow());
+        }
+        // The aim is posted again while it has posts left: a fresh surface has
+        // no widget to receive the first of them, and a rescaled one clamps the
+        // post against the bounds it had a frame earlier.
+        effects.extend(self.anchor_effect());
+        if advanced.committed {
+            // The transaction ended: the scale the rasters are drawn for has
+            // moved, and a turn that landed inside the transaction takes its
+            // jump now.
+            self.pump_frames();
+            if self.held.take() {
+                effects.extend(self.jump_to(self.viewer.page));
+            }
+        }
+        // A scroll-driven page change is reported once the scroll has gone
+        // quiet: the app writes the whole library on a report, and a fling
+        // crosses pages far faster than it should be writing one.
+        if self.progress.owes(self.viewer.page) && self.progress.settled() {
+            effects.extend(self.report_progress());
+        }
+        effects
+    }
+
+    /// One navigation key, resolved against the mode it landed in.
+    fn nav(&mut self, key: Key, shift: bool) -> Vec<Effect> {
+        match keys::resolve(&key, shift, self.viewer.mode) {
+            Some(Nav::PagePrev) => self.turn(-1),
+            Some(Nav::PageNext) => self.turn(1),
+            Some(Nav::Line(dir)) => {
+                let step = keys::line_step(self.strip_viewport());
+                self.scroll_by(f64::from(dir) * step)
+            }
+            Some(Nav::PageStep(dir)) => {
+                let step = keys::page_step(self.strip_viewport());
+                self.scroll_by(f64::from(dir) * step)
+            }
+            None => Vec::new(),
         }
     }
 
@@ -122,6 +208,10 @@ impl Reader {
     /// frames it needs and nothing else: an idle reader costs no redraws.
     pub fn needs_tick(&self) -> bool {
         self.zoom.ticking()
+            || self.glide.is_some()
+            || self.anchor.as_ref().is_some_and(|anchor| !anchor.spent())
+            || self.progress.owes(self.viewer.page)
+            || self.cover_up()
     }
 
     /// The reading surface.
@@ -134,16 +224,15 @@ impl Reader {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::Instant;
     use crate::reader::kit::{reader, seeded, tick};
-    use crate::reader::zoom::Command;
     use iced::Size;
-    use reader_core::zoom_math::FitMode;
+    use std::time::Instant;
 
     #[test]
     fn the_resume_page_is_clamped_to_the_book_that_opened() {
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
         seeded(&mut reader, 3, 40);
         assert_eq!(reader.viewer.page, 3, "a book with three pages resumes at 3");
         let effects = reader.close();
@@ -165,6 +254,7 @@ mod tests {
         // never moved on does not reorder itself.
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
         seeded(&mut reader, 3, 1);
         match reader.turn(1).as_slice() {
             [Effect::Progress(read)] => assert_eq!(read.page, 2),
@@ -184,6 +274,7 @@ mod tests {
         // the end, for the size the page actually came to rest at.
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
         seeded(&mut reader, 3, 1);
         let before = reader.zoom.committed;
         reader.update(Message::Zoom(Command::Step(1)), Instant::now());
@@ -201,7 +292,7 @@ mod tests {
             "and the raster is drawn for the size it was asked at"
         );
         assert!(
-            reader.page_box_px().0 > reader.frame_box_px().0,
+            reader.page_box_px().0 > reader.box_of(reader.viewer.page, reader.zoom.committed).0,
             "the paper on screen is the bigger of the two"
         );
         // The rung above a 800/612 fit width.
@@ -214,10 +305,11 @@ mod tests {
     #[test]
     fn a_hand_picked_zoom_is_not_shrunk_back_to_the_fit_ceiling() {
         // The ceiling a manual zoom resolves to is what the reader chose, not
-        // fit width: a page zoomed in on keeps its scale and overflows with a
-        // scroll affordance (3c's), rather than snapping back to fit.
+        // fit width: a page zoomed in on keeps its scale and overflows into the
+        // scroll affordance, rather than snapping back to fit.
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
         seeded(&mut reader, 3, 1);
         reader.update(Message::Zoom(Command::Step(1)), Instant::now());
         tick(&mut reader, 200.0);
@@ -225,7 +317,7 @@ mod tests {
         assert_eq!(reader.viewer.fit, FitMode::None, "the gesture dropped the fit");
         // A window the fit would now answer differently: the reader's own zoom
         // is what the page keeps.
-        reader.resize(Size::new(1400.0, 1000.0));
+        reader.update(Message::Resized(Size::new(1400.0, 1000.0)), Instant::now());
         assert!((reader.zoom.display - 1.5).abs() < 1e-9);
         assert!((reader.zoom.committed - 1.5).abs() < 1e-9, "nothing moved, so nothing renders");
     }
@@ -234,6 +326,7 @@ mod tests {
     fn choosing_a_fit_answers_in_the_frame_it_lands() {
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
         seeded(&mut reader, 3, 1);
         reader.update(Message::Zoom(Command::Step(1)), Instant::now());
         tick(&mut reader, 200.0);
@@ -255,6 +348,7 @@ mod tests {
     fn closing_keeps_the_reader_s_own_zoom_and_drops_what_was_moving() {
         let mut reader = reader();
         reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
         seeded(&mut reader, 3, 1);
         reader.update(Message::Zoom(Command::Step(1)), Instant::now());
         tick(&mut reader, 200.0);
@@ -271,5 +365,38 @@ mod tests {
             (reader.zoom.committed - scale).abs() < 1e-9,
             "the reader's own zoom survives the book"
         );
+    }
+
+    #[test]
+    fn a_key_is_read_by_the_mode_it_lands_in() {
+        // The window forwards navigation keys; what each one means is the
+        // reader's own question, and the answer depends on the mode the key
+        // lands in — the web app's keymap, kept whole.
+        use iced::keyboard::{Key, key};
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        reader.viewer.mode = ViewMode::Single;
+        seeded(&mut reader, 3, 1);
+        let down = Key::Named(key::Named::ArrowDown);
+        reader.update(
+            Message::Key {
+                key: down.clone(),
+                shift: false,
+            },
+            Instant::now(),
+        );
+        assert_eq!(reader.viewer.page, 2, "an arrow turns a page in a paginated mode");
+        // In the column the same key nudges the strip instead, and the page
+        // only follows the scroll once it has stopped.
+        reader.update(Message::Mode(ViewMode::ScrollVertical), Instant::now());
+        let effects = reader.update(
+            Message::Key {
+                key: down,
+                shift: false,
+            },
+            Instant::now(),
+        );
+        assert_eq!(reader.viewer.page, 2, "a nudge is not a page turn");
+        assert!(matches!(effects.as_slice(), [Effect::Scroll { .. }]));
     }
 }
