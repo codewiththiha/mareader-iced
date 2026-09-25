@@ -823,6 +823,11 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   now — the route's own view, the titlebar, the overlays, the runs' dock and the selection's bar —
   and the toggle the sheet's option rows and the view menu's pills both draw is one builder again,
   wearing the chip the web's `ToggleButton` calls its default.
+    The sheets followed: `app/sheets.rs` is `app/sheets/{mod,rename,remove,import,copy,conflict}.rs`,
+    one file per panel with the dispatcher keeping one line per `Sheet` variant, and `app/update.rs` —
+    a single 727-line `update` over 93 arms — is
+    `app/update/{mod,shell,reading,bar,view,rows,selection,sheets,add}.rs`: the dispatcher is a match
+    of one-line delegations, and each subject file holds the handlers its arms call.
   and one transition, 120 ms on an out-cubic curve, retargeted from wherever the eye is
   when a second press lands mid-flight. A window drag is a *follow*: the layout is in
   the new window on the frame the size was reported — a scale that waited for the drag
