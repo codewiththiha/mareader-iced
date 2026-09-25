@@ -19,8 +19,8 @@ use crate::ui::toast::Tone;
 use super::Mareader;
 use super::copies::{partition_store_results, CopyMap, PendingCopy};
 use super::message::Message;
-use super::sheets::{Asked, LitNote, Sheet};
-use super::walk::{chain_for, found_from_check, write_folder_row, FilesPlan, Stage, WalkPlan};
+use super::sheets::{LitNote, Sheet};
+use super::walk::{Asked, chain_for, found_from_check, write_folder_row, FilesPlan, Stage, WalkPlan};
 
 impl Mareader {
     /// The diff's answer, written to the live lists: relinks first, then

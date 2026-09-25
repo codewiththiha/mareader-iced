@@ -1,10 +1,10 @@
 //! What a walk answers: the rows it adds, the moves the ledger healed, and the
 //! questions its landing owes — planned against the library it just read.
-use super::{Stage, write_folder_row};
+use super::{Asked, Stage, write_folder_row};
 use crate::app::Mareader;
 use crate::app::copies::PendingCopy;
 use crate::app::message::Message;
-use crate::app::sheets::{Asked, LitNote, Sheet};
+use crate::app::sheets::{LitNote, Sheet};
 use crate::library::conflicts::{self, ConflictAsk};
 use crate::platform::{now_ms, store};
 use crate::ui::toast::Tone;

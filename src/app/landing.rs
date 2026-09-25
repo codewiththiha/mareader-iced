@@ -25,8 +25,8 @@ use super::Mareader;
 use super::copies::{CopiesDest, PendingCopy};
 use super::message::Message;
 use super::moves::{DepartLand, DepartWork};
-use super::sheets::{Asked, MovedAsk};
-use super::walk::{Claim, FilesPlan, FsRun, RootPlan, Stage};
+use super::message::MovedAsk;
+use super::walk::{Asked, Claim, FilesPlan, FsRun, RootPlan, Stage};
 
 /// The removed row's second line: when the reader took the book out, and —
 /// remembered — how big the promise is.

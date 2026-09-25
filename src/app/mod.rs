@@ -38,7 +38,8 @@ use message::ContextRequest;
 use reader_core::settings::Settings;
 use selection::{Drag, Press};
 use session::window_settings;
-use sheets::{MovedAsk, Sheet};
+use message::MovedAsk;
+use sheets::Sheet;
 use walk::FsRun;
 
 use crate::chrome::titlebar::Titlebar;

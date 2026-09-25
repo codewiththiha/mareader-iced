@@ -1,10 +1,9 @@
 //! Who holds a folder's root: the claim a second run asks, the two doors that
 //! take it, and the release that lets the ask queued behind it start.
-use super::{FsRun, RootPlan, Stage};
+use super::{Asked, FsRun, RootPlan, Stage};
 use crate::app::Mareader;
 use crate::app::copies::QueuedImport;
 use crate::app::message::Message;
-use crate::app::sheets::Asked;
 use crate::platform::{fs, progress};
 use crate::ui::toast::Tone;
 use iced::Task;

@@ -1,9 +1,8 @@
 //! A filesystem run in flight: its channel, its beats, and the answer that
 //! turns into a plan.
-use super::Stage;
+use super::{Asked, Stage};
 use crate::app::Mareader;
 use crate::app::message::Message;
-use crate::app::sheets::Asked;
 use crate::platform::progress;
 use crate::ui::toast::Tone;
 use iced::Task;

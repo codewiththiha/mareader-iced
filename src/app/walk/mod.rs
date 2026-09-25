@@ -10,9 +10,17 @@ use library_core::scan::FoundFile;
 use crate::app::copies::{CopiesDest, CopiesWork, DupWork};
 use crate::app::message::Message;
 use crate::app::moves::DepartWork;
-use crate::app::sheets::Asked;
 use crate::platform::dialogs;
 use super::Mareader;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which question a folder run answers; a boolean at the signature could
+/// not say. An ask is the reader's own import; a walk is the app keeping a
+/// watched folder's promise to itself.
+pub(in crate::app) enum Asked {
+    Explicitly,
+    OnFocus,
+}
 
 mod checks;
 mod claim;

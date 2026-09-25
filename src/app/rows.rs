@@ -19,9 +19,17 @@ use crate::library::{self, menus};
 use crate::platform::{fs, now_ms, progress};
 use crate::ui::toast::Tone;
 use super::message::Message;
-use super::sheets::{Asked, Covered, Sheet};
-use super::walk::{FsRun, GroundWatch, RootPlan, ShelfWatch, Stage};
+use super::sheets::Sheet;
+use super::walk::{Asked, FsRun, GroundWatch, RootPlan, ShelfWatch, Stage};
 use super::{LIBRARY_SCROLL, Mareader};
+
+/// The covered walk's own seat: the rung shelf the ground named, and the
+/// tree that walks it.
+pub(in crate::app) struct Covered {
+    pub(in crate::app) tree_root: String,
+    pub(in crate::app) shelf_id: String,
+    pub(in crate::app) shelf_name: String,
+}
 
 impl Mareader {
     /// The removal, and everything the library holds about the row going

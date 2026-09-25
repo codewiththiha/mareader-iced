@@ -20,8 +20,8 @@ use crate::ui::toast::Tone;
 use crate::{reader, storage};
 use super::message::{ContextRequest, MenuKind, Message};
 use super::selection::{Family, Hot, Press};
-use super::sheets::{Asked, RenameKind, Sheet};
-use super::walk::{RootPlan};
+use super::sheets::{RenameKind, Sheet};
+use super::walk::{Asked, RootPlan};
 use super::{FLASH_DWELL, Mareader};
 
 /// The fold panel's close waits out a diagonal crossing of its corner.

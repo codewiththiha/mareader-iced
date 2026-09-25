@@ -172,9 +172,10 @@ pub fn choice_group<'a, M: Clone + 'a>(
 /// The sheet's cancel button: quiet, outlined.
 pub fn cancel_button<'a, M: Clone + 'a>(
     tokens: Tokens,
-    label: &'a str,
+    label: impl Into<Cow<'a, str>>,
     message: M,
 ) -> Element<'a, M> {
+    let label: Cow<'a, str> = label.into();
     button(text(label).size(13).color(tokens.ink))
         .padding(Padding { top: 6.0, right: 14.0, bottom: 6.0, left: 14.0 })
         .style(move |_, status| {
@@ -198,10 +199,11 @@ pub fn cancel_button<'a, M: Clone + 'a>(
 /// danger red when the answer takes something away.
 pub fn confirm_button<'a, M: Clone + 'a>(
     tokens: Tokens,
-    label: &'a str,
+    label: impl Into<Cow<'a, str>>,
     message: M,
     danger: bool,
 ) -> Element<'a, M> {
+    let label: Cow<'a, str> = label.into();
     let fill = if danger { crate::theme::DANGER } else { tokens.accent };
     button(text(label).size(13).color(Color::WHITE))
         .padding(Padding { top: 6.0, right: 14.0, bottom: 6.0, left: 14.0 })

@@ -18,7 +18,6 @@ use crate::chrome::titlebar::{self};
 use crate::library::departure::CopyAnswer;
 use crate::library::drag::Band;
 use crate::reader;
-use super::sheets::MovedAsk;
 
 /// Which of the bar's panels is open, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,4 +269,12 @@ pub enum Message {
     ImportProgress(ImportProgress),
     /// Cycle the appearance base and persist the settings.
     CycleAppearance,
+}
+
+#[derive(Debug, Clone)]
+pub struct MovedAsk {
+    pub(super) book_id: String,
+    pub(super) title: Option<String>,
+    pub(super) path: String,
+    pub(super) home_shelf: Option<String>,
 }
