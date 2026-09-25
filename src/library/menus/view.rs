@@ -9,7 +9,7 @@ use library_core::view::{COLUMNS_MAX, COLUMNS_MIN, CoverFit, LibraryLayout, Libr
 use crate::app::Message;
 use crate::chrome::icons::IconName;
 use crate::theme::Tokens;
-use crate::ui::menu::{self, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 use super::VIEW_W;
 
 /// The sort keys in the order the menu lists them.
@@ -28,7 +28,7 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
     let mut size = PanelSize::new(VIEW_W);
 
     // The shelf itself.
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Plus),
         "New shelf",
@@ -36,12 +36,12 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         false,
         Some(Message::CreateShelf),
     ));
-    size = size.row(menu::ROW_H);
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    size = size.row(popover::ROW_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
     // The two layouts, checked by the one on screen.
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         None,
         "List",
@@ -49,8 +49,8 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         view.is_list(),
         Some(Message::SetLayout(LibraryLayout::List)),
     ));
-    size = size.row(menu::ROW_H);
-    rows.push(menu::item(
+    size = size.row(popover::ROW_H);
+    rows.push(popover::item(
         tokens,
         None,
         "Grid",
@@ -58,22 +58,22 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         !view.is_list(),
         Some(Message::SetLayout(LibraryLayout::Grid)),
     ));
-    size = size.row(menu::ROW_H);
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    size = size.row(popover::ROW_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
     // Columns: the stepper only exists for the grid.
     if view.columns_enabled() {
         rows.push(columns_row(tokens, view));
-        size = size.row(menu::ROW_H + 10.0);
-        rows.push(menu::separator(tokens));
-        size = size.row(menu::SEP_H);
+        size = size.row(popover::ROW_H + 10.0);
+        rows.push(popover::separator(tokens));
+        size = size.row(popover::SEP_H);
     }
 
     // The covers' fit.
-    rows.push(menu::section(tokens, "Book covers"));
-    size = size.row(menu::SECTION_H);
-    rows.push(menu::item(
+    rows.push(popover::section(tokens, "Book covers"));
+    size = size.row(popover::SECTION_H);
+    rows.push(popover::item(
         tokens,
         None,
         CoverFit::Fit.label(),
@@ -81,8 +81,8 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         view.cover == CoverFit::Fit,
         Some(Message::SetCover(CoverFit::Fit)),
     ));
-    size = size.row(menu::ROW_H);
-    rows.push(menu::item(
+    size = size.row(popover::ROW_H);
+    rows.push(popover::item(
         tokens,
         None,
         CoverFit::Crop.label(),
@@ -90,20 +90,20 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         view.cover == CoverFit::Crop,
         Some(Message::SetCover(CoverFit::Crop)),
     ));
-    size = size.row(menu::ROW_H);
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    size = size.row(popover::ROW_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
     // The sort: a direction pair while the key is not the reader's own
     // order, then the keys themselves.
-    rows.push(menu::section(tokens, "Sort by"));
-    size = size.row(menu::SECTION_H);
+    rows.push(popover::section(tokens, "Sort by"));
+    size = size.row(popover::SECTION_H);
     if !view.sort.is_manual() {
         rows.push(direction_row(tokens, view.sort_asc));
-        size = size.row(menu::TOGGLE_H + 8.0);
+        size = size.row(popover::TOGGLE_H + 8.0);
     }
     for key in SORTS {
-        rows.push(menu::item(
+        rows.push(popover::item(
             tokens,
             None,
             key.label(),
@@ -111,13 +111,13 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
             view.sort == key,
             Some(Message::SetSort(key)),
         ));
-        size = size.row(menu::ROW_H);
+        size = size.row(popover::ROW_H);
     }
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
     // The honest reset.
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Reload),
         "Reload Window",
@@ -125,9 +125,9 @@ pub fn view_menu<'a>(tokens: Tokens, view: &'a LibraryView) -> (Element<'a, Mess
         false,
         Some(Message::Reload),
     ));
-    size = size.row(menu::TALL_ROW_H);
+    size = size.row(popover::TALL_ROW_H);
 
-    (menu::popover(tokens, rows, VIEW_W), size.size())
+    (popover::panel(tokens, rows, VIEW_W), size.size())
 }
 
 /// The columns row: the label, the Auto pill, and the round steppers around
@@ -160,12 +160,12 @@ fn columns_row<'a>(tokens: Tokens, view: &'a LibraryView) -> Element<'a, Message
 
     let face = row![
         container(text("Columns").size(13).color(tokens.ink)).width(Length::Fill),
-        menu::toggle(tokens, None, "Auto", auto, if auto { None } else { Some(Message::AutoColumns) }),
-        menu::stepper_button(tokens, IconName::Minus, minus),
+        popover::toggle(tokens, None, "Auto", auto, if auto { None } else { Some(Message::AutoColumns) }),
+        popover::stepper_button(tokens, IconName::Minus, minus),
         container(text(step.face).size(12).color(tokens.ink))
             .width(20.0)
             .center_x(Length::Fill),
-        menu::stepper_button(tokens, IconName::Plus, plus),
+        popover::stepper_button(tokens, IconName::Plus, plus),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -180,14 +180,14 @@ fn columns_row<'a>(tokens: Tokens, view: &'a LibraryView) -> Element<'a, Message
 /// bed.
 fn direction_row(tokens: Tokens, ascending: bool) -> Element<'static, Message> {
     let face = row![
-        menu::toggle(
+        popover::toggle(
             tokens,
             Some(IconName::ChevronUp),
             "Ascending",
             ascending,
             Some(Message::SetSortAsc(true)),
         ),
-        menu::toggle(
+        popover::toggle(
             tokens,
             Some(IconName::ChevronDown),
             "Descending",

@@ -6,7 +6,7 @@ use iced::{Element, Size};
 use crate::app::Message;
 use crate::chrome::icons::IconName;
 use crate::theme::Tokens;
-use crate::ui::menu::{self, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 use super::CONTEXT_W;
 
 /// The selection row's face: a level holding a selection is offered the way
@@ -31,10 +31,10 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(CONTEXT_W);
 
-    rows.push(menu::section(tokens, format!("{count} selected")));
-    size = size.row(menu::SECTION_H);
+    rows.push(popover::section(tokens, format!("{count} selected")));
+    size = size.row(popover::SECTION_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Plus),
         "New shelf from these",
@@ -42,9 +42,9 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
         false,
         Some(Message::FileSelectionOnNewShelf),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Copy),
         format!("Duplicate ({count})"),
@@ -52,19 +52,19 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
         false,
         Some(Message::DuplicateSelection),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
-    rows.push(menu::danger_item(
+    rows.push(popover::danger_item(
         Some(IconName::Close),
         format!("Remove ({count})"),
         Message::AskRemoveSelection,
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Undo),
         "Clear selection",
@@ -72,7 +72,7 @@ pub fn selection_menu(tokens: Tokens, count: usize) -> (Element<'static, Message
         false,
         Some(Message::ClearSelection),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+    (popover::panel(tokens, rows, CONTEXT_W), size.size())
 }

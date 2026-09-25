@@ -1,4 +1,5 @@
-//! The floating menu panels: the popover vocabulary the shelf's bar speaks.
+//! The popover: the floating panel the library's menus, the bar's overflow and the
+//! reader's sheets anchor their rows in.
 //!
 //! The web app drew its menus as DOM popovers anchored to their buttons.
 //! Natively a menu is a layer on the application's stack, anchored at the
@@ -67,7 +68,7 @@ fn size_of(size: Size) -> ui_geom::floating::Size {
 }
 
 /// The panel frame: rows inside, the surface-popover card around them.
-pub fn popover<'a, M: Clone + 'a>(
+pub fn panel<'a, M: Clone + 'a>(
     tokens: Tokens,
     rows: Vec<Element<'a, M>>,
     width: f32,

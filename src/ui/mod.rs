@@ -3,6 +3,6 @@
 //! here, one module per primitive.
 
 pub mod buttons;
-pub mod menu;
+pub mod popover;
 pub mod sheet;
 pub mod toast;

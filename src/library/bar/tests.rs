@@ -3,7 +3,7 @@
 use super::overflow::{PANEL_ROW_H, ellipsis_anchor, panel_size};
 use crate::chrome::desktop;
 use crate::library::fold::{self, Crumb, ELLIPSIS_PX, FoldPlan};
-use crate::ui::menu::PAD;
+use crate::ui::popover::PAD;
 
 fn plan(widths: Vec<f32>, split: usize) -> FoldPlan {
     let chain = (0..widths.len() - 1)

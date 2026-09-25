@@ -6,7 +6,7 @@ use crate::app::message::{ContextTarget, MenuKind, Message};
 use crate::chrome::desktop;
 use crate::library::{self, bar, menus};
 use crate::library::fold::{self, FoldPlan};
-use crate::ui::menu as popover;
+use crate::ui::popover;
 use iced::{Alignment, Element, Length, Padding, Point, Size};
 use iced::widget::container;
 use library_core::book;

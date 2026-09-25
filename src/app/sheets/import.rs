@@ -4,7 +4,7 @@ use super::{Mareader, Sheet};
 use crate::chrome::icons::{IconName, icon};
 use crate::library::conflicts::ShelfConflictAsk;
 use crate::theme::{Tokens, wash};
-use crate::ui::{menu, sheet};
+use crate::ui::{popover, sheet};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Task};
 use iced::widget::{Column, Row, Space, container, row, text};
 use library_core::paths;
@@ -46,14 +46,14 @@ fn import_sheet(
     });
 
     let include_row = row![
-        menu::toggle(
+        popover::toggle(
             tokens,
             None,
             "Include selected",
             opts.include_selected,
             Some(Message::SheetImportInclude(true)),
         ),
-        menu::toggle(
+        popover::toggle(
             tokens,
             None,
             "Exclude selected",
@@ -68,7 +68,7 @@ fn import_sheet(
     for chunk in selectable_formats().chunks(2) {
         let mut line = Row::new().spacing(6);
         for format in chunk {
-            line = line.push(menu::toggle(
+            line = line.push(popover::toggle(
                 tokens,
                 None,
                 format.label(),
@@ -94,9 +94,9 @@ fn import_sheet(
                 ..container::Style::default()
             }),
         Space::new().width(Length::Fill),
-        menu::stepper_button(tokens, IconName::Minus,
+        popover::stepper_button(tokens, IconName::Minus,
             (!at_floor).then_some(Message::SheetImportSize(-1))),
-        menu::stepper_button(tokens, IconName::Plus,
+        popover::stepper_button(tokens, IconName::Plus,
             (!at_ceil).then_some(Message::SheetImportSize(1))),
     ]
     .spacing(6)
@@ -107,21 +107,21 @@ fn import_sheet(
     // can show, and every click writes both switches from the mode picked.
     let mode = opts.mode();
     let books_rows = Column::new()
-        .push(menu::toggle(
+        .push(popover::toggle(
             tokens,
             None,
             FolderMode::Copy.label(),
             mode == FolderMode::Copy,
             Some(Message::SheetImportMode(FolderMode::Copy)),
         ))
-        .push(menu::toggle(
+        .push(popover::toggle(
             tokens,
             None,
             FolderMode::LinkInPlace.label(),
             mode == FolderMode::LinkInPlace,
             Some(Message::SheetImportMode(FolderMode::LinkInPlace)),
         ))
-        .push(menu::toggle(
+        .push(popover::toggle(
             tokens,
             None,
             FolderMode::LinkInPlaceWatched.label(),
@@ -133,14 +133,14 @@ fn import_sheet(
 
     // The structure answer, and the promise it makes about the tree.
     let structure_rows = Column::new()
-        .push(menu::toggle(
+        .push(popover::toggle(
             tokens,
             None,
             "A shelf for each folder",
             opts.groups,
             Some(Message::SheetImportGroups(true)),
         ))
-        .push(menu::toggle(
+        .push(popover::toggle(
             tokens,
             None,
             "One shelf for everything",

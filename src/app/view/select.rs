@@ -5,7 +5,7 @@ use crate::app::message::Message;
 use crate::app::selection::SELECT_POP_W;
 use crate::chrome::icons::IconName;
 use crate::theme::{Elevation, Tokens, wash};
-use crate::ui::menu as popover;
+use crate::ui::popover;
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow};
 use iced::widget::{Column, button, container, mouse_area, row, text};
 use library_core::shelf::{self, ALL_SHELF};
@@ -142,6 +142,6 @@ impl Mareader {
             false,
             Some(Message::FileSelectionOnNewShelf),
         ));
-        popover::popover(self.tokens, rows, SELECT_POP_W)
+        popover::panel(self.tokens, rows, SELECT_POP_W)
     }
 }

@@ -7,7 +7,7 @@ use library_core::book::Row;
 use crate::app::Message;
 use crate::chrome::icons::IconName;
 use crate::theme::Tokens;
-use crate::ui::menu::{self, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 use super::CONTEXT_W;
 
 /// The right-click on a book or a link: open it, choose it, rename it,
@@ -19,7 +19,7 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
 
     match row {
         Row::Book(book) => {
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Open),
                 "Open",
@@ -27,9 +27,9 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 Some(Message::OpenBook(book.id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Check),
                 "Select",
@@ -37,9 +37,9 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 Some(Message::SelectRow(book.id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Pencil),
                 "Rename…",
@@ -47,12 +47,12 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 Some(Message::AskRenameRow(book.id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
             // The duplicate of a book whose address died is a duplicate of
             // nothing: the row stands disabled, the web's own off-when-dead
             // rule.
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Copy),
                 "Duplicate",
@@ -60,9 +60,9 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 (!book.missing).then(|| Message::DuplicateRow(book.id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Folder),
                 "Reveal in folder",
@@ -70,14 +70,14 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 (!book.missing).then(|| Message::RevealRow(book.id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
         }
         Row::Link { id, target, .. } => {
             // A link opens onto the shelf it points at — when it still
             // points at one.
             let open = library_core::id::is_shelf(target)
                 .then(|| Message::Navigate(target.clone()));
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Open),
                 "Open shelf",
@@ -85,9 +85,9 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 open,
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Check),
                 "Select",
@@ -95,9 +95,9 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 Some(Message::SelectRow(id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Pencil),
                 "Rename…",
@@ -105,12 +105,12 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 Some(Message::AskRenameRow(id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
 
             // A link at a book duplicates into the library's own copy of
             // what it opens; a link at a shelf stays a pointer, filed
             // beside the first.
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(IconName::Copy),
                 "Duplicate",
@@ -118,18 +118,18 @@ pub fn row_menu(tokens: Tokens, row: &Row) -> (Element<'static, Message>, Size) 
                 false,
                 Some(Message::DuplicateRow(id.clone())),
             ));
-            size = size.row(menu::ROW_H);
+            size = size.row(popover::ROW_H);
         }
     }
 
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
     let (label, message) = removal_row(row);
-    rows.push(menu::danger_item(None, label, message));
-    size = size.row(menu::ROW_H);
+    rows.push(popover::danger_item(None, label, message));
+    size = size.row(popover::ROW_H);
 
-    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+    (popover::panel(tokens, rows, CONTEXT_W), size.size())
 }
 
 /// The removal row a row's own shape asks for: a link is a pointer rather

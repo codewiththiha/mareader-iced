@@ -6,7 +6,7 @@ use iced::{Element, Size};
 use crate::app::Message;
 use crate::chrome::icons::IconName;
 use crate::theme::Tokens;
-use crate::ui::menu::{self, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 use super::{selection_row, CONTEXT_W, SHELF_W};
 
 /// The shelf's own menu, hung off the last crumb: rename it, or take it
@@ -18,7 +18,7 @@ pub fn shelf_menu(tokens: Tokens, shelf: &str) -> (Element<'static, Message>, Si
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(SHELF_W);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Type),
         "Rename…",
@@ -26,9 +26,9 @@ pub fn shelf_menu(tokens: Tokens, shelf: &str) -> (Element<'static, Message>, Si
         false,
         Some(Message::StartRename),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Copy),
         "Duplicate",
@@ -36,9 +36,9 @@ pub fn shelf_menu(tokens: Tokens, shelf: &str) -> (Element<'static, Message>, Si
         false,
         Some(Message::DuplicateShelf(shelf.to_string())),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Close),
         "Remove shelf",
@@ -46,9 +46,9 @@ pub fn shelf_menu(tokens: Tokens, shelf: &str) -> (Element<'static, Message>, Si
         false,
         Some(Message::RemoveShelf),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    (menu::popover(tokens, rows, SHELF_W), size.size())
+    (popover::panel(tokens, rows, SHELF_W), size.size())
 }
 
 /// Right-click on the level's own floor: make a shelf here, and — when the
@@ -62,7 +62,7 @@ pub fn level_menu(
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(CONTEXT_W);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Plus),
         "New shelf",
@@ -70,13 +70,13 @@ pub fn level_menu(
         false,
         Some(Message::CreateShelf),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
     if anything {
         let face = selection_row(selecting);
-        rows.push(menu::item(tokens, Some(face.icon), face.label, None, false, Some(face.message)));
-        size = size.row(menu::ROW_H);
+        rows.push(popover::item(tokens, Some(face.icon), face.label, None, false, Some(face.message)));
+        size = size.row(popover::ROW_H);
     }
 
-    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+    (popover::panel(tokens, rows, CONTEXT_W), size.size())
 }

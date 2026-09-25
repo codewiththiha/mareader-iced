@@ -6,7 +6,7 @@ use crate::chrome::icons::{IconName, icon};
 use crate::library::fold::{self, FoldPlan};
 use crate::theme::{Tokens, wash};
 use crate::ui::buttons;
-use crate::ui::menu::{self as popover, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 
 use super::crumbs::{armed, crumb_label};
 use iced::widget::{Row, button, container, mouse_area, text};
@@ -109,7 +109,7 @@ pub fn ellipsis_panel(
         );
     }
 
-    let panel = popover::popover(tokens, row_els, size.width);
+    let panel = popover::panel(tokens, row_els, size.width);
     let panel = mouse_area(panel)
         .on_enter(Message::EllipsisHover(true))
         .on_exit(Message::EllipsisHover(false));

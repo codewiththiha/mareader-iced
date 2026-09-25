@@ -7,7 +7,7 @@ use library_core::shelf::Shelf;
 use crate::app::Message;
 use crate::chrome::icons::IconName;
 use crate::theme::Tokens;
-use crate::ui::menu::{self, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 use super::CONTEXT_W;
 
 /// The watch row's face: the toggle the folder context menu shows, with its
@@ -32,7 +32,7 @@ pub fn folder_menu(
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     let mut size = PanelSize::new(CONTEXT_W);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Open),
         "Open shelf",
@@ -40,9 +40,9 @@ pub fn folder_menu(
         false,
         Some(Message::Navigate(shelf.id.clone())),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Check),
         "Select",
@@ -50,9 +50,9 @@ pub fn folder_menu(
         false,
         Some(Message::SelectRow(shelf.id.clone())),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Pencil),
         "Rename…",
@@ -60,12 +60,12 @@ pub fn folder_menu(
         false,
         Some(Message::AskRenameShelf(shelf.id.clone())),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
     // A second tree of the reader's own, holding fresh copies of the books:
     // never a second door onto the same rows, and never a second shelf of
     // one directory — the copy of a folder shelf is virtual like any other.
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Copy),
         "Duplicate",
@@ -73,10 +73,10 @@ pub fn folder_menu(
         false,
         Some(Message::DuplicateShelf(shelf.id.clone())),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
     if let Some(watch) = watch {
-        rows.push(menu::item(
+        rows.push(popover::item(
             tokens,
             Some(watch.icon),
             watch.label,
@@ -84,10 +84,10 @@ pub fn folder_menu(
             false,
             Some(watch.message),
         ));
-        size = size.row(menu::TALL_ROW_H);
+        size = size.row(popover::TALL_ROW_H);
     }
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Plus),
         "New shelf",
@@ -95,13 +95,13 @@ pub fn folder_menu(
         false,
         Some(Message::NewShelfInside(shelf.id.clone())),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::separator(tokens));
-    size = size.row(menu::SEP_H);
+    rows.push(popover::separator(tokens));
+    size = size.row(popover::SEP_H);
 
-    rows.push(menu::danger_item(None, "Take shelf apart", Message::TakeApart(shelf.id.clone())));
-    size = size.row(menu::ROW_H);
+    rows.push(popover::danger_item(None, "Take shelf apart", Message::TakeApart(shelf.id.clone())));
+    size = size.row(popover::ROW_H);
 
-    (menu::popover(tokens, rows, CONTEXT_W), size.size())
+    (popover::panel(tokens, rows, CONTEXT_W), size.size())
 }

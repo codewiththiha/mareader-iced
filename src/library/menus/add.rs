@@ -9,7 +9,7 @@ use iced::{Element, Length, Padding, Size};
 use crate::app::Message;
 use crate::chrome::icons::IconName;
 use crate::theme::Tokens;
-use crate::ui::menu::{self, PanelSize};
+use crate::ui::popover::{self, PanelSize};
 use super::{ADD_W, MenuLine};
 
 /// The add menu's folder-side facts, computed when the panel is built.
@@ -48,7 +48,7 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
     let mut size = PanelSize::new(ADD_W);
 
     if let Some(confirm) = &facts.confirm {
-        rows.push(menu::item(
+        rows.push(popover::item(
             tokens,
             Some(confirm.back.icon),
             confirm.back.label.clone(),
@@ -56,10 +56,10 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
             false,
             confirm.back.message.clone(),
         ));
-        size = size.row(menu::ROW_H);
+        size = size.row(popover::ROW_H);
 
-        rows.push(menu::separator(tokens));
-        size = size.row(menu::SEP_H);
+        rows.push(popover::separator(tokens));
+        size = size.row(popover::SEP_H);
 
         rows.push(
             container(text(confirm.question.clone()).size(12).color(tokens.muted))
@@ -67,9 +67,9 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
                 .padding(Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 })
                 .into(),
         );
-        size = size.row(menu::ROW_H);
+        size = size.row(popover::ROW_H);
 
-        rows.push(menu::item(
+        rows.push(popover::item(
             tokens,
             Some(confirm.also.icon),
             confirm.also.label.clone(),
@@ -77,9 +77,9 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
             false,
             confirm.also.message.clone(),
         ));
-        size = size.row(menu::TALL_ROW_H);
+        size = size.row(popover::TALL_ROW_H);
 
-        rows.push(menu::item(
+        rows.push(popover::item(
             tokens,
             Some(confirm.go.icon),
             confirm.go.label.clone(),
@@ -87,12 +87,12 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
             false,
             confirm.go.message.clone(),
         ));
-        size = size.row(menu::TALL_ROW_H);
+        size = size.row(popover::TALL_ROW_H);
 
-        return (menu::popover(tokens, rows, ADD_W), size.size());
+        return (popover::panel(tokens, rows, ADD_W), size.size());
     }
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Open),
         "Choose files…",
@@ -100,9 +100,9 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
         false,
         Some(Message::PickFiles),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
-    rows.push(menu::item(
+    rows.push(popover::item(
         tokens,
         Some(IconName::Library),
         "Choose a folder…",
@@ -110,13 +110,13 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
         false,
         Some(Message::PickFolder),
     ));
-    size = size.row(menu::ROW_H);
+    size = size.row(popover::ROW_H);
 
     if let Some(line) = &facts.from_folder {
-        rows.push(menu::separator(tokens));
-        size = size.row(menu::SEP_H);
+        rows.push(popover::separator(tokens));
+        size = size.row(popover::SEP_H);
 
-        rows.push(menu::item(
+        rows.push(popover::item(
             tokens,
             Some(line.icon),
             line.label.clone(),
@@ -124,18 +124,18 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
             false,
             line.message.clone(),
         ));
-        size = size.row(menu::TALL_ROW_H);
+        size = size.row(popover::TALL_ROW_H);
     }
 
     if !facts.restore.is_empty() {
-        rows.push(menu::separator(tokens));
-        size = size.row(menu::SEP_H);
+        rows.push(popover::separator(tokens));
+        size = size.row(popover::SEP_H);
 
-        rows.push(menu::section(tokens, "Restore"));
-        size = size.row(menu::SECTION_H);
+        rows.push(popover::section(tokens, "Restore"));
+        size = size.row(popover::SECTION_H);
 
         for line in &facts.restore {
-            rows.push(menu::item(
+            rows.push(popover::item(
                 tokens,
                 Some(line.icon),
                 line.label.clone(),
@@ -143,9 +143,9 @@ pub fn add_menu(tokens: Tokens, facts: &AddFacts) -> (Element<'static, Message>,
                 false,
                 line.message.clone(),
             ));
-            size = size.row(menu::TALL_ROW_H);
+            size = size.row(popover::TALL_ROW_H);
         }
     }
 
-    (menu::popover(tokens, rows, ADD_W), size.size())
+    (popover::panel(tokens, rows, ADD_W), size.size())
 }
