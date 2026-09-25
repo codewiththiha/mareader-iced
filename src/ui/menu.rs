@@ -272,24 +272,26 @@ pub fn toggle<'a, M: Clone + 'a>(
     }
 }
 
-/// A round stepper button: the columns minus and plus. Idle on the line's
-/// wash, solid under the pointer, muted and dead when disabled.
+/// A round stepper button: the columns' minus and plus, and the size row's own
+/// adjusters. Idle on the line's bed, solid under the pointer; a dead one wears
+/// the web's 40% of that bed with a muted glyph.
 pub fn stepper_button<M: Clone + 'static>(
     tokens: Tokens,
     glyph: IconName,
     message: Option<M>,
 ) -> Element<'static, M> {
-    let idle = wash(tokens.line, 0.60);
-    let action = button(icon(glyph, 13, tokens.ink))
+    let live = message.is_some();
+    let idle = wash(tokens.line, if live { 0.60 } else { 0.24 });
+    let ink = if live { tokens.ink } else { tokens.muted };
+    let action = button(icon(glyph, 13, ink))
         .width(22.0)
         .height(22.0)
         .padding(0)
         .style(move |_, status| {
             let (background, text_color) = match status {
-                button::Status::Hovered => (Some(tokens.line), tokens.ink),
-                button::Status::Pressed => (Some(mix(tokens.line, tokens.ink, 0.25)), tokens.ink),
-                button::Status::Disabled => (Some(idle), tokens.muted),
-                button::Status::Active => (Some(idle), tokens.ink),
+                button::Status::Hovered if live => (Some(tokens.line), tokens.ink),
+                button::Status::Pressed if live => (Some(mix(tokens.line, tokens.ink, 0.25)), tokens.ink),
+                _ => (Some(idle), ink),
             };
             button::Style {
                 background: background.map(Background::Color),

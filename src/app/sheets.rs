@@ -237,8 +237,10 @@ fn import_sheet(
                 ..container::Style::default()
             }),
         Space::new().width(Length::Fill),
-        stepper(tokens, IconName::Minus, !at_floor, Message::SheetImportSize(-1)),
-        stepper(tokens, IconName::Plus, !at_ceil, Message::SheetImportSize(1)),
+        menu::stepper_button(tokens, IconName::Minus,
+            (!at_floor).then_some(Message::SheetImportSize(-1))),
+        menu::stepper_button(tokens, IconName::Plus,
+            (!at_ceil).then_some(Message::SheetImportSize(1))),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -337,27 +339,6 @@ fn mode_note(mode: FolderMode, in_ground: bool) -> &'static str {
         FolderMode::LinkInPlaceWatched => {
             "Books stay where they are, and the folder is checked for new ones when the app opens or you come back to it."
         }
-    }
-}
-
-/// The size threshold's round adjuster.
-pub(super) fn stepper(tokens: Tokens, glyph: IconName, enabled: bool, message: Message) -> Element<'static, Message> {
-    let face = container(icon(glyph, 13, if enabled { tokens.ink } else { tokens.muted }))
-        .padding(5.0);
-    let action = button(face).style(move |_, status| button::Style {
-        background: Some(Background::Color(match status {
-            button::Status::Hovered | button::Status::Pressed if enabled => wash(tokens.line, 0.60),
-            _ => wash(tokens.line, 0.35),
-        })),
-        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
-        text_color: tokens.ink,
-        shadow: Shadow::default(),
-        snap: false,
-    });
-    if enabled {
-        action.on_press(message).into()
-    } else {
-        action.into()
     }
 }
 
