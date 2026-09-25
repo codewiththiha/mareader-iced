@@ -782,7 +782,10 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   `library_core::testkit`, the bar reads the fold's one packing (`fold::pack_elided`),
   the menus' decisions are pure functions with tests, and the two remaining god files
   in the shelf are gone: `conflicts.rs` is `conflicts/{mod,planned,naming,words}.rs` and
-  `departure.rs` is `departure/{mod,leaving,returning,shelves,log,tests}.rs`. Next in the
+  `departure.rs` is `departure/{mod,leaving,returning,shelves,log,tests}.rs`. The eight split
+  folders lost their `tests.rs` after that: every case moved into the file that covers it, its
+  fixtures into that folder's `kit.rs` — 284 tests before and after, the same names and the
+  same assertions — so a subject and the cases that prove it now share one file. Next in the
   queue is `src/app.rs` — 7,833 lines behind a frozen `Message`/`update`/`view` surface.
   The first took the shell's dead weight out: `theme::fade` was a byte-identical twin of
   `theme::wash` (a colour at a fraction of its own alpha) and 90 sites spelled it both
