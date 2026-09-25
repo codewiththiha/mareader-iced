@@ -14,7 +14,15 @@ use crate::library::drag::{
 use crate::library::{self};
 use super::Mareader;
 use super::message::Message;
-use super::walk::{FOLD_DWELL_MS, SINK_DWELL_MS};
+
+
+/// A rest over a card brews the fold: long enough that a reorder crossing it
+/// never mints a shelf, short enough that nobody waits.
+const FOLD_DWELL_MS: u128 = 650;
+
+/// Shorter than the fold's: a full-size ghost hides the very crumb being aimed
+/// at, so a rest this long parks it, shrunk.
+const SINK_DWELL_MS: u128 = 420;
 
 /// A hold in flight: the cell the press landed on, where it landed, and
 /// when it started. A press that moves past the drag's threshold stops

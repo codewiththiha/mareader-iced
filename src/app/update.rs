@@ -21,8 +21,11 @@ use crate::{reader, storage};
 use super::message::{ContextRequest, MenuKind, Message};
 use super::selection::{Family, Hot, Press};
 use super::sheets::{Asked, RenameKind, Sheet};
-use super::walk::{ELLIPSIS_GRACE_MS, RootPlan};
+use super::walk::{RootPlan};
 use super::{FLASH_DWELL, Mareader};
+
+/// The fold panel's close waits out a diagonal crossing of its corner.
+const ELLIPSIS_GRACE_MS: u64 = 220;
 
 impl Mareader {
     #[allow(clippy::too_many_lines)]

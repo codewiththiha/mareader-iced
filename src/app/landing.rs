@@ -8,6 +8,7 @@ use iced::time::Instant;
 use library_core::book::{self, Book, Fingerprint, Origin};
 use library_core::conflict::Placement;
 use library_core::folder::{self as folder_ops};
+use library_core::folder::Tombstone;
 use library_core::ledger::{self, Recovered};
 use library_core::scan::FoundFile;
 use library_core::shelf::{self, ALL_SHELF};
@@ -25,7 +26,17 @@ use super::copies::{CopiesDest, PendingCopy};
 use super::message::Message;
 use super::moves::{DepartLand, DepartWork};
 use super::sheets::{Asked, MovedAsk};
-use super::walk::{removed_sublabel, Claim, FilesPlan, FsRun, RootPlan, Stage};
+use super::walk::{Claim, FilesPlan, FsRun, RootPlan, Stage};
+
+/// The removed row's second line: when the reader took the book out, and —
+/// remembered — how big the promise is.
+pub(super) fn removed_sublabel(entry: &Tombstone, stamp: u64) -> String {
+    let age = lib_text::human_age(entry.removed_ms, stamp);
+    match entry.fp.mtime_ms {
+        0 => format!("removed {age}"),
+        _ => format!("removed {age} · {}", lib_text::human_size(entry.fp.size)),
+    }
+}
 
 impl Mareader {
     /// "As new": a moved row is renamed and then moved — the rename is

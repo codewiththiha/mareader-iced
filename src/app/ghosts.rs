@@ -13,7 +13,11 @@ use crate::library::drag::{DragPayload, FoldPreview};
 use crate::theme::{mix, Elevation, Tokens};
 use super::message::Message;
 use super::selection::Drag;
-use super::walk::SUNK_SCALE;
+
+
+/// The sunk ghost's scale: a third of its size is what keeps the crumb it
+/// covers readable.
+const SUNK_SCALE: f32 = 0.38;
 
 /// The ghost's box: the web layer's own 9rem cover at A4 proportion
 /// (drag.css's 144×204), plus the fan's headroom — the reference shifts

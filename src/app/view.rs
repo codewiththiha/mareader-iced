@@ -21,7 +21,10 @@ use super::Mareader;
 use super::ghosts::ghost_layer;
 use super::message::{ContextTarget, MenuKind, Message};
 use super::selection::SELECT_POP_W;
-use super::walk::{CENTER_FLOOR, FsRun, Stage};
+use super::walk::{FsRun, Stage};
+
+/// What the fold keeps for the search before it starts hiding levels.
+const CENTER_FLOOR: f32 = 400.0;
 
 /// The scrim under an open menu: transparent, window-wide, and closing the
 /// menu on any press that reaches it.
