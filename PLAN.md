@@ -819,6 +819,10 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   mode and the sheet under the reader's eyes; the three scales kept apart — `desired`,
   the reader's own and the ceiling a hand-picked zoom resolves to, `display`, what the
   painter reads this frame, and `committed`, the only scale a raster is ever asked at;
+  The frame followed the god files: `app/view.rs` is `app/view/{mod,bar,layers,dock,select}.rs`
+  now — the route's own view, the titlebar, the overlays, the runs' dock and the selection's bar —
+  and the toggle the sheet's option rows and the view menu's pills both draw is one builder again,
+  wearing the chip the web's `ToggleButton` calls its default.
   and one transition, 120 ms on an out-cubic curve, retargeted from wherever the eye is
   when a second press lands mid-flight. A window drag is a *follow*: the layout is in
   the new window on the frame the size was reported — a scale that waited for the drag
