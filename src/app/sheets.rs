@@ -19,7 +19,6 @@ use crate::ui::menu;
 use crate::ui::sheet;
 use super::Mareader;
 use super::message::Message;
-use super::view::stepper;
 use super::walk::{Continuation, GroundWatch, RootPlan};
 
 /// The sheet's rename field's identity — focus lands on it the moment the
@@ -338,6 +337,27 @@ fn mode_note(mode: FolderMode, in_ground: bool) -> &'static str {
         FolderMode::LinkInPlaceWatched => {
             "Books stay where they are, and the folder is checked for new ones when the app opens or you come back to it."
         }
+    }
+}
+
+/// The size threshold's round adjuster.
+pub(super) fn stepper(tokens: Tokens, glyph: IconName, enabled: bool, message: Message) -> Element<'static, Message> {
+    let face = container(icon(glyph, 13, if enabled { tokens.ink } else { tokens.muted }))
+        .padding(5.0);
+    let action = button(face).style(move |_, status| button::Style {
+        background: Some(Background::Color(match status {
+            button::Status::Hovered | button::Status::Pressed if enabled => wash(tokens.line, 0.60),
+            _ => wash(tokens.line, 0.35),
+        })),
+        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 999.0.into() },
+        text_color: tokens.ink,
+        shadow: Shadow::default(),
+        snap: false,
+    });
+    if enabled {
+        action.on_press(message).into()
+    } else {
+        action.into()
     }
 }
 
