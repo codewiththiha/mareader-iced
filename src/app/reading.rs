@@ -17,7 +17,8 @@ use super::message::Message;
 
 impl Mareader {
     /// The window's new size, to the reading surface. The chrome is an overlay,
-    /// so the reading area is the window itself and nothing is subtracted.
+    /// so the reading area is the window itself; only the reader's own rail
+    /// takes a bite out of it, and the reader is the one holding its width.
     pub(super) fn reader_resize(&mut self, size: Size) -> Task<Message> {
         let effects = self
             .reader
@@ -115,6 +116,17 @@ impl Mareader {
                         y: (axis == Axis::Vertical).then_some(offset),
                     };
                     scrolls.push(operation::scroll_to(reader::SCROLL_ID, absolute));
+                }
+                reader::Effect::Outline(offset) => {
+                    // The rail's own list is a second widget with a name of its
+                    // own: the same door, another surface.
+                    scrolls.push(operation::scroll_to(
+                        reader::OUTLINE_ID,
+                        scrollable::AbsoluteOffset {
+                            x: None,
+                            y: Some(offset),
+                        },
+                    ));
                 }
             }
         }

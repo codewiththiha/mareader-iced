@@ -29,13 +29,13 @@ pub(super) const PLATE_DEPTH: usize = 2;
 /// How many characters fit a line of `size`px text in `width` — the elision
 /// budget. iced has no line-clamp; the shelf's texts are pre-cut to the
 /// lines their block reserves so a long title cannot grow its card.
-pub(super) fn chars_per_line(width: f32, size: f32) -> usize {
+pub(crate) fn chars_per_line(width: f32, size: f32) -> usize {
     ((width / (size * 0.52)) as usize).max(4)
 }
 
 /// Cut `s` to `max_chars` characters with an ellipsis — character-based on
 /// purpose, since the budget above counts characters too.
-pub(super) fn elide(s: &str, max_chars: usize) -> String {
+pub(crate) fn elide(s: &str, max_chars: usize) -> String {
     let count = s.chars().count();
     if count <= max_chars {
         return s.to_owned();

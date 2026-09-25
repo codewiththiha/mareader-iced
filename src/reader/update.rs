@@ -15,7 +15,7 @@ use crate::ui::toast::Tone;
 use super::keys::{self, Nav};
 use super::page;
 use super::zoom::Command;
-use super::{Open, Read, Reader};
+use super::{Action, Open, Read, Reader};
 
 /// Everything the reader can be told.
 #[derive(Debug, Clone)]
@@ -35,14 +35,16 @@ pub enum Message {
     /// The strip's own report: where the surface it draws came to rest along the
     /// axis the mode scrolls.
     Scrolled(f64),
+    /// The rail — its panel, its switcher, the chapter the reader chose.
+    Sidebar(Action),
     /// A wheel notch the surface did not take, in lines with down positive —
     /// the convention every other scrolling surface answers to.
     Wheel(f32),
     /// The view mode was chosen — one page, a spread, the continuous column, the
     /// horizontal strip.
     Mode(ViewMode),
-    /// The window moved. The reading area is the window: the chrome is an
-    /// overlay, so nothing is subtracted.
+    /// The window moved. The reading area is the window less the rail's window,
+    /// when the rail takes one — see `Reader::resize`.
     Resized(Size),
     /// The display's scale factor moved.
     Scale(f64),
@@ -86,6 +88,9 @@ pub enum Effect {
         axis: Axis,
         offset: f64,
     },
+    /// Put the rail's own list where the panel asked: the chapter the reader
+    /// moved to, kept in view. Same door as the strip's, other surface.
+    Outline(f32),
 }
 
 impl Reader {
@@ -104,6 +109,7 @@ impl Reader {
             Message::Key { key, shift } => self.nav(key, shift),
             Message::Scrolled(along) => self.scrolled(along),
             Message::Wheel(lines) => self.wheel(lines),
+            Message::Sidebar(action) => self.rail(action),
             Message::Mode(mode) => {
                 self.set_mode(mode);
                 Vec::new()
@@ -140,11 +146,16 @@ impl Reader {
             Message::Tick => self.on_tick(now),
             Message::Close => self.close(),
         };
+        // The reading area follows the rail before the strip is measured against
+        // it: a window a slide has just moved lays the same pages out somewhere
+        // else.
+        self.sync_area();
         // The strip is reconciled after EVERY message rather than from each arm:
         // a mode, a fit, a scale and a window all move it, and the geometry
         // compares its own inputs, so a message that moved none of them costs
         // one comparison.
         effects.extend(self.reflow());
+        effects.extend(self.rail_effects());
         effects
     }
 
@@ -153,6 +164,9 @@ impl Reader {
     fn on_tick(&mut self, now: Instant) -> Vec<Effect> {
         let delta = now.saturating_duration_since(self.last_tick).as_secs_f64() * 1000.0;
         self.last_tick = now;
+        // The rail's own clock: its slide, and the grace a floating one waits
+        // out after the pointer leaves it — which is what closes it.
+        self.sidebar.step(delta);
         // A cover that waited out its grace lifts here whatever the rasters did:
         // a render that never arrives must not strand the reader on paper.
         self.cover_expired(now);
@@ -211,6 +225,7 @@ impl Reader {
             || self.glide.is_some()
             || self.anchor.as_ref().is_some_and(|anchor| !anchor.spent())
             || self.progress.owes(self.viewer.page)
+            || self.sidebar.ticking()
             || self.cover_up()
     }
 

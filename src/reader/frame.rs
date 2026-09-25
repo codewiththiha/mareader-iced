@@ -220,17 +220,37 @@ impl Reader {
 
     /// The window changed size.
     ///
-    /// The space around the page is a *follow*, not a refit: the layout moves
-    /// with the window every time it is reported — a scale that waited for the
-    /// drag to end would leave the page wider than its box, and the flex
-    /// arithmetic that would have to squish it is exactly what the web app
-    /// refused to do — while the crisp raster waits for the burst to go quiet,
-    /// so a drag costs one render rather than one per frame.
+    /// The space around the page is a *follow*, not a refit: the area moves with
+    /// the window every time it is reported — a scale that waited for the drag to
+    /// end would leave the page wider than its box — while the crisp raster waits
+    /// for the burst to go quiet, so a drag costs one render, not one per frame.
     pub(super) fn resize(&mut self, size: Size) {
-        self.viewer.container = size;
+        self.window = size;
+        self.sync_area();
+    }
+
+    /// The reading area follows the rail.
+    ///
+    /// Docked, the page gives up the rail's window and the fit follows it the way
+    /// it follows a resize; floating, the area is the window. Every frame of the
+    /// slide moves it, so this is asked on the update loop rather than from the
+    /// messages that move the rail. A window nobody has reported changes nothing,
+    /// so a reader driven by its own tests keeps the container its caller gave it.
+    pub(super) fn sync_area(&mut self) {
+        if self.window.width <= 1.0 {
+            return;
+        }
+        let area = Size::new(
+            (self.window.width - self.sidebar.slot()).max(1.0),
+            self.window.height,
+        );
+        if area == self.viewer.container {
+            return;
+        }
+        self.viewer.container = area;
         if self.document.status.is_ready() {
-            // The strip is reconciled with the new window by the update loop,
-            // on this same frame.
+            // The strip is reconciled with the new area by the update loop, on
+            // this same frame.
             self.zoom_command(Command::Follow, false);
         }
     }

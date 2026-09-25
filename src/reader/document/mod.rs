@@ -77,6 +77,9 @@ pub struct Document {
     /// once page 1 was on screen, because resolving destinations is not free).
     /// Empty until it answers, and empty for a book without one.
     pub outline: Vec<OutlineNode>,
+    /// Whether the tree has been asked for and has not answered yet: the panel
+    /// shows a resolving state rather than "no outline" until it lands.
+    pub outline_pending: bool,
     /// What went wrong, in the reader's own words.
     pub error: Option<String>,
     /// The name the surfaces show — the bar's centre, the error card, the
@@ -102,6 +105,7 @@ impl Document {
         self.num_pages = 0;
         self.sizes.clear();
         self.outline.clear();
+        self.outline_pending = false;
         self.error = None;
         self.resume = open.resume;
         // The book already has a name at this point — the row's, or the

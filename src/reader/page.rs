@@ -1,23 +1,23 @@
 //! The reading surface: the pages, the strip that scrolls them, the cover over a
-//! fresh mount, and the bar that moves it all.
+//! fresh mount, the bar that moves it all, and the rail beside it.
 
 mod bar;
 mod sheet;
 mod single;
 mod stream;
 
-use iced::widget::{button, column, container, stack, text, Space};
+use iced::widget::{button, column, container, row, stack, text, Space};
 use iced::{Alignment, Background, Element, Length, Padding};
 
 use super::document::DocStatus;
+use super::sidebar;
 use super::{Message, Reader};
 use crate::theme::Tokens;
 use crate::ui::buttons;
 
 /// The surface.
 pub(super) fn view(reader: &Reader, tokens: Tokens) -> Element<'_, Message> {
-    let sheet = stack(vec![reading_area(reader, tokens), bar::view(reader, tokens)]);
-    container(sheet)
+    container(desk(reader, tokens))
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_| container::Style {
@@ -25,6 +25,33 @@ pub(super) fn view(reader: &Reader, tokens: Tokens) -> Element<'_, Message> {
             ..container::Style::default()
         })
         .into()
+}
+
+/// The reading area and the chrome over it, with the rail beside or over it: a
+/// sibling the page gives up width for, or a layer on top of it. Either way the
+/// rail's own open and close is one motion (see `sidebar::rail`).
+fn desk<'a>(reader: &'a Reader, tokens: Tokens) -> Element<'a, Message> {
+    let book: Element<'a, Message> =
+        stack(vec![reading_area(reader, tokens), bar::view(reader, tokens)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    if reader.sidebar.docks() {
+        return row![sidebar::docked(reader, tokens), book]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
+    // The rail over the page, and the edge that opens it out of the window's
+    // own left border.
+    stack(vec![
+        book,
+        sidebar::floating(reader, tokens),
+        sidebar::edge(reader),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 /// What fills the reading area: the book, or the cover over a mount still racing

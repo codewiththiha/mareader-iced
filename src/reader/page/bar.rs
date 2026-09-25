@@ -12,6 +12,7 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shado
 use reader_core::outline::active_entry;
 use reader_core::view::ViewMode;
 use reader_core::zoom_math::FitMode;
+use super::super::sidebar::toggle as rail_toggle;
 use super::super::zoom::{self, Command};
 use super::super::{Message, Reader};
 use crate::chrome::icons::{icon, IconName};
@@ -47,6 +48,9 @@ pub(super) fn view<'a>(reader: &'a Reader, tokens: Tokens) -> Element<'a, Messag
     let percent = format!("{}%", (reader.zoom.display * 100.0).round() as u32);
     let pill = container(
         row![
+            // The rail's own way in, where the web app kept it: first in the
+            // leading cluster, and only while a docked rail is closed.
+            rail_toggle(reader, tokens),
             bar_button(tokens, IconName::Library, true, false, Message::Close),
             bar_button(
                 tokens,

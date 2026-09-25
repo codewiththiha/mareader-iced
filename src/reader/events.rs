@@ -38,7 +38,8 @@ impl Reader {
                 self.seed(opened);
                 // The chapter tree is asked for only now: page 1 can be painted
                 // without it, and resolving a textbook's destinations is not
-                // free.
+                // free. Until it answers the rail's outline panel says so.
+                self.document.outline_pending = true;
                 self.engine.send(Request::Outline {
                     stamp: self.session,
                 });
@@ -55,8 +56,10 @@ impl Reader {
                 }
                 self.document.status = DocStatus::Error;
                 self.document.error = Some(message.clone());
-                // Nothing is coming to paint over the cover.
+                // Nothing is coming to paint over the cover, or to fill the
+                // chapter tree the open never got far enough to ask for.
                 self.cover = None;
+                self.document.outline_pending = false;
                 vec![Effect::Toast(Tone::Error, message)]
             }
             Event::Frame {
@@ -106,6 +109,7 @@ impl Reader {
                 }
                 self.document.outline =
                     pdf_core::outline::to_nodes(entries, self.document.num_pages);
+                self.document.outline_pending = false;
                 Vec::new()
             }
         }
@@ -122,6 +126,7 @@ impl Reader {
         self.document.title = opened.title;
         self.document.author = opened.author;
         self.document.outline.clear();
+        self.document.outline_pending = false;
         self.document.error = None;
         // The document's own title has arrived, and with it the name the bar
         // shows: the metadata now outranks the row's name for the rest of the

@@ -31,7 +31,8 @@ pub use kit::{
 pub use link::link_card;
 pub use row::{elide_line, format_chip, list_thumb, row_button_style, ROW_H, ROW_PAD, THUMB_W};
 
-// What only the crate asks for: the seam colour the shelf's bar shares, and
-// the cover cap the drag preview counts to.
+// What only the crate asks for: the seam colour the shelf's bar shares, the
+// cover cap the drag preview counts to, and the elision helpers the shelf and
+// the reader's rail both budget their text with.
 pub(crate) use folder::plate_seam;
-pub(crate) use kit::THUMB_CAP;
+pub(crate) use kit::{chars_per_line, elide, THUMB_CAP};

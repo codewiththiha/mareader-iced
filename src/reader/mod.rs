@@ -17,15 +17,24 @@ mod motion;
 mod moves;
 mod opening;
 mod scroll;
+mod sidebar;
 mod strip;
 mod sync;
 mod update;
 
 pub use opening::*;
+pub use sidebar::Action;
 pub use update::*;
+
+/// The rail's own list, for the app's reveal: the reader decides where the panel
+/// scrolls, and only the app can post the command that puts it there.
+pub(crate) use sidebar::OUTLINE_ID;
 
 use std::path::PathBuf;
 use std::time::Instant;
+
+use iced::Size;
+use sidebar::Sidebar;
 
 use frame::Frames;
 use motion::{Glide, Motion};
@@ -45,6 +54,13 @@ pub(crate) const SCROLL_ID: &str = "reader-strip";
 pub struct Reader {
     pub document: Document,
     pub viewer: Viewer,
+    /// The window as the app reported it. The reading area is derived from it
+    /// and the rail's window; a reader nobody has sized keeps the container its
+    /// own caller handed it.
+    window: Size,
+    /// The rail: the chapter panel, the book's identity and the motion that
+    /// opens and closes it.
+    sidebar: Sidebar,
     /// The three scales and the transition in flight between them — the web
     /// app's zoom pipeline, which is the one owner of how big the page is.
     zoom: Zoom,
@@ -125,6 +141,8 @@ impl Reader {
         Self {
             document: Document::default(),
             viewer,
+            window: Size::new(0.0, 0.0),
+            sidebar: Sidebar::new(settings),
             zoom: Zoom::default(),
             frames: Frames::default(),
             strip: None,

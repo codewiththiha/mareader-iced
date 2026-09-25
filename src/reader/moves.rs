@@ -82,9 +82,22 @@ impl Reader {
         }
     }
 
+    /// The reader chose a chapter: a row of the outline panel.
+    ///
+    /// The jump is a page change like any other — the same door, so a scrolling
+    /// mode glides the strip and a paginated one re-resolves the sheet — and the
+    /// rail stays open behind it, because an outline is a map the reader keeps.
+    pub(super) fn chapter(&mut self, index: usize) -> Vec<Effect> {
+        let Some(page) = self.document.outline.get(index).map(|node| node.page) else {
+            return Vec::new();
+        };
+        let mut effects = self.go_to_page(page);
+        effects.extend(self.report_progress());
+        effects
+    }
+
     /// Put the reader on `page`: the one door a page change goes through, so a
-    /// turn, a jump and — later — an outline entry or a search hit all land the
-    /// same way.
+    /// turn, a jump, an outline entry and a search hit all land the same way.
     pub(super) fn go_to_page(&mut self, page: u32) -> Vec<Effect> {
         if !self.document.status.is_ready() {
             return Vec::new();

@@ -408,11 +408,17 @@ meets the app: engine, then the page, then everything that moves or measures it.
   scroll→page sync (`scroll_fraction` ↔ `fraction_offset`) and the mount anchor that lands the
   resume point, the first-paint gate. *Accept: all four modes read, and closing/reopening in
   each resumes where you were.*
-* **3d — The sidebar.** The outline panel fed by PDFium's bookmarks through `pdf-core`'s
-  outline shape with the active chapter following the page, and the thumbnail rail on a
-  virtualized `lazy` rail with the page-pair LRU the web app kept (16 entries), prefetch
-  around the reader, and the cover path reusing it. *Accept: browse a book's chapters and
-  pages without waiting for a rail to repaint.*
+* **3d-1 — The rail and the outline.** The aside and its slots ported to iced's own
+  primitives, the open/close read off the reader's frame clock, the outline panel fed by
+  PDFium's bookmarks through `pdf-core`'s outline shape with the active chapter following
+  the page, the switcher at its foot, and the two layouts the settings choose between
+  (docked, where the page gives up the rail's window, and floating, where the rail lies over
+  the page and its edge opens it). *Accept: open the rail, walk a book's chapters and watch
+  the mark move as you read — docked and floating.*
+* **3d-2 — The thumbnail rail.** The thumbnails panel on a virtualized rail with the
+  page-pair LRU the web app kept (16 entries), prefetch around the reader's own page, the
+  tab that shows it, and the cover path reusing it. *Accept: browse a book's pages without
+  waiting for a rail to repaint.*
 * **3e — Search.** Per-page text extraction behind the engine (PDFium chars grouped into the
   runs `pdf_core::SearchIndex` expects), the index built lazily on the first search and
   retained per content identity, the search pill and hits list, the amber highlight layer,
@@ -750,7 +756,7 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   PDFium service and bind strategy, the open pipeline, and the first
   reading surface the marks, covers and kept reading data all wait
   on.
-* **P3 — 3a, 3b and 3c shipped (plus seven refactor passes); 3d (the sidebar) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
+* **P3 — 3a, 3b, 3c and 3d-1 shipped (plus seven refactor passes); 3d-2 (the thumbnails) next.** The engine has landed: `pdfium-render` 0.9.4 binds the
   shared library at run time through `MAREAEDER_PDFIUM`/`MAREAEDER_PDFIUM_DIR`,
   beside the executable and its `lib`/`bin`, then the working directory's same three,
   then the system's loader — and a machine with no Pdfium gets a sentence naming
@@ -793,6 +799,33 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   jump has usually already been through, and a wheel notch — which iced hands to the
   axis it points at, so a horizontal strip never hears it — is translated by the app
   into the reader's own step along that strip.
+  And 3d-1 put the rail on the window's left edge: the aside and its slots (the header's
+  close, the open book's identity, the panel in the middle, the switcher at the foot), the
+  outline panel fed by Pdfium's own bookmark tree with the reader's chapter marked by
+  `reader_core::outline::active_entry` and every row indented `8 + depth × 12` up to a cap,
+  and the two layouts the settings keep apart — docked, where the reading area gives up
+  exactly the rail's window and the fit follows it the way it follows a resize, and
+  floating, where the rail lies over the page and a strip along the window's edge opens it
+  on a hover the rail closes again a grace after the pointer leaves. The open and the close
+  are ONE motion, and it took a choice to get there: the web app animated a CSS width over
+  a fixed-width inner block (docked) and faded a wrapper (floating), and neither crosses
+  over. A clipped inner block needs iced to hit-test children where their parent clips them,
+  which it does not — a half-open rail would keep taking clicks out on the page — and a
+  faded subtree needs a compositing group iced 0.14 has no alpha for. What both became is
+  the whole rail sliding in from the window's left edge over the same 300 ms, drawn by a
+  `Float`: the one widget that translates a subtree AND maps the pointer back through it, so
+  every row keeps its geometry and every click lands where it looks. The panel keeps its own
+  book of where it is: its rows are the same height by construction, so a reveal is
+  arithmetic over uniform rows rather than a DOM query with a retry chain — the panel
+  reports its window and its list (`Action::Measured`, `Action::Scrolled`), the reader's page
+  picks the row, and the scroll travels out through the app the way the strip's own does. A
+  page that leaves the panel behind scrolls it once, and only when the chapter it landed in
+  is off the window; re-clicking the switcher's tab for the panel already showing centres it.
+  The rail's chrome starts below the window's band, which the title bar — and macOS's
+  traffic lights — keep, so nothing of the rail's is ever covered by chrome that is not its
+  own. The switcher carries one tab until the thumbnails land with 3d-2, the header carries
+  the close until the search and settings doors arrive with their own increments, and the
+  covers are still the frame a book wears before one has rendered.
   Refactor passes run between 3b and 3c, ahead of that queue, one CI-green commit each.
   The queue's own record lives in `review/` (outside the repo); what has landed there:
   the library's cell kit was split out of `card.rs`, the grid's cell arithmetic now has
