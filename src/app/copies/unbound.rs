@@ -1,103 +1,31 @@
-//! The two batch runs — the store's copies and the duplicate pass — and the
-//! questions their results raise.
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+//! The unbound copies: a folder walked without a ledger row to answer to. Its
+//! files land as the library's own, on the seat its own answer mints.
 
+use crate::app::Mareader;
+use crate::app::message::Message;
+use crate::app::walk::{Claim, FsRun, Stage};
+
+use super::{CopiesDest, CopiesWork, PendingCopy, QueuedImport, partition_store_results};
+use crate::platform::{fs, now_ms, progress, store};
+use crate::ui::toast::Tone;
 use iced::Task;
 use iced::time::Instant;
-use library_core::book::{self, Book, Fingerprint, Origin};
+use library_core::book::{self, Book, Origin};
 use library_core::folder::{self as folder_ops, FolderOpts};
-use library_core::ledger::{self};
+use library_core::ledger;
 use library_core::scan::FoundFile;
 use library_core::shelf::{self, ALL_SHELF};
 use library_core::wire::{BookFileRequest, StoreResult};
 use library_core::{paths, text as lib_text};
-
-use crate::library::duplicate::{self, BookCopy, DupPlan, Duplicated, TreePlan};
-use crate::platform::{fs, now_ms, progress, store};
-use crate::ui::toast::Tone;
-use super::Mareader;
-use super::message::Message;
-use super::walk::{Claim, FsRun, RootPlan, Stage};
-
-/// A duplicate's landing, waiting on its copies: one book filed beside the
-/// row the reader pointed at, or a whole fresh subtree spliced in behind the
-/// original.
-pub(super) enum DupWork {
-    Book(Box<BookCopy>),
-    Tree(TreePlan),
-}
-
-/// The unbound copy run's seat: the run ground the tree's family reads, but
-/// whose copies are the library's own rather than a second read of the
-/// ground.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum CopiesDest {
-    /// Spliced right behind the shelf whose name the arrival collided with:
-    /// a copy appended to the end of the level is a shelf the reader has to
-    /// go and find.
-    NewShelf { name: String, after: Option<String> },
-    /// The *replace*'s target, whose books the sweep has just taken out.
-    Into { shelf_id: String },
-}
-
-/// A copy run's plan, queued past the scan: the files still owed copies,
-/// each wearing the id it lands as, and the run's own answers.
-pub(super) struct CopiesWork {
-    /// The ground the run walked: its claim, its label.
-    pub(super) root: String,
-    pub(super) dest: CopiesDest,
-    pub(super) opts: FolderOpts,
-    pub(super) pending: Vec<PendingCopy>,
-}
-
-/// What waits behind a held root: everything the deferred run owes to start
-/// again — the picked ground, the sheet answers it walked, and how the
-/// reader meant the books held. A re-pick waits whole where a focus walk
-/// waits politely.
-#[derive(Clone)]
-pub(super) enum QueuedImport {
-    Walk(PathBuf, FolderOpts, RootPlan),
-    Copies { dir: PathBuf, opts: FolderOpts, dest: CopiesDest },
-}
-
-/// One loose file queued for the store: the id it lands as, the finding, and
-/// the name a spent tombstone remembered.
-pub(super) struct PendingCopy {
-    pub(super) book_id: String,
-    pub(super) file: FoundFile,
-    pub(super) title: Option<String>,
-}
-
-/// One copy's landing: the address it stored at and the measurement of its
-/// own bytes.
-pub(super) type Stored = (String, Option<Fingerprint>);
-
-/// The store batch's answer, keyed: the book id each copy was requested
-/// under to the address it landed at and the measurement of its own bytes.
-pub(super) type CopyMap = HashMap<String, Stored>;
-
-/// The store batch's answer, split: the copies that came home with their
-/// measurements, and the first refusal's own sentence for the toast.
-pub(super) fn partition_store_results(results: Vec<StoreResult>) -> (CopyMap, Option<String>) {
-    let mut copies: CopyMap = HashMap::new();
-    let mut failure: Option<String> = None;
-    for result in results {
-        if result.is_ok() {
-            copies.insert(result.id.clone(), (result.store.clone(), result.measured));
-        } else if failure.is_none() {
-            failure = result.error;
-        }
-    }
-    (copies, failure)
-}
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 impl Mareader {
     /// The scan start of an unbound copy run: one walk of the ground, one
     /// card, no row to answer to — the standing tree's claims are beside
     /// the copies, never under them.
-    pub(super) fn begin_copies_run(&mut self, dir: PathBuf, opts: FolderOpts, dest: CopiesDest) -> Task<Message> {
+    pub(in crate::app) fn begin_copies_run(&mut self, dir: PathBuf, opts: FolderOpts, dest: CopiesDest) -> Task<Message> {
         let root = dir.to_string_lossy().into_owned();
         match self.root_claim(&root) {
             Claim::Free => {}
@@ -136,7 +64,7 @@ impl Mareader {
     /// The unbound walk's scan answer: heal the rows the ground reads
     /// beside the tree, then owe every quieter file a copy of its own — the
     /// ledger's table says which, and the batch rides the run's own card.
-    pub(super) fn copies_scanned(
+    pub(in crate::app) fn copies_scanned(
         &mut self,
         task: u64,
         result: Result<Vec<FoundFile>, String>,
@@ -351,7 +279,7 @@ impl Mareader {
 
     /// The store's answer for a folder import: land what copied, count what
     /// the store refused, and let the rest of the batch stand.
-    pub(super) fn copies_done(&mut self, task: u64, results: Vec<StoreResult>) -> Task<Message> {
+    pub(in crate::app) fn copies_done(&mut self, task: u64, results: Vec<StoreResult>) -> Task<Message> {
         let Some(ix) = self.runs.iter().position(|run| run.task == task) else {
             return Task::none();
         };
@@ -372,144 +300,5 @@ impl Mareader {
             Stage::Departing { work } => self.departing_done(*work, results),
             _ => Task::none(),
         }
-    }
-
-    /// The store's answer for one duplicate run: land what came home, count
-    /// it for the report, toast what the store refused, and let the queue
-    /// walk on.
-    fn duplicates_done(&mut self, work: DupWork, results: Vec<StoreResult>) -> Task<Message> {
-        let (copies, failure) = partition_store_results(results);
-        let now = now_ms();
-        let recorded = match work {
-            DupWork::Book(copy) => copies.get(&copy.new_id).map(|(store, measured)| {
-                let title = duplicate::land_book(
-                    &mut self.library.books,
-                    &mut self.library.shelves,
-                    &self.shelf,
-                    *copy,
-                    store.clone(),
-                    *measured,
-                    now,
-                );
-                Duplicated { name: title, shelf: false }
-            }),
-            DupWork::Tree(plan) => {
-                let name = duplicate::land_tree(
-                    &mut self.library.books,
-                    &mut self.library.shelves,
-                    plan,
-                    &copies,
-                    now,
-                );
-                Some(Duplicated { name, shelf: true })
-            }
-        };
-        if let Some(one) = recorded {
-            self.dup_landed.push(one);
-        }
-        if let Some(error) = failure {
-            self.toasts.show(Tone::Error, error, Instant::now());
-        }
-        self.pump_dup()
-    }
-
-    /// The duplicate queue's step: one entry at a time, because each counter
-    /// name counts against the level as the last landing left it — the web's
-    /// own sequential loop, walked by messages instead of an async fn. The
-    /// entries that owe no bytes land on the spot and the walk continues;
-    /// the ones that do ride a run, and the queue resumes when its copies
-    /// come home.
-    pub(super) fn pump_dup(&mut self) -> Task<Message> {
-        while let Some(entry) = self.dup_queue.first().cloned() {
-            self.dup_queue.remove(0);
-            let now = now_ms();
-            let plan =
-                duplicate::plan_one(&self.library.books, &self.library.shelves, &entry, now);
-            match plan {
-                DupPlan::Skip => {}
-                DupPlan::Dead(note) => {
-                    self.toasts.show(Tone::Error, note, Instant::now());
-                }
-                DupPlan::ShelfLink { row_id, name, target } => {
-                    let title = duplicate::land_shelf_link(
-                        &mut self.library.books,
-                        &mut self.library.shelves,
-                        &self.shelf,
-                        &row_id,
-                        &name,
-                        &target,
-                        now,
-                    );
-                    self.dup_landed.push(Duplicated { name: title, shelf: false });
-                }
-                DupPlan::Book(copy) => {
-                    let label = copy.shown.clone();
-                    let requests = vec![BookFileRequest {
-                        from: copy.book.path().to_string(),
-                        id: copy.new_id.clone(),
-                    }];
-                    return self.begin_dup(label, requests, DupWork::Book(copy));
-                }
-                DupPlan::Tree(plan) => {
-                    let requests = duplicate::tree_requests(&plan);
-                    if requests.is_empty() {
-                        // A tree of links and dead rows copies nothing: no
-                        // card, and the landing is the whole run.
-                        let name = duplicate::land_tree(
-                            &mut self.library.books,
-                            &mut self.library.shelves,
-                            plan,
-                            &HashMap::new(),
-                            now,
-                        );
-                        self.dup_landed.push(Duplicated { name, shelf: true });
-                        continue;
-                    }
-                    let label = plan.label.clone();
-                    return self.begin_dup(label, requests, DupWork::Tree(plan));
-                }
-            }
-        }
-        // The queue ran out: the report the whole batch ends with, and the
-        // one persist that covers it — a link-only batch, which never met a
-        // run, lands here too.
-        if self.dup_landed.is_empty() {
-            return Task::none();
-        }
-        let report = duplicate::report(&self.dup_landed);
-        self.dup_landed.clear();
-        self.toasts.show(Tone::Info, report, Instant::now());
-        self.persist_library()
-    }
-
-    /// A duplicate's store run: the card wears the name of what is being
-    /// duplicated, the way a folder run wears its folder.
-    fn begin_dup(
-        &mut self,
-        label: String,
-        requests: Vec<BookFileRequest>,
-        work: DupWork,
-    ) -> Task<Message> {
-        self.begin_store_run(label, requests, Stage::Duplicating { work: Box::new(work) })
-    }
-
-    /// One store batch of the reader's own asking: one card for the whole
-    /// gesture, and the stage that lands when the copies come home.
-    pub(super) fn begin_store_run(
-        &mut self,
-        label: String,
-        requests: Vec<BookFileRequest>,
-        stage: Stage,
-    ) -> Task<Message> {
-        let (sink, rx) = progress::channel();
-        self.next_task += 1;
-        let task = self.next_task;
-        self.runs.push(FsRun { task, label, sink, rx, latest: None, stage });
-        let emit = Arc::clone(&self.runs[self.runs.len() - 1].sink);
-        let task_name = task.to_string();
-        Task::perform(
-            async move { store::store_books(&task_name, &requests, &emit) },
-            move |results| Message::CopiesDone(task, results),
-        )
     }
 }
