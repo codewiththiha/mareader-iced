@@ -76,3 +76,87 @@ fn earliest_known(mine: u64, theirs: u64) -> u64 {
         _ => mine.min(theirs),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::book::Fingerprint;
+    use crate::book::kit::linked;
+    use crate::book::merge::fold_books;
+    use crate::book::merge::further_point;
+    use crate::book::read::ReadPoint;
+
+    #[test]
+    fn a_fold_takes_the_further_place_and_fills_the_gaps() {
+        let mut keep = linked("keep", "/books/dune.pdf");
+        keep.page = 12;
+        keep.num_pages = 300;
+        keep.added_ms = 500;
+        keep.last_read_ms = 900;
+        let mut gone = linked("gone", "/copies/dune.pdf");
+        gone.page = 240;
+        gone.title = Some("Dune".into());
+        gone.author = Some("Frank Herbert".into());
+        gone.added_ms = 300;
+        gone.last_read_ms = 700;
+
+        fold_books(&mut keep, &gone);
+        assert_eq!(keep.page, 240, "a merge never sends a reader backwards");
+        assert_eq!(keep.num_pages, 300, "the count survives from whichever row knew it");
+        assert_eq!(keep.title.as_deref(), Some("Dune"), "a name fills a gap");
+        assert_eq!(keep.author.as_deref(), Some("Frank Herbert"));
+        assert_eq!(keep.added_ms, 300, "the book joined when it first joined");
+        assert_eq!(keep.last_read_ms, 900, "and was read as recently as it was");
+        assert_eq!(keep.id, "keep");
+        assert_eq!(keep.path(), "/books/dune.pdf");
+        let mut keep2 = linked("keep", "/books/dune.pdf");
+        keep2.page = 12;
+        keep2.title = Some("Mine".into());
+        fold_books(&mut keep2, &gone);
+        assert_eq!(keep2.page, 240);
+        assert_eq!(keep2.title.as_deref(), Some("Mine"), "and never overwrites a name");
+    }
+
+    #[test]
+    fn a_page_tie_goes_to_the_deeper_stream_fraction() {
+        let a = ReadPoint { page: 10, num_pages: 0, fraction: Some(0.4) };
+        let b = ReadPoint { page: 10, num_pages: 0, fraction: Some(0.7) };
+        assert_eq!(further_point(a, b), b);
+        assert_eq!(further_point(b, a), b);
+        let plain = ReadPoint { page: 10, num_pages: 0, fraction: None };
+        assert_eq!(further_point(plain, a), a);
+        assert_eq!(further_point(a, plain), a);
+        assert_eq!(further_point(a, a), a);
+    }
+
+    #[test]
+    fn a_fold_measures_and_unloses_an_address() {
+        // A placeholder yields to a measurement; an address is dead only when both rows say so.
+        let mut pending = linked("a", "/gone/dune.pdf");
+        pending.fp = Fingerprint::placeholder("/gone/dune.pdf");
+        pending.fp_pending = true;
+        pending.missing = true;
+        let measured = linked("b", "/books/dune.pdf");
+        fold_books(&mut pending, &measured);
+        assert!(!pending.fp_pending, "the merged row has been weighed");
+        assert_eq!(pending.fp, measured.fp);
+        assert!(!pending.missing);
+        let mut both = linked("a", "/gone/dune.pdf");
+        both.fp_pending = true;
+        both.missing = true;
+        let mut also = linked("b", "/gone/dune.pdf");
+        also.fp_pending = true;
+        also.missing = true;
+        fold_books(&mut both, &also);
+        assert!(both.fp_pending && both.missing);
+        // added_ms == 0 means never, not the epoch.
+        let mut never = linked("a", "/one.pdf");
+        never.added_ms = 0;
+        let joined = {
+            let mut b = linked("b", "/two.pdf");
+            b.added_ms = 40;
+            b
+        };
+        fold_books(&mut never, &joined);
+        assert_eq!(never.added_ms, 40);
+    }
+}

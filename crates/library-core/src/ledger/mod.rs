@@ -16,4 +16,4 @@ pub use scan::*;
 pub use stones::*;
 
 #[cfg(test)]
-mod tests;
+mod kit;

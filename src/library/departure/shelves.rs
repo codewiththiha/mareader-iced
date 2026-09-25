@@ -289,3 +289,24 @@ pub fn ask_of_removal(
         work: CopyWork::Removal { purge: purge.to_vec(), shelves: going.to_vec() },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::library::departure::kit::{reading_folder, tree, tree_rows};
+    use crate::library::departure::shelves::ask_of_rung;
+
+    #[test]
+    fn a_level_the_library_already_stores_comes_apart_without_a_question() {
+        let mut shelves = tree();
+        shelves
+            .iter_mut()
+            .find(|s| s.id == "sf")
+            .expect("the lowest rung")
+            .books = vec!["loose".to_string(), "kept".to_string()];
+        let rows = tree_rows();
+        let folders = vec![reading_folder()];
+        // `kept` is the library's own copy already and `loose` is a file no
+        // folder placed here: neither is a book to make a copy of.
+        assert!(ask_of_rung(&rows, &shelves, &folders, "sf").is_none());
+    }
+}

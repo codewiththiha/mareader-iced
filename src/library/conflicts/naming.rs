@@ -160,3 +160,148 @@ pub fn describe_shelf(
 }
 
 // ── The already-imported note ───────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use crate::library::conflicts::kit::{linked_row, plain_shelf, stored_row};
+    use crate::library::conflicts::naming::ShelfConflictAsk;
+    use crate::library::conflicts::naming::describe_shelf;
+    use crate::library::conflicts::naming::shelf_offers;
+    use library_core::conflict::Placement;
+    use library_core::folder::FolderOpts;
+    use library_core::folder::WatchedFolder;
+    use library_core::shelf::Shelf;
+    use library_core::testkit;
+
+    #[test]
+    fn the_shelf_question_s_offer_follows_the_arrival_s_mode() {
+        let stored = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
+        assert_eq!(shelf_offers(&stored), Placement::SHELF_STORED);
+        let in_place = shelf_ask("Books", "s1", "/mine/Books", in_place_opts(), false);
+        assert_eq!(shelf_offers(&in_place), Placement::SHELF_READ_IN_PLACE);
+    }
+
+    #[test]
+    fn the_stored_folder_s_question_is_the_level_s_own() {
+        // An arrival the library will own: no pointer, and every cost is the
+        // level's own to name — the replace counts the shelf's own members.
+        let rows = vec![
+            stored_row("e1", "Dune", "/mine/dune.md", "/store/e1.md", 9),
+            stored_row("e2", "Other", "/elsewhere/x.md", "/store/e2.md", 11),
+        ];
+        let shelves = vec![named_shelf("s1", "Books", &["e1", "e2"])];
+        let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
+        let spec = describe_shelf(&rows, &shelves, &[], &ask);
+        assert_eq!(spec.heading, "Books");
+        assert_eq!(spec.subtitle, "A shelf called “Books” is already here".to_string());
+        assert!(spec.question.contains("all three answers are open"), "the stored arrival's question");
+        assert!(!spec.apply_all && spec.waiting == 0, "a whole-run question has no queue");
+        assert_eq!(
+            spec.choices.iter().map(|c| c.placement).collect::<Vec<_>>(),
+            Placement::SHELF_STORED
+        );
+        let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
+        assert_eq!(
+            replace.note,
+            "2 books leave, highlights and all — copies take “Books”"
+        );
+        let show = spec.choices.iter().find(|c| c.placement == Placement::Open).unwrap();
+        assert_eq!(show.note, "Import nothing — go to “Books” and light it up where it stands");
+        let new = spec.choices.iter().find(|c| c.placement == Placement::KeepBoth).unwrap();
+        assert_eq!(new.note, "Import as “Books_1” — its own shelf, its own tree");
+    }
+
+    #[test]
+    fn the_own_tree_s_question_words_a_continuation() {
+        // The arriving folder is the tree's own: the replace sweeps the
+        // tree's LINKED rows — a stored copy beside the tree stays — and
+        // every sentence says which import made the shelf.
+        let rows = vec![
+            linked_row("e1", "Dune", "/mine/Books/dune.md", 7),
+            stored_row("e2", "Copy", "/mine/Books/copy.md", "/store/e2.md", 12),
+        ];
+        let shelves = vec![named_shelf("s1", "Books", &["e1", "e2"])];
+        let folders = vec![in_place_folder("/mine/Books", &[7])];
+        let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), true);
+        let spec = describe_shelf(&rows, &shelves, &folders, &ask);
+        assert_eq!(spec.subtitle, "Already in the library as “Books”");
+        assert!(
+            spec.question.contains("the shelf this folder's last import made"),
+            "the continuation's own words: {}",
+            spec.question
+        );
+        let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
+        assert_eq!(
+            replace.note,
+            "One book leaves, highlights and all — a copy takes its place on “Books”",
+            "the stored copy on the shelf is not the tree's to empty"
+        );
+        let new = spec.choices.iter().find(|c| c.placement == Placement::KeepBoth).unwrap();
+        assert_eq!(
+            new.note,
+            "Import as “Books_1” — the library's own copies; the tree here keeps reading the folder"
+        );
+    }
+
+    #[test]
+    fn the_in_place_arrival_offers_the_pointer_and_the_merge() {
+        let rows = vec![linked_row("e1", "Dune", "/mine/Books/dune.md", 7)];
+        let shelves = vec![plain_shelf("s1", &["e1"])];
+        let ask = shelf_ask("Books", "s1", "/mine/Books", in_place_opts(), true);
+        let spec = describe_shelf(&rows, &shelves, &[], &ask);
+        assert!(spec.question.contains("cannot mint a second shelf of itself"));
+        assert_eq!(
+            spec.choices.iter().map(|c| c.placement).collect::<Vec<_>>(),
+            Placement::SHELF_READ_IN_PLACE
+        );
+        let link = spec.choices.iter().find(|c| c.placement == Placement::LinkOnly).unwrap();
+        assert!( link.note.contains("lights the folder where it is"), "the pointer's promise");
+        let merge = spec.choices.iter().find(|c| c.placement == Placement::Merge).unwrap();
+        assert_eq!(merge.note, "The folder's books join “Books” — a name it already holds asks one by one");
+    }
+
+    #[test]
+    fn an_empty_level_s_replace_asks_nothing_back() {
+        let shelves = vec![plain_shelf("s1", &[])];
+        let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
+        let spec = describe_shelf(&[], &shelves, &[], &ask);
+        let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
+        assert_eq!(replace.note, "Nothing to remove — the copies simply take “Books”");
+    }
+
+    /// A shelf of its own name, which is what every collision is about: the
+    /// arriving folder's name is a name the level already holds.
+    fn named_shelf(id: &str, name: &str, books: &[&str]) -> Shelf {
+        Shelf { name: name.to_string(), ..plain_shelf(id, books) }
+    }
+
+    fn shelf_ask(incoming: &str, existing_id: &str, root: &str, opts: FolderOpts, own: bool) -> ShelfConflictAsk {
+        ShelfConflictAsk {
+            incoming_name: incoming.to_string(),
+            existing_id: existing_id.to_string(),
+            existing_name: incoming.to_string(),
+            root: root.to_string(),
+            opts,
+            own,
+        }
+    }
+
+    fn storing_opts() -> FolderOpts {
+        // The second instance the library owns outright: a copy of every
+        // admitted file in the store.
+        FolderOpts { in_place: false, ..FolderOpts::default() }
+    }
+
+    fn in_place_opts() -> FolderOpts {
+        // Read at place and watched: every answer the in-place family makes,
+        // the tree answered first.
+        FolderOpts { watch: true, ..FolderOpts::default() }
+    }
+
+    fn in_place_folder(root: &str, placed: &[u32]) -> WatchedFolder {
+        WatchedFolder {
+            placed: placed.iter().map(|n| testkit::fp_n(*n)).collect(),
+            ..testkit::watched_folder("tree1", root)
+        }
+    }
+}

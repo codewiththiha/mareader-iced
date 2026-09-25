@@ -19,9 +19,6 @@ mod update;
 pub use opening::*;
 pub use update::*;
 
-#[cfg(test)]
-mod tests;
-
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -151,3 +148,6 @@ impl Reader {
         self.read().map(kind).into_iter().collect()
     }
 }
+
+#[cfg(test)]
+mod kit;

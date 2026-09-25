@@ -68,3 +68,100 @@ pub fn containing<'a>(shelves: &'a [Shelf], book_id: &str) -> Vec<&'a Shelf> {
         .filter(|s| s.books.iter().any(|m| m == book_id))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book::{Book, Row};
+    use crate::shelf::kit::{ids, plain, shelf};
+    use crate::shelf::members::containing;
+    use crate::shelf::members::forget;
+    use crate::shelf::members::forget_everywhere;
+    use crate::shelf::members::members_of;
+    use crate::shelf::members::place;
+    use crate::shelf::members::shelf_add;
+
+    #[test]
+    fn a_level_s_members_are_its_shelf_s_or_the_unfiled_rows() {
+        let rows = vec![
+            book("b1", "Dune"),
+            book("b2", "Apple"),
+            Row::link("l1".into(), "Dune".into(), "b1".into(), 5),
+        ];
+        let shelves = vec![plain("s", &["b1", "l1"]), plain("t", &["b2"])];
+        assert_eq!(members_of(&rows, &shelves, "s"), vec!["b1", "l1"]);
+        assert_eq!(members_of(&rows, &shelves, "gone"), Vec::<&str>::new());
+        assert_eq!(members_of(&rows, &shelves, ALL_SHELF), Vec::<&str>::new());
+        let one_filed = vec![plain("s", &["b1"])];
+        assert_eq!(members_of(&rows, &one_filed, ALL_SHELF), vec!["b2", "l1"]);
+    }
+
+    #[test]
+    fn a_drop_appends_by_default() {
+        let mut m: Vec<String> = vec!["a".into(), "b".into()];
+        place(&mut m, "c", None);
+        assert_eq!(ids(&m), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_drop_lands_at_the_index_pointed_at() {
+        let mut m: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        place(&mut m, "d", Some(1));
+        assert_eq!(ids(&m), vec!["a", "d", "b", "c"]);
+        place(&mut m, "e", Some(99));
+        assert_eq!(ids(&m), vec!["a", "d", "b", "c", "e"]);
+    }
+
+    #[test]
+    fn moving_a_member_does_not_duplicate_or_shift_the_tail() {
+        let mut m: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        place(&mut m, "c", Some(0));
+        assert_eq!(ids(&m), vec!["c", "a", "b"]);
+        place(&mut m, "a", Some(1));
+        assert_eq!(ids(&m), vec!["c", "a", "b"], "a book stays where it is dropped");
+        place(&mut m, "c", Some(3));
+        assert_eq!(ids(&m), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn filing_a_book_that_is_already_filed_moves_nothing() {
+        // Appending an existing member would reshuffle a shelf for an
+        // instruction that was not about position.
+        let mut s = shelf("s1", "One", &["a", "b"]);
+        shelf_add(&mut s, "b");
+        assert_eq!(ids(&s.books), vec!["a", "b"]);
+        shelf_add(&mut s, "c");
+        assert_eq!(ids(&s.books), vec!["a", "b", "c"]);
+        shelf_add(&mut s, "a");
+        assert_eq!(ids(&s.books), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_book_leaves_one_shelf_or_all_of_them() {
+        let mut m: Vec<String> = vec!["a".into(), "b".into()];
+        assert!(forget(&mut m, "a"));
+        assert!(!forget(&mut m, "a"));
+        assert_eq!(ids(&m), vec!["b"]);
+
+        let mut shelves = vec![shelf("s1", "One", &["a", "b"]), shelf("s2", "Two", &["b"])];
+        forget_everywhere(&mut shelves, "b");
+        assert_eq!(ids(&shelves[0].books), vec!["a"]);
+        assert!(shelves[1].books.is_empty());
+    }
+
+    #[test]
+    fn the_shelves_a_book_is_on_are_found_in_order() {
+        let shelves = vec![shelf("s1", "One", &["a", "b"]), shelf("s2", "Two", &["b"])];
+        let names: Vec<&str> = containing(&shelves, "b").iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["One", "Two"]);
+        assert!(containing(&shelves, "zzz").is_empty());
+    }
+
+    fn book(id: &str, title: &str) -> Row {
+        Row::Book(Book {
+            title: Some(title.to_string()),
+            added_ms: 1,
+            ..crate::testkit::book(id)
+        })
+    }
+}

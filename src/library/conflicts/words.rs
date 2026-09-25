@@ -329,3 +329,29 @@ fn describe_folder_merge(
 }
 
 // ── The folder's own question ───────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use crate::library::conflicts::kit::{ask, linked_row, placing_folder, plain_shelf, stored_row};
+    use crate::library::conflicts::words::describe;
+    use library_core::conflict::Placement;
+
+    #[test]
+    fn the_link_shape_sheet_words_its_own_question() {
+        let rows = vec![
+            stored_row("e1", "Dune", "/books/dune.md", "/store/e1.md", 9),
+            linked_row("m1", "Dune", "/books/dune.md", 7),
+        ];
+        let shelves = vec![plain_shelf("s1", &["e1"])];
+        let folders = vec![placing_folder(7)];
+        let ask = ask(Some("m1"), "Dune", "s1");
+        let spec = describe(&rows, &shelves, &folders, &ask, &[]);
+        assert!(spec.question.contains("one of the library's own copies"), "the shape says why replace is withheld");
+        assert_eq!(
+            spec.choices.iter().map(|c| c.placement).collect::<Vec<_>>(),
+            Placement::MOVE_KEEPING_BOTH
+        );
+        let link = spec.choices.iter().find(|c| c.placement == Placement::LinkOnly).unwrap();
+        assert!(link.note.contains("nothing is destroyed"));
+    }
+}

@@ -129,3 +129,47 @@ pub fn shelf_books(
     }
     taking
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::departure::kit::{family_state, reading_folder, tree, tree_rows};
+    use crate::library::departure::returning::books_the_rung_takes;
+    use crate::library::departure::shelves::ask_of_rung;
+
+    #[test]
+    fn the_rung_question_counts_only_the_level_s_own_books() {
+        let (shelves, rows) = (tree(), tree_rows());
+        let folders = vec![reading_folder()];
+        assert_eq!(
+            books_the_rung_takes(&rows, &shelves, &folders, "fic"),
+            vec!["mid".to_string()],
+            "asked and answered through one walk, so the sheet and the copies cannot drift"
+        );
+        // The lowest rung: its own book goes; the guest on the root's ground,
+        // the file no folder placed, and the library's own copy all stay out.
+        assert_eq!(books_the_rung_takes(&rows, &shelves, &folders, "sf"), vec!["deep".to_string()]);
+        // A reader's own shelf is nobody's ground, and an empty rung owes
+        // nothing: neither is a question.
+        assert!(ask_of_rung(&rows, &shelves, &folders, "mine").is_none());
+        assert!(ask_of_rung(&rows, &shelves, &folders, "elsewhere").is_none());
+    }
+
+    #[test]
+    fn a_displaced_folder_s_root_shelf_goes_home_by_the_fold() {
+        let (shelves, folders) = family_state();
+        match return_path(&shelves, &folders, "s3") {
+            Some(ReturnPath::Reclaim { tree, gone, rel }) => {
+                assert_eq!(tree, "f1", "the family the ground belongs to");
+                assert_eq!(gone, "f3", "the folder that was reading it on its own");
+                assert_eq!(rel, "Fiction/SciFi", "the rung its directory names");
+            }
+            path => panic!("the fold is a displaced root shelf's way home: {path:?}"),
+        }
+        assert!(target_is_family(&shelves, &folders, Some("fic"), "/books/Fiction/SciFi"));
+        assert!(target_is_family(&shelves, &folders, Some("r"), "/books/Fiction/SciFi"));
+        assert!(!target_is_family(&shelves, &folders, Some("mine"), "/books/Fiction/SciFi"));
+        assert!(!target_is_family(&shelves, &folders, None, "/books/Fiction/SciFi"));
+        assert!(!target_is_family(&shelves, &folders, Some("gone"), "/books/Fiction/SciFi"));
+    }
+}

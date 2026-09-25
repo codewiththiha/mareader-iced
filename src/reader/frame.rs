@@ -100,3 +100,30 @@ impl Reader {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::formats::pdf::FrameKey;
+    use crate::reader::frame::Frame;
+    use crate::reader::kit::{reader, seeded};
+    use iced::Size;
+    use iced::widget::image::Handle;
+
+    #[test]
+    fn the_page_host_draws_the_frame_it_has_and_the_box_it_expects() {
+        // The box on screen never depends on whether a frame has arrived: the
+        // page must not change size the moment its raster lands.
+        let mut reader = reader();
+        reader.viewer.container = Size::new(800.0, 1000.0);
+        seeded(&mut reader, 3, 1);
+        let expected = reader.page_box_px();
+        assert!(expected.0 > 0.0 && expected.1 > 0.0);
+        let key = FrameKey::of_css(1, f64::from(expected.0), f64::from(expected.1), 1.0);
+        reader.frame = Some(Frame {
+            key,
+            handle: Handle::from_rgba(1, 1, vec![0, 0, 0, 0]),
+        });
+        assert!(reader.frame_here().is_some(), "the page's own raster is up");
+        assert_eq!(reader.page_box_px(), expected, "the page does not move when its raster lands");
+    }
+}

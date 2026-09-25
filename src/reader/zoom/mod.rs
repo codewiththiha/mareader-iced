@@ -14,7 +14,7 @@ pub use tween::*;
 #[cfg(test)]
 mod tests;
 
-use fit::sane;
+use fit::{ceiling, fitted, sane};
 
 /// The zoom pipeline's whole state: the three scales, the transition in
 /// flight, and the held follow's quiet window.

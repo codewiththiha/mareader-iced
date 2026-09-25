@@ -49,3 +49,39 @@ pub fn resume_point(rows: &[Row], book_id: Option<&str>, path: &str) -> (u32, Op
         None => (1, None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book::kit::{linked, private, rows};
+    use crate::book::query::find_by_path;
+    use crate::book::query::resume_point;
+
+    #[test]
+    fn the_resume_point_follows_the_row_the_reader_named() {
+        let mut shared = linked("a", "/books/dune.pdf");
+        shared.page = 12;
+        let mut own = private("b", "/books/dune.pdf");
+        own.page = 240;
+        own.fraction = Some(0.5);
+        let books = rows([shared, own]);
+        assert_eq!(resume_point(&books, Some("b"), "/books/dune.pdf"), (240, Some(0.5)));
+        assert_eq!(resume_point(&books, Some("a"), "/books/dune.pdf"), (12, None));
+        assert_eq!(resume_point(&books, None, "/books/dune.pdf"), (12, None));
+        assert_eq!(resume_point(&books, Some("zzz"), "/books/dune.pdf"), (12, None));
+        assert_eq!(resume_point(&books, None, "/books/nope.pdf"), (1, None));
+    }
+
+    #[test]
+    fn the_resume_point_is_looked_up_by_address() {
+        let books = rows([Book {
+            page: 42,
+            num_pages: 100,
+            fraction: Some(0.5),
+            ..linked("a", "/books/one.pdf")
+        }]);
+        assert_eq!(resume_point(&books, None, "/books/one.pdf"), (42, Some(0.5)));
+        assert_eq!(resume_point(&books, None, "/books/zzz.pdf"), (1, None));
+        assert_eq!(find_by_path(&books, "/books/one.pdf").map(|b| b.id.as_str()), Some("a"));
+    }
+}

@@ -129,3 +129,71 @@ fn merge_collision(
         folder.id.clone(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use crate::library::conflicts::kit::{found, linked_row, plain_shelf};
+    use crate::library::conflicts::planned::screen_planned;
+    use library_core::{ledger, testkit};
+
+    #[test]
+    fn a_planned_walk_re_seats_the_rows_it_holds_and_asks_about_the_names() {
+        let mut folder = testkit::watched_folder("f1", "/books");
+        folder.shelf_map.insert(String::new(), "s-into".to_string());
+        let rows = vec![
+            linked_row("e1", "Known", "/books/known.md", 7),
+            linked_row("e2", "Kept", "/books/kept.md", 8),
+        ];
+        let shelves = vec![plain_shelf("s-into", &["e2"])];
+        let registry = ledger::registry_of(&rows);
+        let files = vec![
+            found("/books/known.md", 7),
+            found("/books/kept.md", 8),
+            found("/books/fresh.md", 9),
+        ];
+        let mut adds = vec![files[2].clone()];
+        let screened = screen_planned(
+            &folder,
+            &rows,
+            &shelves,
+            &registry,
+            &files,
+            (false, Some("s-into")),
+            &mut adds,
+            &HashSet::new(),
+        );
+        // “Kept” already sits on the destination under its name: a question,
+        // not a second row.
+        assert_eq!(screened.asks.len(), 1);
+        assert!(screened.asks[0].kind.is_folder_merge());
+        assert_eq!(screened.asks[0].existing_id, "e2");
+        // The row the library holds and the destination does not is re-seated.
+        assert_eq!(screened.replacements.len(), 1);
+        assert_eq!(screened.replacements[0].0, "e1");
+        // And a fresh file stays an addition.
+        assert_eq!(adds.len(), 1);
+        assert_eq!(adds[0].path, "/books/fresh.md");
+    }
+
+    #[test]
+    fn a_plain_walk_screens_nothing_at_all() {
+        let folder = testkit::watched_folder("f1", "/books");
+        let rows = vec![linked_row("e1", "Known", "/books/known.md", 7)];
+        let registry = ledger::registry_of(&rows);
+        let files = vec![found("/books/known.md", 7)];
+        let mut adds = files.clone();
+        let screened = screen_planned(
+            &folder,
+            &rows,
+            &[],
+            &registry,
+            &files,
+            (false, None),
+            &mut adds,
+            &HashSet::new(),
+        );
+        assert!(screened.asks.is_empty() && screened.replacements.is_empty());
+        assert_eq!(adds.len(), 1, "no plan, no re-seating: the ledger's own diff decides");
+    }
+}

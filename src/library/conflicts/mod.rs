@@ -56,7 +56,6 @@ pub enum AskKind {
     AlreadyHave,
 }
 
-
 impl AskKind {
     /// The folder whose ledger an answered ask settles, when the ask is one
     /// a folder raised.
@@ -91,7 +90,6 @@ impl AskKind {
     }
 }
 
-
 /// The question on screen: the arrival kept whole, because an answer places
 /// it and a placement needs the row and the level it was going to, and the
 /// name of the thing already there — read once, because the sheet prints it
@@ -104,7 +102,6 @@ pub struct ConflictAsk {
     pub existing_name: String,
     pub kind: AskKind,
 }
-
 
 impl ConflictAsk {
     pub fn name_collision(arrival: Arrival, existing_id: String, existing_name: String) -> Self {
@@ -138,7 +135,6 @@ impl ConflictAsk {
     }
 }
 
-
 /// Every placing surface hands its placements through here before writing
 /// anything, and applies the clean half at once: what collides waits on the
 /// sheet, what does not lands now.
@@ -161,7 +157,6 @@ pub fn screen(
     (clean, asks)
 }
 
-
 /// One spelling, because the sheet prints this name in its heading and in
 /// every button's sentence: a site that derived its own would eventually
 /// disagree with the others about which book the question is about.
@@ -170,7 +165,6 @@ pub fn existing_name_of(rows: &[Row], existing_id: &str, arrival: &Arrival) -> S
         .map(|row| row.display_name())
         .unwrap_or_else(|| arrival.name.clone())
 }
-
 
 /// A drag of four books is four arrivals, and a row that went between the
 /// lift and the drop is not one of them. The name is read here rather than
@@ -195,13 +189,11 @@ pub fn moved_arrivals(
         .collect()
 }
 
-
 /// The import half of a screen is the import's own landing; nothing a move
 /// raises carries a file, so the clean half of a move's screen is ids.
 pub fn clean_move_ids(clean: Vec<Arrival>) -> Vec<String> {
     clean.into_iter().filter_map(|a| a.moving).collect()
 }
-
 
 /// The row being dragged is a read-at-place book an in-place folder placed,
 /// and the row already on the level is one of the library's own stored
@@ -217,7 +209,6 @@ pub fn link_shape(rows: &[Row], folders: &[WatchedFolder], ask: &ConflictAsk) ->
     existing_is_a_copy
         && departure::converts_on_move(rows, folders, moved_id, &ask.arrival.shelf_id)
 }
-
 
 /// One function rather than a branch in the sheet and a second in the
 /// answer, so the two cannot drift about which buttons a given arrival gets.
@@ -240,20 +231,17 @@ pub fn offers_for(rows: &[Row], folders: &[WatchedFolder], ask: &ConflictAsk) ->
     }
 }
 
-
 /// Read at the click rather than at the raise, in one place: the two answers
 /// that mint a name must mint the same one for the same arrival.
 pub fn minted_name(rows: &[Row], shelves: &[Shelf], ask: &ConflictAsk) -> String {
     next_name(rows, shelves, &ask.arrival.shelf_id, &ask.arrival.name)
 }
 
-
 /// The slot the displaced row holds on the level the arrival is landing on:
 /// a replace seats the arrival where the reader pointed at, not at the end.
 pub fn member_slot(shelves: &[Shelf], shelf_id: &str, row_id: &str) -> Option<usize> {
     shelf::find(shelves, shelf_id).and_then(|s| s.books.iter().position(|m| m == row_id))
 }
-
 
 /// The shelves a row is filed on, in shelf order: the memberships a merge's
 /// survivor takes over and a replace's arrival inherits.
@@ -264,7 +252,6 @@ pub fn memberships(shelves: &[Shelf], book_id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-
 /// Whether the row that survives is the library's own copy OF the row that
 /// dissolves. One question in one place, because the two answers that
 /// dissolve a row — a merge into the copy and a link at it — both write the
@@ -272,7 +259,6 @@ pub fn memberships(shelves: &[Shelf], book_id: &str) -> Vec<(String, String)> {
 pub fn survivor_is_the_copy_of(rows: &[Row], survivor: &str, gone: &Book) -> bool {
     find_by_id(rows, survivor).is_some_and(|keep| keep.origin.is_store_copy_of(gone.path()))
 }
-
 
 /// File a row onto every shelf named, in one write: the shelves a dissolved
 /// row held are the shelves its survivor takes over.
@@ -283,7 +269,6 @@ pub fn file_on_all(shelves: &mut [Shelf], row_id: &str, shelves_named: &[String]
         }
     }
 }
-
 
 /// The name a rename gives a row, whichever shape the row is: a book wears
 /// it as the reader's own title, a link as the name it was minted with.
@@ -301,7 +286,6 @@ pub fn rename_row(rows: &mut [Row], row_id: &str, name: &str) -> bool {
     true
 }
 
-
 /// What the note says happened: nothing the import looked for was new, or
 /// the folder walked back inside its own tree. The fold's own sentence is
 /// the family's business — its raising waits on the fold landing, and the
@@ -316,7 +300,6 @@ pub enum NoteKind {
     Returned,
 }
 
-
 impl NoteKind {
     /// The line under the shelf's name, in the web sheet's own words.
     pub fn sublabel(self) -> &'static str {
@@ -326,7 +309,6 @@ impl NoteKind {
         }
     }
 }
-
 
 /// The note's full sentence, off the web's own sheet: the closing is part
 /// of the promise — the shelf lights up as the note comes down.
@@ -349,108 +331,17 @@ pub fn note_sentence(kind: NoteKind, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-
-    use library_core::book::Origin;
-    use library_core::folder::FolderOpts;
-    use library_core::ledger;
-    use library_core::paths;
-    use library_core::scan::FoundFile;
+    use crate::library::conflicts::kit::{
+    ask, found, linked_row, placing_folder, plain_shelf, stored_row,
+};
+    use crate::library::conflicts::words::describe;
+    use library_core::book::Row;
+    use library_core::book::find_by_id;
+    use library_core::conflict::Arrival;
+    use library_core::conflict::Placement;
+    use library_core::folder::FolderMode;
     use library_core::shelf::ALL_SHELF;
     use library_core::testkit;
-    use reader_core::format::Format;
-    fn linked_row(id: &str, name: &str, path: &str, n: u32) -> Row {
-        let mut book = Book::new(
-            id.to_string(),
-            testkit::fp_n(n),
-            Format::Markdown,
-            Origin::Linked { src: path.to_string() },
-            0,
-        );
-        book.title = Some(name.to_string());
-        book.title_locked = true;
-        Row::Book(book)
-    }
-
-    fn stored_row(id: &str, name: &str, src: &str, store: &str, n: u32) -> Row {
-        let mut book = Book::new(
-            id.to_string(),
-            testkit::fp_n(n),
-            Format::Markdown,
-            Origin::Stored { src: Some(src.to_string()), store: store.to_string() },
-            0,
-        );
-        book.title = Some(name.to_string());
-        book.title_locked = true;
-        Row::Book(book)
-    }
-
-    /// A shelf of its own name, which is what every collision is about: the
-    /// arriving folder's name is a name the level already holds.
-    fn named_shelf(id: &str, name: &str, books: &[&str]) -> Shelf {
-        Shelf { name: name.to_string(), ..plain_shelf(id, books) }
-    }
-
-    fn plain_shelf(id: &str, books: &[&str]) -> Shelf {
-        Shelf {
-            id: id.to_string(),
-            name: id.to_string(),
-            kind: library_core::shelf::ShelfKind::Virtual,
-            books: books.iter().map(|b| b.to_string()).collect(),
-            parent: None,
-            manual_parent: false,
-        }
-    }
-
-    fn placing_folder(n: u32) -> WatchedFolder {
-        WatchedFolder {
-            placed: std::collections::HashSet::from([testkit::fp_n(n)]),
-            ..testkit::watched_folder("f1", "/books")
-        }
-    }
-
-    fn shelf_ask(incoming: &str, existing_id: &str, root: &str, opts: FolderOpts, own: bool) -> ShelfConflictAsk {
-        ShelfConflictAsk {
-            incoming_name: incoming.to_string(),
-            existing_id: existing_id.to_string(),
-            existing_name: incoming.to_string(),
-            root: root.to_string(),
-            opts,
-            own,
-        }
-    }
-
-    fn storing_opts() -> FolderOpts {
-        // The second instance the library owns outright: a copy of every
-        // admitted file in the store.
-        FolderOpts { in_place: false, ..FolderOpts::default() }
-    }
-
-    fn in_place_opts() -> FolderOpts {
-        // Read at place and watched: every answer the in-place family makes,
-        // the tree answered first.
-        FolderOpts { watch: true, ..FolderOpts::default() }
-    }
-
-    fn in_place_folder(root: &str, placed: &[u32]) -> WatchedFolder {
-        WatchedFolder {
-            placed: placed.iter().map(|n| testkit::fp_n(*n)).collect(),
-            ..testkit::watched_folder("tree1", root)
-        }
-    }
-
-    fn ask(moving: Option<&str>, name: &str, to: &str) -> ConflictAsk {
-        let arrival = match moving {
-            Some(id) => Arrival::moved(id, name, to, None),
-            None => Arrival::folder(name, to),
-        };
-        ConflictAsk {
-            arrival,
-            existing_id: "e1".to_string(),
-            existing_name: name.to_string(),
-            kind: AskKind::NameCollision,
-        }
-    }
 
     #[test]
     fn a_screen_splits_the_clean_from_the_colliding() {
@@ -617,44 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn the_link_shape_sheet_words_its_own_question() {
-        let rows = vec![
-            stored_row("e1", "Dune", "/books/dune.md", "/store/e1.md", 9),
-            linked_row("m1", "Dune", "/books/dune.md", 7),
-        ];
-        let shelves = vec![plain_shelf("s1", &["e1"])];
-        let folders = vec![placing_folder(7)];
-        let ask = ask(Some("m1"), "Dune", "s1");
-        let spec = describe(&rows, &shelves, &folders, &ask, &[]);
-        assert!(spec.question.contains("one of the library's own copies"), "the shape says why replace is withheld");
-        assert_eq!(
-            spec.choices.iter().map(|c| c.placement).collect::<Vec<_>>(),
-            Placement::MOVE_KEEPING_BOTH
-        );
-        let link = spec.choices.iter().find(|c| c.placement == Placement::LinkOnly).unwrap();
-        assert!(link.note.contains("nothing is destroyed"));
-    }
-
-    fn found(path: &str, n: u32) -> FoundFile {
-        FoundFile {
-            path: path.to_string(),
-            rel: paths::file_name(path),
-            ext: paths::extension(path),
-            size: 10,
-            fp: testkit::fp_n(n),
-        }
-    }
-
-    fn import_ask(kind: AskKind, path: &str, shelf: &str, n: u32) -> ConflictAsk {
-        ConflictAsk {
-            arrival: Arrival::import(found(path, n), shelf, None),
-            existing_id: "e1".to_string(),
-            existing_name: "Dune".to_string(),
-            kind,
-        }
-    }
-
-    #[test]
     fn the_kind_carries_the_question_s_facts() {
         let covered =
             import_ask(AskKind::Covered { folder_id: "f1".to_string() }, "/in/tree/Dune.md", "s1", 3);
@@ -810,159 +663,15 @@ mod tests {
         assert!(back.contains("lights up where it stands now"), "the light stands where it did");
     }
 
-    #[test]
-    fn the_shelf_question_s_offer_follows_the_arrival_s_mode() {
-        let stored = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
-        assert_eq!(shelf_offers(&stored), Placement::SHELF_STORED);
-        let in_place = shelf_ask("Books", "s1", "/mine/Books", in_place_opts(), false);
-        assert_eq!(shelf_offers(&in_place), Placement::SHELF_READ_IN_PLACE);
-    }
-
-    #[test]
-    fn the_stored_folder_s_question_is_the_level_s_own() {
-        // An arrival the library will own: no pointer, and every cost is the
-        // level's own to name — the replace counts the shelf's own members.
-        let rows = vec![
-            stored_row("e1", "Dune", "/mine/dune.md", "/store/e1.md", 9),
-            stored_row("e2", "Other", "/elsewhere/x.md", "/store/e2.md", 11),
-        ];
-        let shelves = vec![named_shelf("s1", "Books", &["e1", "e2"])];
-        let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
-        let spec = describe_shelf(&rows, &shelves, &[], &ask);
-        assert_eq!(spec.heading, "Books");
-        assert_eq!(spec.subtitle, "A shelf called “Books” is already here".to_string());
-        assert!(spec.question.contains("all three answers are open"), "the stored arrival's question");
-        assert!(!spec.apply_all && spec.waiting == 0, "a whole-run question has no queue");
-        assert_eq!(
-            spec.choices.iter().map(|c| c.placement).collect::<Vec<_>>(),
-            Placement::SHELF_STORED
-        );
-        let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
-        assert_eq!(
-            replace.note,
-            "2 books leave, highlights and all — copies take “Books”"
-        );
-        let show = spec.choices.iter().find(|c| c.placement == Placement::Open).unwrap();
-        assert_eq!(show.note, "Import nothing — go to “Books” and light it up where it stands");
-        let new = spec.choices.iter().find(|c| c.placement == Placement::KeepBoth).unwrap();
-        assert_eq!(new.note, "Import as “Books_1” — its own shelf, its own tree");
-    }
-
-    #[test]
-    fn the_own_tree_s_question_words_a_continuation() {
-        // The arriving folder is the tree's own: the replace sweeps the
-        // tree's LINKED rows — a stored copy beside the tree stays — and
-        // every sentence says which import made the shelf.
-        let rows = vec![
-            linked_row("e1", "Dune", "/mine/Books/dune.md", 7),
-            stored_row("e2", "Copy", "/mine/Books/copy.md", "/store/e2.md", 12),
-        ];
-        let shelves = vec![named_shelf("s1", "Books", &["e1", "e2"])];
-        let folders = vec![in_place_folder("/mine/Books", &[7])];
-        let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), true);
-        let spec = describe_shelf(&rows, &shelves, &folders, &ask);
-        assert_eq!(spec.subtitle, "Already in the library as “Books”");
-        assert!(
-            spec.question.contains("the shelf this folder's last import made"),
-            "the continuation's own words: {}",
-            spec.question
-        );
-        let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
-        assert_eq!(
-            replace.note,
-            "One book leaves, highlights and all — a copy takes its place on “Books”",
-            "the stored copy on the shelf is not the tree's to empty"
-        );
-        let new = spec.choices.iter().find(|c| c.placement == Placement::KeepBoth).unwrap();
-        assert_eq!(
-            new.note,
-            "Import as “Books_1” — the library's own copies; the tree here keeps reading the folder"
-        );
-    }
-
-    #[test]
-    fn the_in_place_arrival_offers_the_pointer_and_the_merge() {
-        let rows = vec![linked_row("e1", "Dune", "/mine/Books/dune.md", 7)];
-        let shelves = vec![plain_shelf("s1", &["e1"])];
-        let ask = shelf_ask("Books", "s1", "/mine/Books", in_place_opts(), true);
-        let spec = describe_shelf(&rows, &shelves, &[], &ask);
-        assert!(spec.question.contains("cannot mint a second shelf of itself"));
-        assert_eq!(
-            spec.choices.iter().map(|c| c.placement).collect::<Vec<_>>(),
-            Placement::SHELF_READ_IN_PLACE
-        );
-        let link = spec.choices.iter().find(|c| c.placement == Placement::LinkOnly).unwrap();
-        assert!( link.note.contains("lights the folder where it is"), "the pointer's promise");
-        let merge = spec.choices.iter().find(|c| c.placement == Placement::Merge).unwrap();
-        assert_eq!(merge.note, "The folder's books join “Books” — a name it already holds asks one by one");
-    }
-
-    #[test]
-    fn an_empty_level_s_replace_asks_nothing_back() {
-        let shelves = vec![plain_shelf("s1", &[])];
-        let ask = shelf_ask("Books", "s1", "/mine/Books", storing_opts(), false);
-        let spec = describe_shelf(&[], &shelves, &[], &ask);
-        let replace = spec.choices.iter().find(|c| c.placement == Placement::Replace).unwrap();
-        assert_eq!(replace.note, "Nothing to remove — the copies simply take “Books”");
-    }
-
-    #[test]
-    fn a_planned_walk_re_seats_the_rows_it_holds_and_asks_about_the_names() {
-        let mut folder = testkit::watched_folder("f1", "/books");
-        folder.shelf_map.insert(String::new(), "s-into".to_string());
-        let rows = vec![
-            linked_row("e1", "Known", "/books/known.md", 7),
-            linked_row("e2", "Kept", "/books/kept.md", 8),
-        ];
-        let shelves = vec![plain_shelf("s-into", &["e2"])];
-        let registry = ledger::registry_of(&rows);
-        let files = vec![
-            found("/books/known.md", 7),
-            found("/books/kept.md", 8),
-            found("/books/fresh.md", 9),
-        ];
-        let mut adds = vec![files[2].clone()];
-        let screened = screen_planned(
-            &folder,
-            &rows,
-            &shelves,
-            &registry,
-            &files,
-            (false, Some("s-into")),
-            &mut adds,
-            &HashSet::new(),
-        );
-        // “Kept” already sits on the destination under its name: a question,
-        // not a second row.
-        assert_eq!(screened.asks.len(), 1);
-        assert!(screened.asks[0].kind.is_folder_merge());
-        assert_eq!(screened.asks[0].existing_id, "e2");
-        // The row the library holds and the destination does not is re-seated.
-        assert_eq!(screened.replacements.len(), 1);
-        assert_eq!(screened.replacements[0].0, "e1");
-        // And a fresh file stays an addition.
-        assert_eq!(adds.len(), 1);
-        assert_eq!(adds[0].path, "/books/fresh.md");
-    }
-
-    #[test]
-    fn a_plain_walk_screens_nothing_at_all() {
-        let folder = testkit::watched_folder("f1", "/books");
-        let rows = vec![linked_row("e1", "Known", "/books/known.md", 7)];
-        let registry = ledger::registry_of(&rows);
-        let files = vec![found("/books/known.md", 7)];
-        let mut adds = files.clone();
-        let screened = screen_planned(
-            &folder,
-            &rows,
-            &[],
-            &registry,
-            &files,
-            (false, None),
-            &mut adds,
-            &HashSet::new(),
-        );
-        assert!(screened.asks.is_empty() && screened.replacements.is_empty());
-        assert_eq!(adds.len(), 1, "no plan, no re-seating: the ledger's own diff decides");
+    fn import_ask(kind: AskKind, path: &str, shelf: &str, n: u32) -> ConflictAsk {
+        ConflictAsk {
+            arrival: Arrival::import(found(path, n), shelf, None),
+            existing_id: "e1".to_string(),
+            existing_name: "Dune".to_string(),
+            kind,
+        }
     }
 }
+
+#[cfg(test)]
+mod kit;

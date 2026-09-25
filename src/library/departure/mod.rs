@@ -176,4 +176,169 @@ pub enum ReturnPath {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, HashSet};
+    use crate::library::departure::kit::{family_state, reading_folder, tree, tree_rows};
+    use crate::library::departure::returning::return_path;
+    use crate::library::departure::shelves::{ask_of_removal, ask_of_rung, ask_of_shelf};
+    use library_core::book::Row;
+    use library_core::folder::WatchedFolder;
+    use library_core::shelf::Shelf;
+    use library_core::testkit;
+
+    #[test]
+    fn the_rung_question_words_the_level_and_the_way_up() {
+        let (shelves, rows, folder) = deep_tree();
+        let folders = vec![folder];
+        let ask = ask_of_rung(&rows, &shelves, &folders, "two").expect("the level reads in place");
+        assert_eq!(ask.action, "Take shelf apart", "the count belongs to the subject, not the verb");
+        assert!(ask.subject.starts_with("“two”"), "the level the reader picked: {}", ask.subject);
+        assert!(ask.subject.contains("2 books from “books”"), "the cost and the ground: {}", ask.subject);
+        assert!(
+            ask.lines[0].contains("The 2 books read in place here become copies and come up to “one”"),
+            "the way up is the nearest rung still standing: {}",
+            ask.lines[0]
+        );
+        assert_eq!(ask.lines[1], UNTOUCHED);
+        assert_eq!(ask.options.len(), 1);
+        assert_eq!(ask.options[0].label, "Copy and take apart");
+        assert_eq!(ask.options[0].answer, CopyAnswer::Copy);
+        assert_eq!(ask.work, CopyWork::Rung { id: "two".to_string() });
+
+        // An empty rung of the same tree is no question.
+        assert!(ask_of_rung(&rows, &shelves, &folders, "one").is_none());
+    }
+
+    #[test]
+    fn the_removal_question_offers_the_copy_and_the_folder_s_own_remaking() {
+        let (shelves, rows, folder) = deep_tree();
+        let folders = vec![folder];
+        let going = vec!["two".to_string()];
+        let ask =
+            ask_of_removal(&rows, &shelves, &folders, &[], &going).expect("books read in place");
+        assert_eq!(ask.action, "Remove shelf");
+        assert_eq!(ask.subject, "1 shelf");
+        assert_eq!(ask.lines[0], "2 Read in place, so removing them stores copies.");
+        assert_eq!(ask.lines[1], "Or let “books” make it again.");
+        assert_eq!(ask.options[0].label, "Copy and remove");
+        assert_eq!(ask.options[0].answer, CopyAnswer::Copy);
+        assert_eq!(ask.options[1].label, "Let “books” make it again");
+        assert_eq!(ask.options[1].answer, CopyAnswer::WithoutCopies);
+        assert!(!ask.options[1].primary);
+        assert_eq!(
+            ask.work,
+            CopyWork::Removal { purge: Vec::new(), shelves: going.clone() }
+        );
+
+        // A removal that is already taking the books out of the library has
+        // nothing left to copy: no question.
+        let purge = vec!["b1".to_string(), "b2".to_string()];
+        assert!(ask_of_removal(&rows, &shelves, &folders, &purge, &going).is_none());
+    }
+
+    #[test]
+    fn the_ask_names_the_copies_the_level_s_next_free_names() {
+        let mut other = reading_folder();
+        other.id = "f2".into();
+        other.root = "/more".into();
+        other.placed = HashSet::new();
+        other.shelf_map = BTreeMap::from([
+            (String::new(), "r2".to_string()),
+            ("Fiction".to_string(), "fic2".to_string()),
+        ]);
+        let folders = vec![reading_folder(), other];
+        let mut tree = tree();
+        tree[1].name = "Fiction".to_string();
+        let mut shelves = vec![
+            testkit::shelf("to", "To", &[], None),
+            testkit::shelf("held", "Fiction", &[], Some("to")),
+        ];
+        shelves.extend(tree);
+        let mut fic2 = testkit::folder_shelf("fic2", "fic2", "f2", Some("Fiction"), &[], None);
+        fic2.name = "Fiction".to_string();
+        shelves.push(fic2);
+        let rows = tree_rows();
+
+        let ask = ask_of_shelf(
+            &rows,
+            &shelves,
+            &folders,
+            vec!["fic".to_string(), "fic2".to_string()],
+            Some("to".to_string()),
+            None,
+        )
+        .expect("two departing shelves are a question");
+        assert_eq!(ask.action, "Move shelves", "the count belongs to the subject, not the verb");
+        assert_eq!(ask.subject, "2 shelves — 2 books read in place");
+        assert!(
+            ask.lines[0].contains("their 2 books"),
+            "the two levels' books are counted together in the one row: {}",
+            ask.lines[0]
+        );
+        assert!(
+            ask.lines[0].contains("“Fiction_1”") && ask.lines[0].contains("“Fiction_2”"),
+            "and the row promises the names the copies will wear: {}",
+            ask.lines[0]
+        );
+        assert_eq!(ask.lines[1], UNTOUCHED);
+        assert!(
+            ask.options.iter().all(|one| one.answer != CopyAnswer::WithoutCopies),
+            "a reader's own shelf is nobody's family, so the drop owes no way home"
+        );
+        match &ask.work {
+            CopyWork::Shelf { ids, target, seam, returns } => {
+                assert_eq!(ids, &vec!["fic".to_string(), "fic2".to_string()]);
+                assert_eq!(target.as_deref(), Some("to"));
+                assert!(seam.is_none());
+                assert!(returns.is_empty());
+            }
+            work => panic!("the shelf's work rides the shelf's ask: {work:?}"),
+        }
+    }
+
+    #[test]
+    fn an_off_seat_rung_goes_home_by_the_reseat_and_a_seated_one_is_home() {
+        let (shelves, folders) = family_state();
+        assert!(return_path(&shelves, &folders, "fic").is_none());
+        let mut off = shelves.clone();
+        off.iter_mut().find(|s| s.id == "fic").unwrap().parent = Some("mine".to_string());
+        match return_path(&off, &folders, "fic") {
+            Some(ReturnPath::Reseat { seat }) => assert_eq!(seat.as_deref(), Some("r")),
+            path => panic!("the reseat is an off-seat rung's way home: {path:?}"),
+        }
+        let mut lifted = shelves.clone();
+        lifted.iter_mut().find(|s| s.id == "r").unwrap().parent = Some("mine".to_string());
+        match return_path(&lifted, &folders, "r") {
+            Some(ReturnPath::Reseat { seat }) => {
+                assert_eq!(seat, None, "the root's seat is the library's own level")
+            }
+            path => panic!("the root's seat is the library's own level: {path:?}"),
+        }
+    }
+
+    /// `home/root/1st/2nd`: a read-at-place tree with a rung per folder, its
+    /// books on the lowest one.
+    fn deep_tree() -> (Vec<Shelf>, Vec<Row>, WatchedFolder) {
+        let mut folder = reading_folder();
+        folder.shelf_map = BTreeMap::from([
+            (String::new(), "root".to_string()),
+            ("1st".to_string(), "one".to_string()),
+            ("1st/2nd".to_string(), "two".to_string()),
+        ]);
+        let shelves = vec![
+            testkit::folder_shelf("root", "root", "f1", None, &["b0"], None),
+            testkit::folder_shelf("one", "one", "f1", Some("1st"), &[], Some("root")),
+            testkit::folder_shelf("two", "two", "f1", Some("1st/2nd"), &["b1", "b2"], Some("one")),
+        ];
+        let books = vec![
+            testkit::row_at_n("b0", "/books/notes.md", 8),
+            testkit::row_at_n("b1", "/books/1st/2nd/a.md", 7),
+            testkit::row_at_n("b2", "/books/1st/2nd/b.md", 9),
+        ];
+        (shelves, books, folder)
+    }
+}
+
+#[cfg(test)]
+mod kit;

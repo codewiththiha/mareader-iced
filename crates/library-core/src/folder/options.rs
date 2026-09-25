@@ -105,3 +105,169 @@ impl FolderOpts {
         FolderMode::from_opts(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+    use crate::folder::WatchedFolder;
+    use crate::folder::kit::folder;
+    use crate::folder::sanitize::sanitize;
+    use crate::scan::selectable_formats;
+
+    #[test]
+    fn a_shape_answered_for_one_rung_cuts_the_rungs_under_it_alone() {
+        let mut f = WatchedFolder {
+            opts: FolderOpts {
+                groups: false,
+                ..FolderOpts::default()
+            },
+            shelf_map: BTreeMap::from([
+                (String::new(), "root".to_string()),
+                ("Fiction".to_string(), "fic".to_string()),
+            ]),
+            ..folder("/books")
+        };
+        assert_eq!(
+            f.rung_for("Fiction/SciFi"),
+            "",
+            "one shelf files every address on its root rung"
+        );
+        assert_eq!(f.rungs_for("/books/Reference/x.pdf").0, Some("root"));
+        // The nested folder the re-import answered for cuts its own rungs;
+        // the tree above keeps the books never under it.
+        f.set_shape("Fiction", true);
+        assert_eq!(f.rung_for("Fiction"), "Fiction");
+        assert_eq!(f.rung_for("Fiction/SciFi"), "Fiction/SciFi");
+        assert_eq!(f.rung_for("Reference"), "", "the rest of the tree is where it was");
+        assert_eq!(
+            f.rungs_for("/books/Fiction/SciFi/dune.pdf").0,
+            None,
+            "no shelf stands for the rung the answer cut yet"
+        );
+        assert_eq!(f.rungs_for("/books/Fiction/other.pdf").0, Some("fic"));
+    }
+
+    #[test]
+    fn the_roots_answer_stands_for_the_whole_tree() {
+        let mut f = WatchedFolder {
+            opts: FolderOpts {
+                groups: false,
+                ..FolderOpts::default()
+            },
+            ..folder("/books")
+        };
+        f.set_shape("Fiction", true);
+        assert_eq!(f.rung_for("Fiction/SciFi"), "Fiction/SciFi");
+        f.set_shape("", true);
+        assert!(f.opts.groups, "the root's answer IS the folder's own shape");
+        assert!(f.shapes.is_empty(), "and it takes every deeper answer with it");
+        assert_eq!(f.rung_for("Fiction/SciFi"), "Fiction/SciFi");
+        f.set_shape("", false);
+        assert_eq!(
+            f.rung_for("Fiction/SciFi"),
+            "",
+            "one shelf puts every directory on the root rung"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_does_not_group_has_one_rung_for_every_file() {
+        let f = WatchedFolder {
+            opts: FolderOpts {
+                groups: false,
+                ..FolderOpts::default()
+            },
+            shelf_map: BTreeMap::from([
+                ("".to_string(), "root".to_string()),
+                ("Fiction".to_string(), "ignored".to_string()),
+            ]),
+            ..folder("/books")
+        };
+        assert_eq!(f.rungs_for("/books/Fiction/SciFi/dune.pdf"), (Some("root"), Some("root")));
+        assert_eq!(f.rungs_for("/books/top.pdf"), (Some("root"), Some("root")));
+    }
+
+    #[test]
+    fn the_defaults_are_the_ones_the_sheet_opens_on() {
+        let o = FolderOpts::default();
+        assert_eq!(o.min_size, DEFAULT_MIN_SIZE);
+        assert_eq!(o.min_size_label(), "30 KB");
+        assert!(o.include_selected);
+        assert!(o.in_place, "read in place is the mode the app always had");
+        assert!(!o.watch, "watching is opt-in");
+        assert!(o.groups);
+        assert_eq!(o.formats.len(), selectable_formats().len());
+    }
+
+    #[test]
+    fn a_blob_from_before_the_folder_options_existed_loads_them() {
+        let f: WatchedFolder =
+            serde_json::from_str(r#"{"id":"f1","root":"/books"}"#).unwrap();
+        assert_eq!(f.opts, FolderOpts::default());
+        assert!(f.placed.is_empty() && f.ignored.is_empty());
+        assert!(f.shelf_map.is_empty());
+    }
+
+    #[test]
+    fn the_size_dial_steps_in_kb_and_stops_at_its_bounds() {
+        let mut o = FolderOpts::default();
+        o.step_min_size(1);
+        assert_eq!(o.min_size, 40 * 1024);
+        o.step_min_size(-2);
+        assert_eq!(o.min_size, 20 * 1024);
+        for _ in 0..100 {
+            o.step_min_size(-1);
+        }
+        assert_eq!(o.min_size, MIN_SIZE_FLOOR);
+        assert_eq!(o.min_size_label(), "0 KB");
+        for _ in 0..200 {
+            o.step_min_size(1);
+        }
+        assert_eq!(o.min_size, MIN_SIZE_CEIL);
+        assert_eq!(o.min_size_label(), "500 KB");
+    }
+
+    #[test]
+    fn a_sub_thousand_byte_threshold_still_prints_honestly() {
+        let o = FolderOpts { min_size: 512, ..Default::default() };
+        assert_eq!(o.min_size_label(), "0.5 KB");
+    }
+
+    #[test]
+    fn sanitize_dedupes_roots_and_clamps_the_dial() {
+        let mut folders = vec![
+            WatchedFolder {
+                opts: FolderOpts {
+                    min_size: 10_000_000,
+                    ..FolderOpts::default()
+                },
+                ..folder("/books")
+            },
+            folder("/books"),
+            folder(""),
+            WatchedFolder {
+                id: " ".into(),
+                ..folder("/other")
+            },
+        ];
+        sanitize(&mut folders);
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].opts.min_size, MIN_SIZE_CEIL);
+    }
+
+    #[test]
+    fn an_empty_format_set_is_not_a_folder_that_admits_nothing() {
+        // A hand-edited blob or a format removed from the registry must not
+        // silently turn a watched folder into a dead one.
+        let mut folders = vec![WatchedFolder {
+            opts: FolderOpts {
+                formats: BTreeSet::new(),
+                ..FolderOpts::default()
+            },
+            ..folder("/books")
+        }];
+        sanitize(&mut folders);
+        assert_eq!(folders[0].opts.formats.len(), selectable_formats().len());
+    }
+}

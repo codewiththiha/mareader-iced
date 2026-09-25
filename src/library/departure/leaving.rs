@@ -124,3 +124,136 @@ pub fn departing_book_ids(
         .map(|b| b.id.clone())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use crate::library::departure::CopyAnswer;
+    use crate::library::departure::kit::{nested, reading_folder, tree, tree_rows};
+    use crate::library::departure::leaving::ask_of_rows;
+    use crate::library::departure::leaving::converting_rows;
+    use crate::library::departure::leaving::converts_on_move;
+    use library_core::shelf::ALL_SHELF;
+    use library_core::testkit;
+
+    #[test]
+    fn a_drag_to_another_rung_of_the_same_folder_is_a_departure() {
+        let folders = vec![nested(7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        // Reading the tie as the folder's shelf tree instead — "any shelf
+        // this folder owns" — left the row linked at an address it had been
+        // dragged off.
+        assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
+        assert!(converts_on_move(&rows, &folders, "b1", "shelf1"));
+        assert!(converts_on_move(&rows, &folders, "b1", "elsewhere"));
+    }
+
+    #[test]
+    fn a_reorder_on_the_book_s_own_rung_copies_nothing() {
+        let folders = vec![nested(7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        // Re-ordering the books a folder placed, on the rung it placed them
+        // on, is the folder's own business.
+        assert!(!converts_on_move(&rows, &folders, "b1", "shelf3"));
+    }
+
+    #[test]
+    fn the_root_and_the_reader_s_own_shelves_are_nobody_s_ground() {
+        let folders = vec![nested(7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        assert!(converts_on_move(&rows, &folders, "b1", ALL_SHELF));
+        assert!(converts_on_move(&rows, &folders, "b1", "mine"));
+    }
+
+    #[test]
+    fn a_rung_the_reader_deleted_is_ground_the_book_has_left() {
+        let mut folder = nested(7);
+        folder.shelf_map.remove("Fiction/SciFi");
+        let folders = vec![folder];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
+        assert!(converts_on_move(&rows, &folders, "b1", "shelf3"));
+    }
+
+    #[test]
+    fn a_folder_that_does_not_group_has_one_ground_for_every_file() {
+        let mut folder = nested(7);
+        folder.opts.groups = false;
+        folder.shelf_map = BTreeMap::from([(String::new(), "flat".to_string())]);
+        let folders = vec![folder];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        assert!(!converts_on_move(&rows, &folders, "b1", "flat"));
+        assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
+    }
+
+    #[test]
+    fn only_a_linked_book_of_a_reading_folder_owes_the_copy() {
+        let mut copying = nested(7);
+        copying.id = "f2".into();
+        copying.opts.in_place = false;
+        let folders = vec![nested(7), copying];
+        let rows = vec![
+            testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7),
+            testkit::stored_row("b2", "/books/Fiction/SciFi/dune.md", "/store/b2.md", 9),
+            testkit::row_at_n("b3", "/elsewhere/loose.md", 11),
+        ];
+
+        assert!(converts_on_move(&rows, &folders, "b1", "shelf2"));
+        assert!(!converts_on_move(&rows, &folders, "b2", "shelf2"));
+        assert!(!converts_on_move(&rows, &folders, "b3", "shelf2"));
+        assert!(!converts_on_move(&rows, &folders, "gone", "shelf2"));
+    }
+
+    #[test]
+    fn the_ask_names_the_ground_and_the_cost() {
+        let folders = vec![nested(7)];
+        let rows = vec![testkit::row_at_n("b1", "/books/Fiction/SciFi/dune.md", 7)];
+        let ids = vec!["b1".to_string()];
+        let converting = converting_rows(&rows, &folders, &ids, "mine");
+        assert_eq!(converting, ids, "the screen keeps the gesture's own order");
+
+        let hand = RowMove::Seat { from: Some("shelf3".into()), to: "mine".into(), index: None };
+        let ask = ask_of_rows(&rows, &folders, &converting, hand).expect("one book owes a copy");
+        assert_eq!(ask.action, "Move books");
+        assert_eq!(ask.subject, "1 book from “books”", "the folder names the ground");
+        assert!(ask.lines[0].contains("read in place"), "the cost, in the sheet's own sentence");
+        assert_eq!(ask.lines[1], UNTOUCHED);
+        assert_eq!(ask.options.len(), 1, "the move's door has one way through");
+        assert_eq!(ask.options[0].answer, CopyAnswer::Copy);
+
+        // A gesture nothing converts raises no sheet.
+        let hand = RowMove::Seat { from: None, to: "mine".into(), index: None };
+        assert!(ask_of_rows(&rows, &folders, &[], hand).is_none());
+    }
+
+    #[test]
+    fn a_departing_rung_carries_the_books_standing_on_the_rungs_it_takes() {
+        let shelves = tree();
+        let folder = reading_folder();
+        let (subtree, rungs) = departing_sets(&shelves, "f1", "sf");
+        assert!(subtree.contains("sf"));
+        assert!(rungs.contains("sf"));
+        let ids = departing_book_ids(&tree_rows(), &shelves, &folder, &rungs, &subtree);
+        assert_eq!(ids, vec!["deep".to_string()], "only the book whose OWN rung is the one leaving");
+    }
+
+    #[test]
+    fn a_book_shown_on_a_departing_rung_keeps_its_link_when_its_ground_stays() {
+        let shelves = tree();
+        let folder = reading_folder();
+        // "shown2" is a member of "sf" below it, but its address stands on
+        // the ROOT rung, which is not departing: the tree keeps answering
+        // for it, and a copy of a book whose rung stays is a copy the reader
+        // never asked for.
+        let (subtree, rungs) = departing_sets(&shelves, "f1", "fic");
+        let ids = departing_book_ids(&tree_rows(), &shelves, &folder, &rungs, &subtree);
+        assert!(ids.contains(&"mid".to_string()), "the book of the level itself goes");
+        assert!(!ids.contains(&"shown2".to_string()), "the guest of a departing rung stays linked");
+        assert!(
+            ids.contains(&"deep".to_string()),
+            "a MOVE takes the whole subtree the directory rides with; the take-APART below \
+             pays for the level's own book alone"
+        );
+    }
+}
