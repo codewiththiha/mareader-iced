@@ -7,11 +7,7 @@ use crate::folder::options::FolderOpts;
 use crate::tracking::TrackingTree;
 
 pub(super) fn fp(n: u32) -> Fingerprint {
-    Fingerprint {
-        size: u64::from(n),
-        mtime_ms: u64::from(n),
-        head_hash: n,
-    }
+    crate::testkit::fp_n(n)
 }
 
 pub(super) fn folder(root: &str) -> WatchedFolder {

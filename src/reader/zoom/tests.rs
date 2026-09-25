@@ -3,22 +3,16 @@
 
 use super::*;
 
-use reader_core::zoom_math::{FitMode, MIN_SCALE};
-
 use crate::formats::pdf::PageBox;
+use crate::reader::kit::page;
+
+use reader_core::zoom_math::{FitMode, MIN_SCALE};
 
 use super::super::viewer::Viewer;
 
 use reader_core::zoom_math::MAX_SCALE;
 
 use iced::Size;
-
-fn page(w: f64, h: f64) -> PageBox {
-    PageBox {
-        width: w,
-        height: h,
-    }
-}
 
 /// A window and a sheet whose fit width is exactly 2.0 (1000 / 500).
 fn viewer(fit: FitMode) -> Viewer {

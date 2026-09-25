@@ -169,13 +169,7 @@ impl FitDims {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn page(w: f64, h: f64) -> PageBox {
-        PageBox {
-            width: w,
-            height: h,
-        }
-    }
+    use crate::reader::kit::page;
 
     fn viewer(mode: ViewMode, cw: f32, ch: f32, margin: f64) -> Viewer {
         Viewer {

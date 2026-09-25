@@ -33,6 +33,13 @@ pub(super) fn reader() -> Reader {
     reader_of(&settings)
 }
 
+pub(super) fn page(w: f64, h: f64) -> pdf::PageBox {
+    pdf::PageBox {
+        width: w,
+        height: h,
+    }
+}
+
 pub(super) fn open() -> Open {
     Open {
         path: PathBuf::from("/books/one.pdf"),
