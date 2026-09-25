@@ -845,3 +845,22 @@ GitHub Release with the matching `release-notes/` file as the body. Prerelease t
   every frame. All five CI lanes are green on the increment; the text lane (PDFium's
   per-character boxes, grouped into runs) is ported and driven by the engine's own
   test, and waits on the search that will ask it for a page.
+
+## 8. The refactor pass (after the audit)
+
+The codebase review (`review/`, kept outside this repo's history as its own
+working set) read every folder and file and queued its findings as sections
+S1…S8. The shelf section closed with the library split, and the reader area has
+now had its own pass: the two `RETIRED_*` storage keys went (nothing native
+reads localStorage — `settings.json` and `library.json` are the whole contract,
+and the four surviving key constants now say so), `reflow-core`'s typography
+stopped resolving into CSS custom properties and became what a native painter
+needs (an ordered stack per family, plus the body font's average advance for the
+pagination estimate), `reader-core`'s view model lost two constants no reader
+named and the generic easing nothing eased with (its `virtual-list` dependency
+went with them), and five helpers whose only caller was their own test were
+deleted outright. The last duplicated fixtures — a fingerprint builder and three
+copies of the page-box fixture — are one call each now. What remains flagged
+rather than changed is the appearance pipelines' CSS-shaped output, which the
+appearance phase will re-shape in iced terms, and the spread/preset rules that
+are ported and tested ahead of the phases that consume them.
