@@ -168,44 +168,6 @@ fn run_line(run: &FsRun) -> String {
     }
 }
 
-/// A toggle chip: the active one wears the accent's soft bed, the inactive
-/// one waits quiet. `None` for the message renders it disabled.
-pub(super) fn chip(
-    tokens: Tokens,
-    label: &'static str,
-    active: bool,
-    message: Option<Message>,
-) -> Element<'static, Message> {
-    let action = button(text(label).size(12).color(if active { tokens.ink } else { tokens.muted }))
-        .width(Length::Fill)
-        .padding(Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 })
-        .style(move |_, status| {
-            let background = if active {
-                tokens.accent_soft
-            } else {
-                match status {
-                    button::Status::Hovered | button::Status::Pressed => wash(tokens.line, 0.45),
-                    _ => Color::TRANSPARENT,
-                }
-            };
-            button::Style {
-                background: Some(Background::Color(background)),
-                border: Border {
-                    color: if active { tokens.accent } else { tokens.line },
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                text_color: if active { tokens.ink } else { tokens.muted },
-                shadow: Shadow::default(),
-                snap: false,
-            }
-        });
-    match message {
-        Some(message) => action.on_press(message).into(),
-        None => action.into(),
-    }
-}
-
 /// The size threshold's round adjuster.
 pub(super) fn stepper(tokens: Tokens, glyph: IconName, enabled: bool, message: Message) -> Element<'static, Message> {
     let face = container(icon(glyph, 13, if enabled { tokens.ink } else { tokens.muted }))

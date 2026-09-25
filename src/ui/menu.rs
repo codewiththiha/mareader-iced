@@ -225,9 +225,9 @@ pub fn separator<M: Clone + 'static>(tokens: Tokens) -> Element<'static, M> {
     .into()
 }
 
-/// A small pill toggle: the "Auto" switch and the sort-direction pair. The
-/// active pill wears the accent's soft bed; the idle one is quiet text that
-/// washes under the pointer.
+/// The pressed-or-quiet control every selected-or-not button in the app wears:
+/// the bordered accent chip the web's `ToggleButton` draws. `None` for the
+/// message renders it inert.
 pub fn toggle<'a, M: Clone + 'a>(
     tokens: Tokens,
     glyph: Option<IconName>,
@@ -235,11 +235,7 @@ pub fn toggle<'a, M: Clone + 'a>(
     active: bool,
     message: Option<M>,
 ) -> Element<'a, M> {
-    let (background, ink) = if active {
-        (Some(Background::Color(tokens.accent_soft)), tokens.accent)
-    } else {
-        (None, tokens.muted)
-    };
+    let ink = if active { tokens.ink } else { tokens.muted };
     let face: Element<'a, M> = match glyph {
         Some(name) => row![icon(name, 12, ink), text(label).size(12).color(ink)]
             .spacing(4)
@@ -248,17 +244,23 @@ pub fn toggle<'a, M: Clone + 'a>(
         None => text(label).size(12).color(ink).into(),
     };
     let action = button(container(face).width(Length::Fill).center_x(Length::Fill))
-        .padding(Padding { top: 5.0, right: 8.0, bottom: 5.0, left: 8.0 })
+        .padding(Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 })
         .style(move |_, status| {
-            let background = match status {
-                button::Status::Hovered | button::Status::Pressed if !active => {
-                    Some(Background::Color(wash(tokens.line, 0.60)))
+            let background = if active {
+                tokens.accent_soft
+            } else {
+                match status {
+                    button::Status::Hovered | button::Status::Pressed => wash(tokens.line, 0.45),
+                    _ => Color::TRANSPARENT,
                 }
-                _ => background,
             };
             button::Style {
-                background,
-                border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 8.0.into() },
+                background: Some(Background::Color(background)),
+                border: Border {
+                    color: if active { tokens.accent } else { tokens.line },
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
                 text_color: ink,
                 shadow: Shadow::default(),
                 snap: false,

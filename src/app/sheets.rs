@@ -15,10 +15,11 @@ use crate::chrome::icons::{icon, IconName};
 use crate::library::conflicts::{self, ConflictAsk, ShelfConflictAsk};
 use crate::library::departure::CopyAsk;
 use crate::theme::{wash, Tokens};
+use crate::ui::menu;
 use crate::ui::sheet;
 use super::Mareader;
 use super::message::Message;
-use super::view::{chip, stepper};
+use super::view::stepper;
 use super::walk::{Continuation, GroundWatch, RootPlan};
 
 /// The sheet's rename field's identity — focus lands on it the moment the
@@ -189,8 +190,20 @@ fn import_sheet(
     });
 
     let include_row = row![
-        chip(tokens, "Include selected", opts.include_selected, Some(Message::SheetImportInclude(true))),
-        chip(tokens, "Exclude selected", !opts.include_selected, Some(Message::SheetImportInclude(false))),
+        menu::toggle(
+            tokens,
+            None,
+            "Include selected",
+            opts.include_selected,
+            Some(Message::SheetImportInclude(true)),
+        ),
+        menu::toggle(
+            tokens,
+            None,
+            "Exclude selected",
+            !opts.include_selected,
+            Some(Message::SheetImportInclude(false)),
+        ),
     ]
     .spacing(6);
 
@@ -199,8 +212,9 @@ fn import_sheet(
     for chunk in selectable_formats().chunks(2) {
         let mut line = Row::new().spacing(6);
         for format in chunk {
-            line = line.push(chip(
+            line = line.push(menu::toggle(
                 tokens,
+                None,
                 format.label(),
                 opts.formats.contains(format),
                 Some(Message::SheetImportFormat(*format)),
@@ -235,20 +249,23 @@ fn import_sheet(
     // can show, and every click writes both switches from the mode picked.
     let mode = opts.mode();
     let books_rows = Column::new()
-        .push(chip(
+        .push(menu::toggle(
             tokens,
+            None,
             FolderMode::Copy.label(),
             mode == FolderMode::Copy,
             Some(Message::SheetImportMode(FolderMode::Copy)),
         ))
-        .push(chip(
+        .push(menu::toggle(
             tokens,
+            None,
             FolderMode::LinkInPlace.label(),
             mode == FolderMode::LinkInPlace,
             Some(Message::SheetImportMode(FolderMode::LinkInPlace)),
         ))
-        .push(chip(
+        .push(menu::toggle(
             tokens,
+            None,
             FolderMode::LinkInPlaceWatched.label(),
             mode == FolderMode::LinkInPlaceWatched,
             Some(Message::SheetImportMode(FolderMode::LinkInPlaceWatched)),
@@ -258,14 +275,16 @@ fn import_sheet(
 
     // The structure answer, and the promise it makes about the tree.
     let structure_rows = Column::new()
-        .push(chip(
+        .push(menu::toggle(
             tokens,
+            None,
             "A shelf for each folder",
             opts.groups,
             Some(Message::SheetImportGroups(true)),
         ))
-        .push(chip(
+        .push(menu::toggle(
             tokens,
+            None,
             "One shelf for everything",
             !opts.groups,
             Some(Message::SheetImportGroups(false)),
